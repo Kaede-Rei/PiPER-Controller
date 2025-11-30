@@ -1,0 +1,8 @@
+prefix=/home/kaerei/ROS_Workspace/piper_controller/devel
+
+Name: serial_driver
+Description: Description of serial_driver
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 
