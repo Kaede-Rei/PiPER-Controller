@@ -1142,32 +1142,32 @@ tf_generate_messages_cpp/fast:
 	cd /home/kaerei/ROS_Workspace/piper_controller/build && $(MAKE) -f piper_controller/CMakeFiles/tf_generate_messages_cpp.dir/build.make piper_controller/CMakeFiles/tf_generate_messages_cpp.dir/build
 .PHONY : tf_generate_messages_cpp/fast
 
-src/drvl/d_eef_pos_cmd.o: src/drvl/d_eef_pos_cmd.cpp.o
+src/eef_cmd.o: src/eef_cmd.cpp.o
 
-.PHONY : src/drvl/d_eef_pos_cmd.o
+.PHONY : src/eef_cmd.o
 
 # target to build an object file
-src/drvl/d_eef_pos_cmd.cpp.o:
-	cd /home/kaerei/ROS_Workspace/piper_controller/build && $(MAKE) -f piper_controller/CMakeFiles/piper_controller.dir/build.make piper_controller/CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.o
-.PHONY : src/drvl/d_eef_pos_cmd.cpp.o
+src/eef_cmd.cpp.o:
+	cd /home/kaerei/ROS_Workspace/piper_controller/build && $(MAKE) -f piper_controller/CMakeFiles/piper_controller.dir/build.make piper_controller/CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.o
+.PHONY : src/eef_cmd.cpp.o
 
-src/drvl/d_eef_pos_cmd.i: src/drvl/d_eef_pos_cmd.cpp.i
+src/eef_cmd.i: src/eef_cmd.cpp.i
 
-.PHONY : src/drvl/d_eef_pos_cmd.i
+.PHONY : src/eef_cmd.i
 
 # target to preprocess a source file
-src/drvl/d_eef_pos_cmd.cpp.i:
-	cd /home/kaerei/ROS_Workspace/piper_controller/build && $(MAKE) -f piper_controller/CMakeFiles/piper_controller.dir/build.make piper_controller/CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.i
-.PHONY : src/drvl/d_eef_pos_cmd.cpp.i
+src/eef_cmd.cpp.i:
+	cd /home/kaerei/ROS_Workspace/piper_controller/build && $(MAKE) -f piper_controller/CMakeFiles/piper_controller.dir/build.make piper_controller/CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.i
+.PHONY : src/eef_cmd.cpp.i
 
-src/drvl/d_eef_pos_cmd.s: src/drvl/d_eef_pos_cmd.cpp.s
+src/eef_cmd.s: src/eef_cmd.cpp.s
 
-.PHONY : src/drvl/d_eef_pos_cmd.s
+.PHONY : src/eef_cmd.s
 
 # target to generate assembly for a file
-src/drvl/d_eef_pos_cmd.cpp.s:
-	cd /home/kaerei/ROS_Workspace/piper_controller/build && $(MAKE) -f piper_controller/CMakeFiles/piper_controller.dir/build.make piper_controller/CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.s
-.PHONY : src/drvl/d_eef_pos_cmd.cpp.s
+src/eef_cmd.cpp.s:
+	cd /home/kaerei/ROS_Workspace/piper_controller/build && $(MAKE) -f piper_controller/CMakeFiles/piper_controller.dir/build.make piper_controller/CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.s
+.PHONY : src/eef_cmd.cpp.s
 
 # Help Target
 help:
@@ -1247,9 +1247,9 @@ help:
 	@echo "... tf2_msgs_generate_messages_nodejs"
 	@echo "... dynamic_reconfigure_generate_messages_cpp"
 	@echo "... tf_generate_messages_cpp"
-	@echo "... src/drvl/d_eef_pos_cmd.o"
-	@echo "... src/drvl/d_eef_pos_cmd.i"
-	@echo "... src/drvl/d_eef_pos_cmd.s"
+	@echo "... src/eef_cmd.o"
+	@echo "... src/eef_cmd.i"
+	@echo "... src/eef_cmd.s"
 .PHONY : help
 
 

@@ -57,27 +57,27 @@ include piper_controller/CMakeFiles/piper_controller.dir/progress.make
 # Include the compile flags for this target's objects.
 include piper_controller/CMakeFiles/piper_controller.dir/flags.make
 
-piper_controller/CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.o: piper_controller/CMakeFiles/piper_controller.dir/flags.make
-piper_controller/CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.o: /home/kaerei/ROS_Workspace/piper_controller/src/piper_controller/src/drvl/d_eef_pos_cmd.cpp
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/kaerei/ROS_Workspace/piper_controller/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object piper_controller/CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.o"
-	cd /home/kaerei/ROS_Workspace/piper_controller/build/piper_controller && /usr/bin/c++  $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -o CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.o -c /home/kaerei/ROS_Workspace/piper_controller/src/piper_controller/src/drvl/d_eef_pos_cmd.cpp
+piper_controller/CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.o: piper_controller/CMakeFiles/piper_controller.dir/flags.make
+piper_controller/CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.o: /home/kaerei/ROS_Workspace/piper_controller/src/piper_controller/src/eef_cmd.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/kaerei/ROS_Workspace/piper_controller/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object piper_controller/CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.o"
+	cd /home/kaerei/ROS_Workspace/piper_controller/build/piper_controller && /usr/bin/c++  $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -o CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.o -c /home/kaerei/ROS_Workspace/piper_controller/src/piper_controller/src/eef_cmd.cpp
 
-piper_controller/CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.i"
-	cd /home/kaerei/ROS_Workspace/piper_controller/build/piper_controller && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/kaerei/ROS_Workspace/piper_controller/src/piper_controller/src/drvl/d_eef_pos_cmd.cpp > CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.i
+piper_controller/CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.i"
+	cd /home/kaerei/ROS_Workspace/piper_controller/build/piper_controller && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/kaerei/ROS_Workspace/piper_controller/src/piper_controller/src/eef_cmd.cpp > CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.i
 
-piper_controller/CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.s"
-	cd /home/kaerei/ROS_Workspace/piper_controller/build/piper_controller && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/kaerei/ROS_Workspace/piper_controller/src/piper_controller/src/drvl/d_eef_pos_cmd.cpp -o CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.s
+piper_controller/CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.s"
+	cd /home/kaerei/ROS_Workspace/piper_controller/build/piper_controller && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/kaerei/ROS_Workspace/piper_controller/src/piper_controller/src/eef_cmd.cpp -o CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.s
 
 # Object files for target piper_controller
 piper_controller_OBJECTS = \
-"CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.o"
+"CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.o"
 
 # External object files for target piper_controller
 piper_controller_EXTERNAL_OBJECTS =
 
-/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: piper_controller/CMakeFiles/piper_controller.dir/src/drvl/d_eef_pos_cmd.cpp.o
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: piper_controller/CMakeFiles/piper_controller.dir/src/eef_cmd.cpp.o
 /home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: piper_controller/CMakeFiles/piper_controller.dir/build.make
 /home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /home/kaerei/软件/piper_ros/devel/lib/libmoveit_common_planning_interface_objects.so
 /home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /home/kaerei/软件/piper_ros/devel/lib/libmoveit_planning_scene_interface.so
@@ -171,6 +171,26 @@ piper_controller_EXTERNAL_OBJECTS =
 /home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/liblog4cxx.so
 /home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/libboost_regex.so.1.71.0
 /home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/libxmlrpcpp.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/libserial.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/libroscpp_serialization.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/librostime.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/libboost_date_time.so.1.71.0
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/libcpp_common.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/libboost_system.so.1.71.0
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/libboost_thread.so.1.71.0
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/libconsole_bridge.so.0.4
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /home/kaerei/ROS_Workspace/piper_controller/devel/lib/libserial_driver.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/libroscpp.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/libpthread.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/libboost_chrono.so.1.71.0
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/libboost_filesystem.so.1.71.0
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/librosconsole.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/librosconsole_log4cxx.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/librosconsole_backend_interface.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/liblog4cxx.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/libboost_regex.so.1.71.0
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/libxmlrpcpp.so
+/home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/libserial.so
 /home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/libroscpp_serialization.so
 /home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /opt/ros/noetic/lib/librostime.so
 /home/kaerei/ROS_Workspace/piper_controller/devel/lib/piper_controller/piper_controller: /usr/lib/x86_64-linux-gnu/libboost_date_time.so.1.71.0
