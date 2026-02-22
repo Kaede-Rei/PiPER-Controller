@@ -1,8 +1,0 @@
-prefix=/home/kaerei/ROS_Workspace/piper_controller/install
-
-Name: piper_server
-Description: Description of piper_server
-Version: 0.0.0
-Cflags: 
-Libs: -L${prefix}/lib 
-Requires: 

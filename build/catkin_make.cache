@@ -1,2 +1,0 @@
-piper_controller:piper_msgs_srvs:piper_service:serial_driver
--DCATKIN_DEVEL_PREFIX=/home/kaerei/ROS_Workspace/piper_controller/devel -DCMAKE_INSTALL_PREFIX=/home/kaerei/ROS_Workspace/piper_controller/install -G Unix Makefiles

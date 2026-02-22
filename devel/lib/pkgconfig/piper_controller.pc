@@ -1,8 +1,0 @@
-prefix=/home/kaerei/ROS_Workspace/piper_controller/devel
-
-Name: piper_controller
-Description: Description of piper_controller
-Version: 0.0.0
-Cflags: -I/home/kaerei/ROS_Workspace/piper_controller/src/piper_controller/include
-Libs: -L${prefix}/lib -lpiper_controller
-Requires: actionlib geometry_msgs moveit_core moveit_ros_planning_interface roscpp rospy std_msgs std_srvs tf2_geometry_msgs tf2_ros
