@@ -86,7 +86,7 @@ namespace piper {
      */
     bool EefPoseCmd::searchReachablePose(geometry_msgs::Pose& target_pose, double step, double radius) {
         // 先判断一次目标位姿是否可达
-        if (isIkValid(target_pose))
+        if(isIkValid(target_pose))
             return true;
 
         // 先判断RPY是否均为0，是则进行前馈计算
@@ -108,13 +108,13 @@ namespace piper {
         // 获取目标位姿的欧拉角表示，并根据判断进行前馈计算
         tf2::Quaternion q_orig;
         double roll_orig, pitch_orig, yaw_orig;
-        if (need_feedforward) {
+        if(need_feedforward) {
             // 获取底座到末端连线向外方向单位向量，作为末端Z轴在基坐标系下的表示
             tf2::Vector3 z_axis(
                 target_pose.position.x,
                 target_pose.position.y,
                 target_pose.position.z);
-            if (z_axis.length() < 1e-8) {
+            if(z_axis.length() < 1e-8) {
                 ROS_ERROR("目标位姿位置无效，无法进行前馈计算。");
                 return false;
             }
@@ -122,7 +122,7 @@ namespace piper {
 
             // 默认X轴，若平行于Z轴则改用旋转90°，再计算Y轴
             tf2::Vector3 x_axis(1, 0, 0);
-            if (std::abs(z_axis.dot(x_axis)) > 0.9999)
+            if(std::abs(z_axis.dot(x_axis)) > 0.9999)
                 x_axis = tf2::Vector3(0, 1, 0);
             tf2::Vector3 y_axis = z_axis.cross(x_axis).normalize();
 
@@ -162,8 +162,8 @@ namespace piper {
         size_t expand_count = 0;
 
         // A*搜索过程
-        while (!open_set.empty()) {
-            if (++expand_count > max_expand) {
+        while(!open_set.empty()) {
+            if(++expand_count > max_expand) {
                 ROS_ERROR("A*搜索超出最大扩展节点数，终止搜索。");
                 break;
             }
@@ -183,9 +183,11 @@ namespace piper {
 
             // 转换回底座坐标系下再进行IK检测
             tf2::doTransform(pose_candidate, pose_candidate, tf_stamped_inv);
-            if (isIkValid(pose_candidate)) {
+            if(isIkValid(pose_candidate)) {
                 // 碰撞检测
-                if (_planning_scene_->isStateColliding(*_current_state_, _jmg_->getName())) {
+                moveit::core::RobotState temp_state(*_current_state_);
+                temp_state.setFromIK(_jmg_, pose_candidate, 0.0);
+                if(_planning_scene_->isStateColliding(temp_state, _jmg_->getName())) {
                     ROS_WARN("搜索到的位姿存在碰撞，继续搜索...");
                     continue;
                 }
@@ -201,14 +203,14 @@ namespace piper {
             int cur_roll_idx = static_cast<int>(std::round(current_node.droll / step));
             int cur_pitch_idx = static_cast<int>(std::round(current_node.dpitch / step));
 
-            for (auto& dir : dirs) {
+            for(auto& dir : dirs) {
                 int new_roll_idx = cur_roll_idx + dir[0];
                 int new_pitch_idx = cur_pitch_idx + dir[1];
 
                 // 生成新节点并限制在搜索半径内并检查是否已访问
                 double new_droll = new_roll_idx * step;
                 double new_dpitch = new_pitch_idx * step;
-                if (std::hypot(new_droll, new_dpitch) > radius + 1e-12)
+                if(std::hypot(new_droll, new_dpitch) > radius + 1e-12)
                     continue;
                 Key new_visited{ new_roll_idx, new_pitch_idx };
 
@@ -220,7 +222,7 @@ namespace piper {
 
                 // 检查是否已在闭集且代价更优，否则加入开放集
                 auto it = closed_set.find(new_visited);
-                if (it != closed_set.end() && it->second <= new_g)
+                if(it != closed_set.end() && it->second <= new_g)
                     continue;
                 closed_set[new_visited] = new_g;
                 open_set.push({ new_droll, new_dpitch, new_g, new_h, new_f });
@@ -249,9 +251,9 @@ namespace piper {
         _current_state_ = _arm_.getCurrentState();
 
         // 检查是否允许微调
-        if (allow_tweak) {
+        if(allow_tweak) {
             // 检查是否启用前馈计算
-            if (allow_feedforward) {
+            if(allow_feedforward) {
                 target_pose.pose.orientation.w = 1.0;
                 target_pose.pose.orientation.x = 0.0;
                 target_pose.pose.orientation.y = 0.0;
@@ -263,14 +265,14 @@ namespace piper {
             double radius = SEARCH_RADIUS; // 半径(度)
 
             geometry_msgs::Pose pose_candidate = target_pose.pose;
-            if (!searchReachablePose(pose_candidate, step, radius))
+            if(!searchReachablePose(pose_candidate, step, radius))
                 return false;
 
             target_pose.pose = pose_candidate;
         }
         else {
             ROS_INFO("移动到目标位姿中...");
-            if (!isIkValid(target_pose.pose)) {
+            if(!isIkValid(target_pose.pose)) {
                 ROS_ERROR("目标位姿不可达，移动失败。");
                 return false;
             }
@@ -281,13 +283,13 @@ namespace piper {
         _arm_.setPoseTarget(target_pose);
 
         bool success = (_arm_.plan(plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS);
-        if (!success) {
+        if(!success) {
             ROS_ERROR("规划到目标位姿失败，移动失败。");
             return false;
         }
 
         success = (_arm_.execute(plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS);
-        if (!success) {
+        if(!success) {
             ROS_ERROR("执行到目标位姿失败，移动失败。");
             return false;
         }
@@ -389,8 +391,7 @@ namespace piper {
      * @param eef_cmd 机械臂末端执行器位姿控制类引用
      */
     TaskGroupPlanner::TaskGroupPlanner(EefPoseCmd& eef_cmd)
-        : _eef_cmd_(eef_cmd) {
-    }
+        : _eef_cmd_(eef_cmd) {}
 
     /**
      * @brief 添加任务目标到任务列表
@@ -412,7 +413,7 @@ namespace piper {
      * @note 采用贪婪最近邻算法对点位进行排序，实现最短的移动路径
      */
     void TaskGroupPlanner::executeAll() {
-        if (_task_list_.empty()) {
+        if(_task_list_.empty()) {
             ROS_ERROR("任务列表为空，无法执行任务。");
             return;
         }
@@ -433,7 +434,7 @@ namespace piper {
             };
 
         // 执行排序
-        while (!pending_tasks.empty()) {
+        while(!pending_tasks.empty()) {
             // 找到距离当前排序位姿最近的任务
             auto nearest_it = std::min_element(
                 pending_tasks.begin(),
@@ -449,7 +450,7 @@ namespace piper {
 
         // 依次执行排序后的任务
         std::size_t task_index = 1;
-        for (const auto& task : sorted_tasks) {
+        for(const auto& task : sorted_tasks) {
             ROS_INFO("任务 [%zu/%zu] 开始执行。", task_index, sorted_tasks.size());
             bool success = false;
 
@@ -457,36 +458,36 @@ namespace piper {
             target_pose.pose = task.pose;
             success = _eef_cmd_.setGoalPoseBase(target_pose);
 
-            if (!success)
+            if(!success)
                 ROS_WARN("任务 [%zu] 失败。", task_index);
 
             // 执行任务动作
-            if (task.action == TargetAction_e::PICK && success) {
+            if(task.action == TargetAction_e::PICK && success) {
 
                 // TODO: 执行采摘动作
             }
-            else if (task.action == TargetAction_e::STRETCH && success) {
+            else if(task.action == TargetAction_e::STRETCH && success) {
 
                 // TODO: 根据视觉反馈调整伸缩参数
-                if (task.param1 == 0.0) {
+                if(task.param1 == 0.0) {
                 }
 
                 success = _eef_cmd_.eefStretch(task.param1);
-                if (!success)
+                if(!success)
                     ROS_WARN("任务 [%zu] 伸缩动作失败。", task_index);
             }
-            else if (task.action == TargetAction_e::ROTATE && success) {
+            else if(task.action == TargetAction_e::ROTATE && success) {
 
                 // TODO: 根据视觉反馈调整旋转参数
-                if (task.param1 == 0.0) {
+                if(task.param1 == 0.0) {
                 }
 
                 success = _eef_cmd_.eefRotate(task.param1);
-                if (!success)
+                if(!success)
                     ROS_WARN("任务 [%zu] 旋转动作失败。", task_index);
             }
 
-            if (task.wait_time > 0.0)
+            if(task.wait_time > 0.0)
                 ros::Duration(task.wait_time).sleep();
             ++task_index;
         }
