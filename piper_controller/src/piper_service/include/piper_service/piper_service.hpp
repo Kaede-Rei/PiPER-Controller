@@ -7,8 +7,7 @@
 #include "piper_msgs_srvs/piper_cmd.h"
 #include "serial_driver/serial_driver.hpp"
 
-namespace piper
-{
+namespace piper {
 
     // ! ========================= Typedef / 量 定 义 ========================= ! //
 
@@ -16,7 +15,7 @@ namespace piper
 
     // ! ========================= 接 口 A P I 声 明 ========================= ! //
 
-    class Server{
+    class Server {
     public:
         Server(ros::NodeHandle& nh, const std::string& plan_group);
         bool eefPoseCmdCallback(piper_msgs_srvs::piper_cmd::Request& req,
@@ -30,14 +29,13 @@ namespace piper
         piper::EefPoseCmd _eef_controller_;
         piper::TaskGroupPlanner _task_planner_;
         STM32Serial _stm32_serialer_;
-        CANSerial _can_serialer_;
     };
 
-    class Client{
+    class Client {
     public:
         Client(ros::NodeHandle& nh);
         bool sendCmd(ros::ServiceClient& client,
-            const piper_msgs_srvs::piper_cmd::Request& req, 
+            const piper_msgs_srvs::piper_cmd::Request& req,
             piper_msgs_srvs::piper_cmd::Response& res);
 
         bool zero(void);

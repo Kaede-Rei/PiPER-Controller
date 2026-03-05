@@ -26,7 +26,7 @@ namespace piper {
      */
     Server::Server(ros::NodeHandle& nh, const std::string& plan_group)
         : _eef_controller_(nh, plan_group), _task_planner_(_eef_controller_),
-        _stm32_serialer_(nh, STM32_SERIAL_PORT, 115200), _can_serialer_(nh, CAN_NAME) {
+        _stm32_serialer_(nh, STM32_SERIAL_PORT, 115200) {
         _srv_eef_cmd_ = nh.advertiseService("/piper_server/eef_cmd", &Server::eefPoseCmdCallback, this);
         _srv_task_planner_ = nh.advertiseService("/piper_server/task_planner", &Server::taskGroupPlannerCallback, this);
 
@@ -50,7 +50,7 @@ namespace piper {
     bool Server::eefPoseCmdCallback(piper_msgs_srvs::piper_cmd::Request& req,
         piper_msgs_srvs::piper_cmd::Response& res) {
         /// @brief 回到零点
-        if (req.command == "zero") {
+        if(req.command == "zero") {
             _eef_controller_.resetToZero();
 
             res.success = true;
@@ -58,7 +58,7 @@ namespace piper {
         }
 
         /// @brief 设置目标位姿
-        else if (req.command == "goal_base" || req.command == "goal_eef") {
+        else if(req.command == "goal_base" || req.command == "goal_eef") {
             geometry_msgs::PoseStamped target_pose;
             tf2::Quaternion qtn;
 
@@ -74,9 +74,9 @@ namespace piper {
             target_pose.pose.orientation.w = qtn.w();
 
             bool success = false;
-            if (req.command == "goal_base") {
+            if(req.command == "goal_base") {
                 bool lifter_success = piper::CheckLifterIsNeed(target_pose.pose.position.z, _stm32_serialer_);
-                if (!lifter_success) {
+                if(!lifter_success) {
                     res.success = false;
                     res.message = "升降台升降失败";
                     return true;
@@ -84,12 +84,12 @@ namespace piper {
 
                 success = _eef_controller_.setGoalPoseBase(target_pose, true, true);
             }
-            else if (req.command == "goal_eef") {
+            else if(req.command == "goal_eef") {
                 geometry_msgs::PoseStamped target_pose_base;
                 _eef_controller_.eefTfBase(target_pose, target_pose_base);
 
                 bool lifter_success = piper::CheckLifterIsNeed(target_pose_base.pose.position.z, _stm32_serialer_);
-                if (!lifter_success) {
+                if(!lifter_success) {
                     res.success = false;
                     res.message = "升降台升降失败";
                     return true;
@@ -99,30 +99,30 @@ namespace piper {
             }
 
             res.success = success;
-            if (success) res.message = "设置目标位姿成功";
+            if(success) res.message = "设置目标位姿成功";
             else res.message = "设置目标位姿失败";
         }
 
         /// @brief 末端伸缩
-        else if (req.command == "stretch") {
+        else if(req.command == "stretch") {
             bool success = _eef_controller_.eefStretch(std::stod(req.param1));
 
             res.success = success;
-            if (success) res.message = "末端伸缩成功";
+            if(success) res.message = "末端伸缩成功";
             else res.message = "末端伸缩失败";
         }
 
         /// @brief 末端旋转
-        else if (req.command == "rotate") {
+        else if(req.command == "rotate") {
             bool success = _eef_controller_.eefRotate(std::stod(req.param1));
 
             res.success = success;
-            if (success) res.message = "末端旋转成功";
+            if(success) res.message = "末端旋转成功";
             else res.message = "末端旋转失败";
         }
 
         /// @brief 获取末端相对底座坐标系的位姿
-        else if (req.command == "get_pose") {
+        else if(req.command == "get_pose") {
             geometry_msgs::Pose cur_pose = _eef_controller_.getCurrentEefPose();
             tf2::Quaternion qtn(cur_pose.orientation.x,
                 cur_pose.orientation.y,
@@ -138,7 +138,7 @@ namespace piper {
         }
 
         /// @brief 获取各关节角度
-        else if (req.command == "get_joints") {
+        else if(req.command == "get_joints") {
             res.cur_joint = _eef_controller_.getCurrentJointPose();
 
             res.message = "获取各关节角度成功";
@@ -167,7 +167,7 @@ namespace piper {
     bool Server::taskGroupPlannerCallback(piper_msgs_srvs::piper_cmd::Request& req,
         piper_msgs_srvs::piper_cmd::Response& res) {
         /// @brief 添加任务
-        if (req.command == "add_task") {
+        if(req.command == "add_task") {
             geometry_msgs::Pose target_pose;
             tf2::Quaternion qtn;
 
@@ -185,10 +185,10 @@ namespace piper {
             TaskTarget_t target;
             target.pose = target_pose;
             target.wait_time = req.param1.empty() ? 0.0 : std::stod(req.param1);
-            if (req.param2 == "NONE") target.action = TargetAction_e::NONE;
-            else if (req.param2 == "PICK") target.action = TargetAction_e::PICK;
-            else if (req.param2 == "STRETCH") target.action = TargetAction_e::STRETCH;
-            else if (req.param2 == "ROTATE") target.action = TargetAction_e::ROTATE;
+            if(req.param2 == "NONE") target.action = TargetAction_e::NONE;
+            else if(req.param2 == "PICK") target.action = TargetAction_e::PICK;
+            else if(req.param2 == "STRETCH") target.action = TargetAction_e::STRETCH;
+            else if(req.param2 == "ROTATE") target.action = TargetAction_e::ROTATE;
             target.param1 = req.param3.empty() ? 0.0 : std::stod(req.param3);
 
             _task_planner_.add(target);
@@ -198,7 +198,7 @@ namespace piper {
         }
 
         /// @brief 清除所有任务
-        else if (req.command == "clear_tasks") {
+        else if(req.command == "clear_tasks") {
             _task_planner_.clear();
 
             res.success = true;
@@ -206,7 +206,7 @@ namespace piper {
         }
 
         /// @brief 执行所有任务
-        else if (req.command == "exe_all_tasks") {
+        else if(req.command == "exe_all_tasks") {
             _task_planner_.executeAll();
 
             res.success = true;
@@ -244,10 +244,10 @@ namespace piper {
         piper_msgs_srvs::piper_cmd srv;
         srv.request = req;
 
-        if (client.call(srv)) {
+        if(client.call(srv)) {
             res = srv.response;
 
-            if (!res.success) {
+            if(!res.success) {
                 ROS_ERROR("机械臂服务调用失败：%s", res.message.c_str());
             }
 
@@ -469,7 +469,7 @@ namespace piper {
 
         req.command = "get_pose";
 
-        if (sendCmd(_client_eef_cmd_, req, res)) {
+        if(sendCmd(_client_eef_cmd_, req, res)) {
             x = res.cur_x; y = res.cur_y; z = res.cur_z;
             roll = res.cur_roll; pitch = res.cur_pitch; yaw = res.cur_yaw;
 
@@ -498,7 +498,7 @@ namespace piper {
         bool success = sendCmd(_client_eef_cmd_, req, res);
         message = res.message;
 
-        if (success && res.success) {
+        if(success && res.success) {
             x = res.cur_x; y = res.cur_y; z = res.cur_z;
             roll = res.cur_roll; pitch = res.cur_pitch; yaw = res.cur_yaw;
 
@@ -518,7 +518,7 @@ namespace piper {
 
         req.command = "get_joints";
 
-        if (sendCmd(_client_eef_cmd_, req, res)) {
+        if(sendCmd(_client_eef_cmd_, req, res)) {
             joints = res.cur_joint;
             return true;
         }
@@ -540,7 +540,7 @@ namespace piper {
         bool success = sendCmd(_client_eef_cmd_, req, res);
         message = res.message;
 
-        if (success && res.success) {
+        if(success && res.success) {
             joints = res.cur_joint;
             return true;
         }
@@ -690,20 +690,20 @@ namespace piper {
      */
     static bool CheckLifterIsNeed(double z, STM32Serial& serialer) {
         // TODO: z轴太高或太低通知升降台
-        if (z > 0.65 || z < -0.15) {
+        if(z > 0.65 || z < -0.15) {
             double offset = 0.0f;
 
-            if (z > 0.65) offset = std::round((z - 0.75) * 100.0) / 100.0;
+            if(z > 0.65) offset = std::round((z - 0.75) * 100.0) / 100.0;
             else offset = std::round((z + 0.25) * 100.0) / 100.0;
 
             std::string data = "$LIFTER:" + std::to_string(offset) + "#";
             serialer.sendData(data);
 
             std::string res_data = serialer.rcvdData(1000);
-            if (res_data != "$LIFTER:START#") return false;
+            if(res_data != "$LIFTER:START#") return false;
 
             res_data = serialer.rcvdData(0);
-            if (res_data != "$LIFTER:OK#") return false;
+            if(res_data != "$LIFTER:OK#") return false;
         }
 
         return true;
@@ -733,7 +733,7 @@ int main(int argc, char** argv) {
         );
         ROS_INFO("机器人状态已就绪");
     }
-    catch (const std::exception& e) {
+    catch(const std::exception& e) {
         ROS_WARN("等待机器人状态超时: %s", e.what());
         ROS_WARN("将使用 fake execution 模式");
     }
@@ -756,7 +756,7 @@ int main(int argc, char** argv) {
 
         ros::waitForShutdown();
     }
-    catch (const std::exception& e) {
+    catch(const std::exception& e) {
         ROS_ERROR("服务器初始化失败: %s", e.what());
         return 1;
     }
