@@ -94,7 +94,7 @@ void STM32Serial::sendData(const std::string& data) {
     }
 
     size_t bytes_written = _serial_.write(data);
-    ROS_INFO("STM32Serial 发送数据成功，字节数：%zu", bytes_written);
+    ROS_INFO("STM32Serial 发送数据成功，字节数：%zu，内容：%s", bytes_written, data.c_str());
 }
 
 /**

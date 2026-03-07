@@ -320,6 +320,63 @@ param3: ''"
 }
 
 # ============================================
+# 夹爪测试
+# ============================================
+
+test_gripper() {
+    print_title "测试夹爪服务"
+    
+    if ! check_service "$EEF_SERVICE"; then
+        return 1
+    fi
+
+    # 1. 夹爪张开
+    echo -e "\n${YELLOW}1. 夹爪张开${NC}"
+    rosservice call $EEF_SERVICE "command: 'open'
+x: 0.0
+y: 0.0
+z: 0.0
+roll: 0.0
+pitch: 0.0
+yaw: 0.0
+param1: ''
+param2: ''
+param3: ''"
+    wait_for_key
+
+    # 2. 夹爪闭合
+    echo -e "\n${YELLOW}2. 夹爪闭合${NC}"
+    rosservice call $EEF_SERVICE "command: 'close'
+x: 0.0
+y: 0.0
+z: 0.0
+roll: 0.0
+pitch: 0.0
+yaw: 0.0
+param1: ''
+param2: ''
+param3: ''"
+    wait_for_key
+
+    # 3. 夹爪角度60°
+    echo -e "\n${YELLOW}3. 夹爪角度60°${NC}"
+    rosservice call $EEF_SERVICE "command: 'angle'
+x: 0.0
+y: 0.0
+z: 0.0
+roll: 0.0
+pitch: 0.0
+yaw: 0.0
+param1: ''
+param2: ''
+param3: ''
+angle_eef: 60.0"
+    wait_for_key
+    
+    print_success "夹爪测试完成"
+}
+
+# ============================================
 # 快速测试（简化版）
 # ============================================
 quick_test() {
@@ -349,12 +406,13 @@ show_menu() {
     echo ""
     echo "1) 测试末端执行器控制服务 (详细)"
     echo "2) 测试任务组规划器服务 (详细)"
-    echo "3) 快速测试 (基本功能)"
-    echo "4) 检查服务状态"
-    echo "5) 显示服务信息"
+    echo "3) 测试夹爪"
+    echo "4) 快速测试 (基本功能)"
+    echo "5) 检查服务状态"
+    echo "6) 显示服务信息"
     echo "0) 退出"
     echo ""
-    read -p "请选择 [0-5]: " choice
+    read -p "请选择 [0-6]: " choice
     
     case $choice in
         1)
@@ -368,18 +426,23 @@ show_menu() {
             show_menu
             ;;
         3)
-            quick_test
+            test_gripper
             read -p "按回车返回主菜单..." dummy
             show_menu
             ;;
         4)
+            quick_test
+            read -p "按回车返回主菜单..." dummy
+            show_menu
+            ;;
+        5)
             print_title "检查服务状态"
             check_service "$EEF_SERVICE"
             check_service "$TASK_SERVICE"
             read -p "按回车返回主菜单..." dummy
             show_menu
             ;;
-        5)
+        6)
             print_title "服务信息"
             echo -e "\n${YELLOW}末端执行器控制服务:${NC}"
             rosservice info $EEF_SERVICE 2>/dev/null || print_error "服务未找到"

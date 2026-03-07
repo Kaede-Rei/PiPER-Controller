@@ -5,16 +5,15 @@
 
 // ! ========================= 宏 定 义 ========================= ! //
 
-#define STM32_SERIAL_PORT "/dev/ttyUSB0"
-#define CAN_NAME "/dev/ttyUSB1"
+#define STM32_SERIAL_PORT "/dev/ttyACM0"
 
 namespace piper {
 
-    // ! ========================= 接 口 量 声 明 ========================= ! //
+// ! ========================= 接 口 量 声 明 ========================= ! //
 
 
 
-    // ! ========================= 私 有 量 / 函 数 声 明 ========================= ! //
+// ! ========================= 私 有 量 / 函 数 声 明 ========================= ! //
 
 static bool CheckLifterIsNeed(double z, STM32Serial& serialer);
 
@@ -28,6 +27,10 @@ static bool CheckLifterIsNeed(double z, STM32Serial& serialer);
 Server::Server(ros::NodeHandle& nh, const std::string& plan_group)
     : _eef_controller_(nh, plan_group), _task_planner_(_eef_controller_),
     _stm32_serialer_(nh, STM32_SERIAL_PORT, 115200) {
+    if (!_stm32_serialer_.connect()) {
+        ROS_ERROR("STM32 串口连接失败：%s", STM32_SERIAL_PORT);
+    }
+
     _srv_eef_cmd_ = nh.advertiseService("/piper_server/eef_cmd", &Server::eefPoseCmdCallback, this);
     _srv_task_planner_ = nh.advertiseService("/piper_server/task_planner", &Server::taskGroupPlannerCallback, this);
 
@@ -148,19 +151,22 @@ bool Server::eefPoseCmdCallback(piper_msgs_srvs::piper_cmd::Request& req,
 
     /// @brief 末端夹爪关闭
     else if(req.command == "open") {
-        std::string data = "$OPEN#";
+        std::string data = "$GRIPPER:OPEN#\n";
         _stm32_serialer_.sendData(data);
     }
 
     /// @brief 末端夹爪关闭
     else if(req.command == "close") {
-        std::string data = "$CLOSE#";
+        std::string data = "$GRIPPER:CLOSE#\n";
         _stm32_serialer_.sendData(data);
     }
 
     /// @brief 末端夹爪角度控制
     else if(req.command == "angle") {
-        std::string data = "$ANGLE:" + std::to_string(req.angle_eef) + "#";
+        int angle_cmd = 2000.0 * req.angle_eef / 270.0 + 500;
+        std::ostringstream oss;
+        oss << std::setw(4) << std::setfill('0') << angle_cmd;
+        std::string data = "$GRIPPER:POS:" + oss.str() + "#\n";
         _stm32_serialer_.sendData(data);
     }
 
