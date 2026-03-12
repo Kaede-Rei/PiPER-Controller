@@ -38,7 +38,7 @@ STM32Serial::~STM32Serial() {
  * @return 连接成功返回 true，失败返回 false
  */
 bool STM32Serial::connect() {
-    if (_is_connected_) return true;
+    if(_is_connected_) return true;
 
     try {
         _serial_.setPort(_port_name_);
@@ -47,12 +47,12 @@ bool STM32Serial::connect() {
         _serial_.setTimeout(timeout);
         _serial_.open();
     }
-    catch (const std::exception& e) {
+    catch(const std::exception& e) {
         ROS_ERROR("STM32Serial 连接失败：%s", e.what());
         return false;
     }
 
-    if (!_serial_.isOpen()) {
+    if(!_serial_.isOpen()) {
         ROS_ERROR("STM32Serial 连接失败：串口未打开");
         return false;
     }
@@ -76,7 +76,7 @@ bool STM32Serial::reConnect() {
  * @brief 断开 STM32 串口连接
  */
 void STM32Serial::disConnect() {
-    if (_serial_.isOpen()) {
+    if(_serial_.isOpen()) {
         _serial_.close();
     }
     _is_connected_ = false;
@@ -88,7 +88,7 @@ void STM32Serial::disConnect() {
  * @param data 要发送的数据
  */
 void STM32Serial::sendData(const std::string& data) {
-    if (!_is_connected_) {
+    if(!_is_connected_) {
         ROS_ERROR("STM32Serial 发送数据失败：未连接");
         return;
     }
@@ -105,18 +105,18 @@ void STM32Serial::sendData(const std::string& data) {
 std::string STM32Serial::rcvdData(uint32_t timeout_ms) {
     std::string data;
 
-    if (!_is_connected_) {
+    if(!_is_connected_) {
         ROS_ERROR("STM32Serial 接收数据失败：未连接");
         return data;
     }
 
-    if (timeout_ms > 0) {
+    if(timeout_ms > 0) {
         serial::Timeout timeout = serial::Timeout::simpleTimeout(timeout_ms);
         _serial_.setTimeout(timeout);
     }
 
     size_t bytes_available = _serial_.available();
-    if (bytes_available > 0) {
+    if(bytes_available > 0) {
         data = _serial_.read(bytes_available);
         ROS_INFO("STM32Serial 接收数据成功，字节数：%zu", data.size());
     }
@@ -131,7 +131,7 @@ std::string STM32Serial::rcvdData(uint32_t timeout_ms) {
  * @brief 清空 STM32 串口缓冲区
  */
 void STM32Serial::clearBuffer(void) {
-    if (!_is_connected_) {
+    if(!_is_connected_) {
         ROS_ERROR("STM32Serial 清空缓冲区失败：未连接");
         return;
     }

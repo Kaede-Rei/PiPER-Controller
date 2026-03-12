@@ -38,9 +38,9 @@ micromamba create -n ros_env -c conda-forge -c robostack-noetic \
     compilers cxx-compiler c-compiler binutils sysroot_linux-64
 pip install python-can piper_sdk
 # build the workspace
-. ./ros_env/use-mamba-gcc.sh
-cd piper_ros && catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && source devel/setup.bash
-cd ../piper_controller && catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+. ./ros_env/use-mamba-gcc.sh && cd piper_ros && catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && source devel/setup.bash && cd ../piper_controller && catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && source devel/setup.bash && cd ..
+# or if you need clangd
+. ./ros_env/use-mamba-gcc.sh && cd piper_ros && catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && source devel/setup.bash && cd ../piper_controller && catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && source devel/setup.bash && cd .. && ln -sf ../piper_controller/build/compile_commands.json ./build/compile_commands.json
 # run the demo
 cd .. && ./piper-start.sh
 ```

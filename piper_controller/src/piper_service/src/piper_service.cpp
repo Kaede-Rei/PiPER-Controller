@@ -27,7 +27,7 @@ static bool CheckLifterIsNeed(double z, STM32Serial& serialer);
 Server::Server(ros::NodeHandle& nh, const std::string& plan_group)
     : _eef_controller_(nh, plan_group), _task_planner_(_eef_controller_),
     _stm32_serialer_(nh, STM32_SERIAL_PORT, 115200) {
-    if (!_stm32_serialer_.connect()) {
+    if(!_stm32_serialer_.connect()) {
         ROS_ERROR("STM32 串口连接失败：%s", STM32_SERIAL_PORT);
     }
 
