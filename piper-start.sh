@@ -20,6 +20,18 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# source ROS 环境
+if [ -f "$SCRIPT_DIR/piper_ros/devel/setup.bash" ]; then
+    source "$SCRIPT_DIR/piper_ros/devel/setup.bash"
+else
+    echo "未找到 PiPER ROS 工作空间，请先编译 ROS 包"
+fi
+if [ -f "$SCRIPT_DIR/piper_controller/devel/setup.bash" ]; then
+    source "$SCRIPT_DIR/piper_controller/devel/setup.bash"
+else
+    echo "未找到 PiPER Controller 工作空间，请先编译 ROS 包"
+fi
+
 # 默认参数
 DISABLE_ON_EXIT=false
 DELAY_SEC=2
@@ -80,7 +92,7 @@ echo "================ 启动 Piper 系统 ================"
 
 # 激活 CAN
 echo "[1/2] 配置 CAN 接口"
-sudo "./can-activate.sh"
+sudo "$SCRIPT_DIR/can-activate.sh"
 echo "[CAN] 配置完成"
 
 # 启动 ROS
