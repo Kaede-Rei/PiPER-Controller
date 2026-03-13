@@ -836,17 +836,17 @@ SearchReachablePose_e ArmController::search_reachable_pose(
         return exact_result;
     }
 
-    geometry_msgs::Pose target_pose_eef;
-    if(base_to_end_tf(target_pose, target_pose_eef) != ErrorCode::SUCCESS) {
-        ROS_ERROR("目标位姿转换到末端坐标系失败，A* 可达性搜索终止。");
-        return SearchReachablePose_e::SOLUTION_NOT_FOUND;
-    }
+    geometry_msgs::TransformStamped tf_stamped = _tf_buffer_.lookupTransform(_eef_link_, _base_link_, ros::Time(0), ros::Duration(1.0));
+    geometry_msgs::TransformStamped tf_stamped_inv = _tf_buffer_.lookupTransform(_base_link_, _eef_link_, ros::Time(0), ros::Duration(1.0));
+
+    geometry_msgs::Pose target_pose_eef = target_pose;
+    tf2::doTransform(target_pose_eef, target_pose_eef, tf_stamped);
 
     ros::NodeHandle pnh("~");
-    double step_deg = 5.0;
+    double step_deg = 3.0;
     double radius_deg = 30.0;
-    int max_expand = 168;
-    pnh.param("reachable_pose_search/step_deg", step_deg, 5.0);
+    int max_expand = 440;
+    pnh.param("reachable_pose_search/step_deg", step_deg, 3.0);
     pnh.param("reachable_pose_search/radius_deg", radius_deg, 30.0);
     max_expand = std::pow((2 * static_cast<int>(radius_deg / step_deg) + 1), 2) - 1;
 
@@ -912,12 +912,11 @@ SearchReachablePose_e ArmController::search_reachable_pose(
 
         if(current_node.depth > 0) {
             geometry_msgs::Pose pose_candidate_base;
-            if(end_to_base_tf(current_node.pose, pose_candidate_base) == ErrorCode::SUCCESS) {
-                auto approx_result = try_ik(pose_candidate_base, current_node.h_cost, SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND);
-                if(approx_result == SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND) {
-                    ROS_INFO("A* 搜索到近似可达位姿：droll=%.2f°, dpitch=%.2f°", droll * 180.0 / M_PI, dpitch * 180.0 / M_PI);
-                    return approx_result;
-                }
+            tf2::doTransform(current_node.pose, pose_candidate_base, tf_stamped_inv);
+            auto approx_result = try_ik(pose_candidate_base, current_node.h_cost, SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND);
+            if(approx_result == SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND) {
+                ROS_INFO("A* 搜索到近似可达位姿：droll=%.2f°, dpitch=%.2f°", droll * 180.0 / M_PI, dpitch * 180.0 / M_PI);
+                return approx_result;
             }
         }
 
