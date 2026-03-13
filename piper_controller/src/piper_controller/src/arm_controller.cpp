@@ -1,0 +1,893 @@
+#include "piper_controller/arm_controller.hpp"
+
+#include <cmath>
+#include <queue>
+#include <sstream>
+
+#include <moveit/robot_trajectory/robot_trajectory.h>
+#include <moveit/trajectory_processing/iterative_spline_parameterization.h>
+#include <moveit/trajectory_processing/time_optimal_trajectory_generation.h>
+#include <shape_msgs/SolidPrimitive.h>
+#include <tf2/LinearMath/Quaternion.h>
+
+namespace piper {
+
+// ! ========================= 接 口 类 / 函 数 实 现 ========================= ! //
+
+/**
+ * @brief ArmController 构造函数：初始化 MoveGroupInterface、TF 与参数
+ * @param group_name 机械臂规划组名称
+ */
+ArmController::ArmController(const std::string& group_name)
+    : _arm_(group_name),
+    _tf_listener_(_tf_buffer_),
+    _base_link_(_arm_.getPlanningFrame()),
+    _eef_link_(_arm_.getEndEffectorLink()) {
+
+    ROS_INFO("Planning Frame - %s 已创建", _base_link_.c_str());
+    ROS_INFO("End Effector Link - %s 已创建", _eef_link_.c_str());
+
+    ros::NodeHandle pnh("~");
+
+    pnh.param("decartes/vel_scale", _vel_scale_, 0.1);
+    pnh.param("decartes/acc_scale", _acc_scale_, 0.1);
+    pnh.param("decartes/eef_step", _eef_step_, 0.01);
+    pnh.param("decartes/jump_threshold", _jump_threshold_, 0.0);
+    pnh.param("decartes/min_success_rate", _min_success_rate_, 0.8);
+
+    double planning_time = 5.0;
+    int planning_attempts = 10;
+    double motion_vel_scale = 0.1;
+    double motion_acc_scale = 0.1;
+    std::string planner_id = "RRTConnect";
+
+    pnh.param("motion_planning/planning_time", planning_time, 5.0);
+    pnh.param("motion_planning/planning_attempts", planning_attempts, 10);
+    pnh.param("motion_planning/max_velocity_scaling_factor", motion_vel_scale, 0.1);
+    pnh.param("motion_planning/max_acceleration_scaling_factor", motion_acc_scale, 0.1);
+    pnh.param("motion_planning/planner_id", planner_id, std::string("RRTConnect"));
+
+    _arm_.setPlanningTime(planning_time);
+    _arm_.setNumPlanningAttempts(planning_attempts);
+    _arm_.setMaxVelocityScalingFactor(motion_vel_scale);
+    _arm_.setMaxAccelerationScalingFactor(motion_acc_scale);
+    _arm_.setPlannerId(planner_id);
+
+    ros::Duration(1.0).sleep();
+
+    try {
+        if(_tf_buffer_.canTransform(_base_link_, _eef_link_, ros::Time(0), ros::Duration(1.0))) {
+            ROS_INFO("TF 变换可用：%s -> %s", _base_link_.c_str(), _eef_link_.c_str());
+        }
+        else {
+            ROS_WARN("TF 变换不可用：%s -> %s", _base_link_.c_str(), _eef_link_.c_str());
+        }
+    }
+    catch(const tf2::TransformException& e) {
+        ROS_WARN("检查 TF 变换时发生异常：%s", e.what());
+    }
+}
+
+/**
+ * @brief 析构函数：等待异步线程退出
+ */
+ArmController::~ArmController() {
+    if(_async_thread_.joinable()) {
+        _async_thread_.join();
+    }
+}
+
+/**
+ * @brief 回到命名位姿 home
+ */
+void ArmController::home() {
+    ROS_INFO("将末端执行器复位到 home 位姿");
+    _arm_.setNamedTarget("home");
+    _arm_.move();
+}
+
+/**
+ * @brief 设置目标关节值
+ * @param joint_values 关节值向量
+ * @return 错误码
+ */
+ErrorCode ArmController::set_joints(const std::vector<double>& joint_values) {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，无法设置新目标");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+    bool success = _arm_.setJointValueTarget(joint_values);
+    return success ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
+}
+
+/**
+ * @brief 设置末端目标（底座坐标系），Pose 目标优先尝试 A* 可达性搜索
+ * @param target 目标位姿/位置/姿态
+ * @return 错误码
+ */
+ErrorCode ArmController::set_target(const TargetVariant& target) {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，无法设置新目标");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    bool success = std::visit(variant_visitor{
+        [this](const geometry_msgs::Pose& pose) {
+            geometry_msgs::Pose current_pose = this->_arm_.getCurrentPose().pose;
+            double score = -1.0;
+            std::vector<double> joint_positions;
+            geometry_msgs::Pose reachable_pose;
+
+            auto result = search_reachable_pose(current_pose, pose, score, joint_positions, reachable_pose);
+            if(result == SearchReachablePose_e::SOLUTION_FOUND || result == SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND) {
+                bool res = this->_arm_.setJointValueTarget(joint_positions);
+                ROS_INFO("设置目标位姿（A*关节解）是否成功：%s", res ? "是" : "否");
+                return res;
+            }
+
+            bool res = this->_arm_.setPoseTarget(pose);
+            ROS_INFO("设置目标位姿是否成功：%s", res ? "是" : "否");
+            return res;
+        },
+        [this](const geometry_msgs::Point& point) {
+            bool res = this->_arm_.setPositionTarget(point.x, point.y, point.z);
+            ROS_INFO("设置目标位置是否成功：%s", res ? "是" : "否");
+            return res;
+        },
+        [this](const geometry_msgs::Quaternion& quat) {
+            bool res = this->_arm_.setOrientationTarget(quat.x, quat.y, quat.z, quat.w);
+            ROS_INFO("设置目标姿态是否成功：%s", res ? "是" : "否");
+            return res;
+        },
+        [this](const geometry_msgs::PoseStamped& pose_stamped) {
+            bool res = this->_arm_.setPoseTarget(pose_stamped);
+            ROS_INFO("设置目标位姿（带时间戳）是否成功：%s", res ? "是" : "否");
+            return res;
+        }
+        }, target);
+
+    return success ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
+}
+
+/**
+ * @brief 设置末端目标（末端坐标系）
+ * @param target 目标位姿/位置/姿态
+ * @return 错误码
+ */
+ErrorCode ArmController::set_target_in_eef_frame(const TargetVariant& target) {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，无法设置新目标");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    bool success = std::visit(variant_visitor{
+        [this](const geometry_msgs::Pose& pose) {
+            geometry_msgs::Pose transformed_pose;
+            if(end_to_base_tf(pose, transformed_pose) != ErrorCode::SUCCESS) return false;
+            return this->set_target(transformed_pose) == ErrorCode::SUCCESS;
+        },
+        [this](const geometry_msgs::Point& point) {
+            geometry_msgs::Point transformed_point;
+            if(end_to_base_tf(point, transformed_point) != ErrorCode::SUCCESS) return false;
+            bool res = this->_arm_.setPositionTarget(transformed_point.x, transformed_point.y, transformed_point.z);
+            ROS_INFO("设置末端坐标系目标位置是否成功：%s", res ? "是" : "否");
+            return res;
+        },
+        [this](const geometry_msgs::Quaternion& quat) {
+            geometry_msgs::Quaternion transformed_quat;
+            if(end_to_base_tf(quat, transformed_quat) != ErrorCode::SUCCESS) return false;
+            bool res = this->_arm_.setOrientationTarget(transformed_quat.x, transformed_quat.y, transformed_quat.z, transformed_quat.w);
+            ROS_INFO("设置末端坐标系目标姿态是否成功：%s", res ? "是" : "否");
+            return res;
+        },
+        [this](const geometry_msgs::PoseStamped& pose_stamped) {
+            geometry_msgs::PoseStamped transformed_pose_stamped;
+            if(end_to_base_tf(pose_stamped, transformed_pose_stamped) != ErrorCode::SUCCESS) return false;
+            return this->set_target(transformed_pose_stamped.pose) == ErrorCode::SUCCESS;
+        }
+        }, target);
+
+    return success ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
+}
+
+/**
+ * @brief 清空当前目标
+ */
+void ArmController::clear_target() {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，无法清除目标");
+        return;
+    }
+    _arm_.clearPoseTargets();
+    ROS_INFO("已清除所有目标位姿");
+}
+
+/**
+ * @brief 末端伸缩设置
+ * @param length 伸缩长度（米）
+ * @return 错误码
+ */
+ErrorCode ArmController::telescopic_end(double length) {
+    geometry_msgs::Pose point;
+    point.position.x = 0.0;
+    point.position.y = 0.0;
+    point.position.z = length;
+    point.orientation = rpy_to_quaternion(0.0, 0.0, 0.0);
+
+    return set_target_in_eef_frame(point);
+}
+
+/**
+ * @brief 末端旋转设置
+ * @param angle 旋转角（弧度）
+ * @return 错误码
+ */
+ErrorCode ArmController::rotate_end(double angle) {
+    geometry_msgs::Pose pose;
+    pose = rpy_to_pose(0.0, 0.0, angle, 0.0, 0.0, 0.0);
+
+    return set_target_in_eef_frame(pose);
+}
+
+/**
+ * @brief 执行路径规划
+ * @param plan 规划输出
+ * @return 错误码
+ */
+ErrorCode ArmController::plan(moveit::planning_interface::MoveGroupInterface::Plan& plan) {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，无法进行新的规划");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    ROS_INFO("正在规划...");
+
+    moveit::core::MoveItErrorCode err_code = _arm_.plan(plan);
+    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+        ROS_WARN("规划失败，错误码：%d", err_code.val);
+        return ErrorCode::PLANNING_FAILED;
+    }
+
+    ROS_INFO("规划成功");
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 执行规划结果
+ * @param plan 规划输入
+ * @return 错误码
+ */
+ErrorCode ArmController::execute(const moveit::planning_interface::MoveGroupInterface::Plan& plan) {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，无法执行新的规划结果");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    ROS_INFO("正在执行规划结果...");
+
+    moveit::core::MoveItErrorCode err_code = _arm_.execute(plan);
+    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+        ROS_WARN("执行失败，错误码：%d", err_code.val);
+        return ErrorCode::EXECUTION_FAILED;
+    }
+
+    ROS_INFO("执行成功");
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 规划并执行
+ * @return 错误码
+ */
+ErrorCode ArmController::plan_and_execute() {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，无法进行新的规划和执行");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    ROS_INFO("正在规划...");
+
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+
+    moveit::core::MoveItErrorCode err_code = _arm_.plan(plan);
+    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+        ROS_WARN("规划失败，错误码：%d", err_code.val);
+        return ErrorCode::PLANNING_FAILED;
+    }
+
+    ROS_INFO("规划成功，正在执行...");
+    err_code = _arm_.execute(plan);
+    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+        ROS_WARN("执行失败，错误码：%d", err_code.val);
+        return ErrorCode::EXECUTION_FAILED;
+    }
+
+    ROS_INFO("执行成功");
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 异步规划并执行
+ * @param callback 完成回调
+ * @return 错误码
+ */
+ErrorCode ArmController::async_plan_and_execute(std::function<void(ErrorCode)> callback) {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，请稍后再试");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    if(_async_thread_.joinable()) {
+        _async_thread_.join();
+    }
+
+    _is_planning_or_executing_ = true;
+    ROS_INFO("正在异步规划...");
+
+    _async_thread_ = std::thread([this, callback]() {
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        moveit::core::MoveItErrorCode err_code = _arm_.plan(plan);
+        if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+            ROS_WARN("异步规划失败，错误码：%d", err_code.val);
+            _is_planning_or_executing_ = false;
+            if(callback) callback(ErrorCode::PLANNING_FAILED);
+        }
+        else {
+            ROS_INFO("异步规划成功，正在执行...");
+            err_code = _arm_.execute(plan);
+            if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+                ROS_WARN("异步执行失败，错误码：%d", err_code.val);
+                _is_planning_or_executing_ = false;
+                if(callback) callback(ErrorCode::EXECUTION_FAILED);
+            }
+            else {
+                ROS_INFO("异步执行成功");
+                _is_planning_or_executing_ = false;
+                if(callback) callback(ErrorCode::SUCCESS);
+            }
+        }
+        });
+
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 停止当前运动
+ */
+void ArmController::stop() {
+    _arm_.stop();
+    ROS_INFO("已停止当前运动");
+}
+
+/**
+ * @brief 对轨迹做时间参数化
+ * @param trajectory 轨迹输入输出
+ * @param method 时间参数化方法
+ * @param vel_scale 速度缩放
+ * @param acc_scale 加速度缩放
+ * @return 错误码
+ */
+ErrorCode ArmController::parameterize_time(moveit_msgs::RobotTrajectory& trajectory, TimeParamMethod method, double vel_scale, double acc_scale) {
+    robot_trajectory::RobotTrajectory rt(_arm_.getRobotModel(), _arm_.getName());
+    rt.setRobotTrajectoryMsg(*_arm_.getCurrentState(), trajectory);
+
+    bool time_param_success = false;
+    if(method == TimeParamMethod::TOTG) {
+        trajectory_processing::TimeOptimalTrajectoryGeneration totg;
+        time_param_success = totg.computeTimeStamps(rt, vel_scale, acc_scale);
+    }
+    else if(method == TimeParamMethod::ISP) {
+        trajectory_processing::IterativeSplineParameterization isp;
+        time_param_success = isp.computeTimeStamps(rt, vel_scale, acc_scale);
+    }
+    else {
+        ROS_WARN("无效的时间参数化方法");
+        return ErrorCode::TIME_PARAM_FAILED;
+    }
+
+    if(!time_param_success) {
+        ROS_WARN("时间参数化失败");
+        return ErrorCode::TIME_PARAM_FAILED;
+    }
+
+    rt.getRobotTrajectoryMsg(trajectory);
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 笛卡尔轨迹规划
+ * @param waypoints 路径点
+ * @param eef_step 末端步长
+ * @param jump_threshold 跳跃阈值
+ * @param time_param_method 时间参数化方法
+ * @param vel_scale 速度缩放
+ * @param acc_scale 加速度缩放
+ * @return 规划结果
+ */
+DescartesResult ArmController::plan_decartes(const std::vector<geometry_msgs::Pose>& waypoints, double eef_step, double jump_threshold, TimeParamMethod time_param_method, double vel_scale, double acc_scale) {
+    DescartesResult result;
+    result.error_code = ErrorCode::SUCCESS;
+
+    if(_is_planning_or_executing_) {
+        result.message = "当前已有异步任务正在执行，无法进行新的笛卡尔规划";
+        return result;
+    }
+
+    if(waypoints.empty()) {
+        result.error_code = ErrorCode::EMPTY_WAYPOINTS;
+        result.message = "路径点列表为空";
+        return result;
+    }
+
+    moveit_msgs::RobotTrajectory trajectory;
+    double success_rate = _arm_.computeCartesianPath(waypoints, eef_step, trajectory);
+    result.success_rate = success_rate;
+
+    if(success_rate <= 0.0) {
+        result.error_code = ErrorCode::DESCARTES_PLANNING_FAILED;
+        result.message = "笛卡尔路径规划失败，无法生成有效的轨迹";
+        return result;
+    }
+
+    if(parameterize_time(trajectory, time_param_method, vel_scale, acc_scale) != ErrorCode::SUCCESS) {
+        result.error_code = ErrorCode::TIME_PARAM_FAILED;
+        result.message = "时间参数化失败";
+        return result;
+    }
+    result.trajectory = trajectory;
+
+    if(success_rate < _min_success_rate_) {
+        result.error_code = ErrorCode::SUCCESS;
+        std::stringstream ss;
+        ss << "笛卡尔路径规划失败，成功率：" << (success_rate * 100.0) << "%";
+        result.message = ss.str();
+    }
+    else {
+        result.error_code = ErrorCode::SUCCESS;
+        std::stringstream ss;
+        ss << "笛卡尔路径规划成功，成功率：" << (success_rate * 100.0) << "%";
+        result.message = ss.str();
+    }
+
+    return result;
+}
+
+/**
+ * @brief 规划直线路径
+ * @return 规划结果
+ */
+DescartesResult ArmController::set_line(const TargetVariant& start, const TargetVariant& end, double eef_step, double jump_threshold, TimeParamMethod time_param_method, double vel_scale, double acc_scale) {
+    geometry_msgs::Pose start_pose;
+    geometry_msgs::Pose end_pose;
+
+    start_pose = extract_pose_from_target(start);
+    end_pose = extract_pose_from_target(end);
+
+    std::vector<geometry_msgs::Pose> waypoints;
+    waypoints.push_back(start_pose);
+    waypoints.push_back(end_pose);
+
+    return plan_decartes(waypoints, eef_step, jump_threshold, time_param_method, vel_scale, acc_scale);
+}
+
+/**
+ * @brief 规划贝塞尔曲线路径
+ * @return 规划结果
+ */
+DescartesResult ArmController::set_bezier_curve(const TargetVariant& start, const TargetVariant& via, const TargetVariant& end, int curve_segments, double eef_step, double jump_threshold, TimeParamMethod time_param_method, double vel_scale, double acc_scale) {
+    geometry_msgs::Pose start_pose;
+    geometry_msgs::Pose via_pose;
+    geometry_msgs::Pose end_pose;
+
+    start_pose = extract_pose_from_target(start);
+    via_pose = extract_pose_from_target(via);
+    end_pose = extract_pose_from_target(end);
+
+    std::vector<geometry_msgs::Pose> waypoints;
+    for(int i = 0; i <= curve_segments; ++i) {
+        double t = static_cast<double>(i) / curve_segments;
+
+        geometry_msgs::Pose point;
+        point.position.x = (1 - t) * (1 - t) * start_pose.position.x + 2 * (1 - t) * t * via_pose.position.x + t * t * end_pose.position.x;
+        point.position.y = (1 - t) * (1 - t) * start_pose.position.y + 2 * (1 - t) * t * via_pose.position.y + t * t * end_pose.position.y;
+        point.position.z = (1 - t) * (1 - t) * start_pose.position.z + 2 * (1 - t) * t * via_pose.position.z + t * t * end_pose.position.z;
+
+        tf2::Quaternion quat_start, quat_end;
+        tf2::Quaternion quat_interp;
+        tf2::fromMsg(start_pose.orientation, quat_start);
+        tf2::fromMsg(end_pose.orientation, quat_end);
+        quat_interp = quat_start.slerp(quat_end, t);
+        quat_interp.normalize();
+        point.orientation = tf2::toMsg(quat_interp);
+
+        waypoints.push_back(point);
+    }
+
+    return plan_decartes(waypoints, eef_step, jump_threshold, time_param_method, vel_scale, acc_scale);
+}
+
+/**
+ * @brief 执行轨迹消息
+ * @param trajectory 轨迹
+ * @return 错误码
+ */
+ErrorCode ArmController::execute(const moveit_msgs::RobotTrajectory& trajectory) {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，无法执行新轨迹");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    ROS_INFO("正在按预设轨迹执行...");
+
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    plan.trajectory_ = trajectory;
+
+    moveit::core::MoveItErrorCode err_code = _arm_.execute(plan);
+    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+        ROS_WARN("执行失败，错误码：%d", err_code.val);
+        return ErrorCode::EXECUTION_FAILED;
+    }
+
+    ROS_INFO("执行成功");
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 异步执行轨迹消息
+ * @param trajectory 轨迹
+ * @param callback 完成回调
+ * @return 错误码
+ */
+ErrorCode ArmController::async_execute(const moveit_msgs::RobotTrajectory& trajectory, std::function<void(ErrorCode)> callback) {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，请稍后再试");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    if(_async_thread_.joinable()) {
+        _async_thread_.join();
+    }
+
+    _is_planning_or_executing_ = true;
+    ROS_INFO("正在异步按预设轨迹执行...");
+
+    _async_thread_ = std::thread([this, trajectory, callback]() {
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        plan.trajectory_ = trajectory;
+
+        moveit::core::MoveItErrorCode err_code = _arm_.execute(plan);
+        if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+            ROS_WARN("异步执行失败，错误码：%d", err_code.val);
+            _is_planning_or_executing_ = false;
+            if(callback) callback(ErrorCode::EXECUTION_FAILED);
+        }
+        else {
+            ROS_INFO("异步执行成功");
+            _is_planning_or_executing_ = false;
+            if(callback) callback(ErrorCode::SUCCESS);
+        }
+        });
+
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 添加姿态约束
+ */
+void ArmController::set_orientation_constraint(const geometry_msgs::Quaternion& target_orientation, double tolerance_x, double tolerance_y, double tolerance_z, double weight) {
+    moveit_msgs::OrientationConstraint ocm;
+    ocm.link_name = _eef_link_;
+    ocm.header.frame_id = _base_link_;
+    ocm.header.stamp = ros::Time::now();
+
+    ocm.orientation = target_orientation;
+    ocm.absolute_x_axis_tolerance = tolerance_x;
+    ocm.absolute_y_axis_tolerance = tolerance_y;
+    ocm.absolute_z_axis_tolerance = tolerance_z;
+    ocm.weight = weight;
+
+    _constraints_.orientation_constraints.push_back(ocm);
+    ROS_INFO("已设置末端执行器姿态约束，目标姿态：(%f, %f, %f, %f)，容忍度：(%f, %f, %f)，权重：%f",
+        target_orientation.x, target_orientation.y, target_orientation.z, target_orientation.w,
+        tolerance_x, tolerance_y, tolerance_z, weight);
+}
+
+/**
+ * @brief 添加位置约束
+ */
+void ArmController::set_position_constraint(const geometry_msgs::Point& target_position, const geometry_msgs::Vector3& scope_size, double weight) {
+    moveit_msgs::PositionConstraint pcm;
+    pcm.link_name = _eef_link_;
+    pcm.header.frame_id = _base_link_;
+    pcm.header.stamp = ros::Time::now();
+
+    pcm.target_point_offset.x = target_position.x;
+    pcm.target_point_offset.y = target_position.y;
+    pcm.target_point_offset.z = target_position.z;
+
+    shape_msgs::SolidPrimitive bounding_volume;
+    bounding_volume.type = shape_msgs::SolidPrimitive::BOX;
+    bounding_volume.dimensions.resize(3);
+    bounding_volume.dimensions = { scope_size.x, scope_size.y, scope_size.z };
+    pcm.constraint_region.primitives.push_back(bounding_volume);
+    pcm.constraint_region.primitive_poses.push_back(geometry_msgs::Pose());
+    pcm.weight = weight;
+
+    _constraints_.position_constraints.push_back(pcm);
+    ROS_INFO("已设置末端执行器位置约束，目标位置：(%f, %f, %f)，范围大小：(%f, %f, %f)，权重：%f",
+        target_position.x, target_position.y, target_position.z,
+        scope_size.x, scope_size.y, scope_size.z, weight);
+}
+
+/**
+ * @brief 添加关节约束
+ */
+void ArmController::set_joint_constraint(const std::string& joint_name, double target_angle, double above, double below, double weight) {
+    moveit_msgs::JointConstraint jc;
+    jc.joint_name = joint_name;
+    jc.position = target_angle;
+    jc.tolerance_above = above;
+    jc.tolerance_below = below;
+    jc.weight = weight;
+
+    _constraints_.joint_constraints.push_back(jc);
+    ROS_INFO("已设置末端执行器关节约束，关节名称：%s，目标角度：%f，上容忍度：%f，下容忍度：%f，权重：%f",
+        joint_name.c_str(), target_angle, above, below, weight);
+}
+
+/**
+ * @brief 应用约束
+ */
+void ArmController::apply_constraints() {
+    _arm_.setPathConstraints(_constraints_);
+    ROS_INFO("已应用所有姿态约束");
+}
+
+/**
+ * @brief 清空约束
+ */
+void ArmController::clear_constraints() {
+    _constraints_ = moveit_msgs::Constraints();
+    _arm_.clearPathConstraints();
+    ROS_INFO("已清除所有姿态约束");
+}
+
+/**
+ * @brief 查询异步任务状态
+ */
+bool ArmController::is_planning_or_executing() const {
+    return _is_planning_or_executing_;
+}
+
+/**
+ * @brief 取消异步任务
+ * @return 错误码
+ */
+ErrorCode ArmController::cancel_async() {
+    if(!_is_planning_or_executing_) {
+        ROS_INFO("当前没有正在进行的异步任务");
+        return ErrorCode::SUCCESS;
+    }
+
+    ROS_INFO("正在取消异步任务...");
+    _arm_.stop();
+
+    if(_async_thread_.joinable()) {
+        _async_thread_.join();
+    }
+
+    _is_planning_or_executing_ = false;
+    ROS_INFO("异步任务已取消");
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief RPY 转四元数
+ */
+geometry_msgs::Quaternion ArmController::rpy_to_quaternion(double roll, double pitch, double yaw) {
+    tf2::Quaternion quat;
+    quat.setRPY(roll, pitch, yaw);
+    quat.normalize();
+
+    geometry_msgs::Quaternion quat_msg;
+    quat_msg.x = quat.x();
+    quat_msg.y = quat.y();
+    quat_msg.z = quat.z();
+    quat_msg.w = quat.w();
+
+    return quat_msg;
+}
+
+/**
+ * @brief RPY + 平移 转 Pose
+ */
+geometry_msgs::Pose ArmController::rpy_to_pose(double roll, double pitch, double yaw, double x, double y, double z) {
+    geometry_msgs::Pose pose;
+    pose.position.x = x;
+    pose.position.y = y;
+    pose.position.z = z;
+    pose.orientation = rpy_to_quaternion(roll, pitch, yaw);
+
+    return pose;
+}
+
+/**
+ * @brief 获取规划组名称
+ */
+const std::string& ArmController::get_arm_name() const {
+    return _arm_.getName();
+}
+
+/**
+ * @brief 获取当前关节值
+ */
+std::vector<double> ArmController::get_current_joints() const {
+    return _arm_.getCurrentJointValues();
+}
+
+/**
+ * @brief 获取当前末端位姿
+ */
+geometry_msgs::Pose ArmController::get_current_pose() const {
+    return _arm_.getCurrentPose().pose;
+}
+
+/**
+ * @brief 获取当前连杆名称
+ */
+std::vector<std::string> ArmController::get_current_link_names() const {
+    return _arm_.getLinkNames();
+}
+
+/**
+ * @brief 关节全部归零并执行
+ * @return 错误码
+ */
+ErrorCode ArmController::reset_to_zero() {
+    std::vector<double> zeroes = get_current_joints();
+    for(auto& value : zeroes) {
+        value = 0.0;
+    }
+    set_joints(zeroes);
+    return plan_and_execute();
+}
+
+// ! ========================= 私 有 函 数 实 现 ========================= ! //
+
+/**
+ * @brief 将 TargetVariant 提取为 Pose
+ */
+geometry_msgs::Pose ArmController::extract_pose_from_target(const TargetVariant& target) const {
+    return std::visit(variant_visitor{
+        [](const geometry_msgs::Pose& pose) {
+            return pose;
+        },
+        [this](const geometry_msgs::Point& point) {
+            geometry_msgs::Pose pose;
+            pose.position = point;
+            pose.orientation = this->get_current_pose().orientation;
+            return pose;
+        },
+        [this](const geometry_msgs::Quaternion& quat) {
+            geometry_msgs::Pose pose;
+            pose.position = this->get_current_pose().position;
+            pose.orientation = quat;
+            return pose;
+        },
+        [](const geometry_msgs::PoseStamped& pose_stamped) {
+            return pose_stamped.pose;
+        }
+        }, target);
+}
+
+/**
+ * @brief A* 搜索最近可达目标位姿
+ * @param current_pose 当前位姿
+ * @param target_pose 目标位姿
+ * @param score 搜索评分输出
+ * @param reachable_joints 可达关节解输出
+ * @param reachable_pose 可达位姿输出
+ * @return 搜索结果
+ */
+SearchReachablePose_e ArmController::search_reachable_pose(
+    const geometry_msgs::Pose& current_pose,
+    const geometry_msgs::Pose& target_pose,
+    double& score,
+    std::vector<double>& reachable_joints,
+    geometry_msgs::Pose& reachable_pose) {
+    ROS_INFO("开始A*尝试搜索最近可达目标...");
+    robot_state::RobotState current_state(*_arm_.getCurrentState());
+    const robot_state::JointModelGroup* joint_model_group = current_state.getJointModelGroup(_arm_.getName());
+
+    double resolution = 0.05;
+    int max_depth = 8;
+    std::priority_queue<AStarNode_t, std::vector<AStarNode_t>, CompareAStarNode> open_list;
+
+    reachable_joints.clear();
+
+    if(current_state.setFromIK(joint_model_group, target_pose, 0.5)) {
+        current_state.copyJointGroupPositions(joint_model_group, reachable_joints);
+        reachable_pose = target_pose;
+        score = 0.0;
+        return SearchReachablePose_e::SOLUTION_FOUND;
+    }
+
+    tf2::Vector3 start_pos(current_pose.position.x, current_pose.position.y, current_pose.position.z);
+    tf2::Vector3 goal_pos(target_pose.position.x, target_pose.position.y, target_pose.position.z);
+    tf2::Vector3 direction = goal_pos - start_pos;
+    double total_dist = direction.length();
+
+    if(total_dist > 1e-6) {
+        direction.normalize();
+    }
+    else {
+        return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+    }
+
+    AStarNode_t start_node;
+    start_node.g_cost = 0;
+    start_node.h_cost = total_dist;
+    start_node.pose = current_pose;
+    start_node.depth = 0;
+    current_state.copyJointGroupPositions(joint_model_group, start_node.joint_positions);
+    open_list.push(start_node);
+
+    AStarNode_t best_node = start_node;
+    double min_dist_to_goal = total_dist;
+
+    while(!open_list.empty()) {
+        AStarNode_t current_node = open_list.top();
+        open_list.pop();
+
+        if(current_node.h_cost < 0.01) {
+            best_node = current_node;
+            break;
+        }
+
+        if(current_node.depth >= max_depth) {
+            continue;
+        }
+
+        for(int i = 1; i <= 3; ++i) {
+            double step = resolution * i;
+            AStarNode_t neighbor;
+            neighbor.depth = current_node.depth + 1;
+
+            tf2::Vector3 cur_pos(current_node.pose.position.x, current_node.pose.position.y, current_node.pose.position.z);
+            tf2::Vector3 next_pos = cur_pos + direction * step;
+
+            neighbor.pose = target_pose;
+            neighbor.pose.position.x = next_pos.x();
+            neighbor.pose.position.y = next_pos.y();
+            neighbor.pose.position.z = next_pos.z();
+
+            neighbor.g_cost = current_node.g_cost + step;
+            neighbor.h_cost = (goal_pos - next_pos).length();
+
+            robot_state::RobotState temp_state(current_state);
+            temp_state.setJointGroupPositions(joint_model_group, current_node.joint_positions);
+
+            if(temp_state.setFromIK(joint_model_group, neighbor.pose, 0.1)) {
+                temp_state.copyJointGroupPositions(joint_model_group, neighbor.joint_positions);
+                open_list.push(neighbor);
+                if(neighbor.h_cost < min_dist_to_goal) {
+                    min_dist_to_goal = neighbor.h_cost;
+                    best_node = neighbor;
+                }
+            }
+        }
+    }
+
+    if(best_node.h_cost < total_dist * 0.99) {
+        reachable_joints = best_node.joint_positions;
+        reachable_pose = best_node.pose;
+        score = best_node.h_cost;
+        ROS_WARN("A*未发现精确解，使用了次优解 (残留误差: %f)", score);
+        return SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND;
+    }
+
+    score = -1.0;
+    return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+}
+
+} /* namespace piper */

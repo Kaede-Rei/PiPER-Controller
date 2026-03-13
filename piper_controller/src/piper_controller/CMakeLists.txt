@@ -133,7 +133,9 @@ include_directories(
 
 ## Declare a C++ library
 add_library(${PROJECT_NAME}
-                src/eef_cmd.cpp
+    src/arm_controller.cpp
+  src/eef_controller.cpp
+    src/tasks_manager.cpp
 )
 
 ## Add cmake target dependencies of the library
@@ -145,7 +147,7 @@ add_library(${PROJECT_NAME}
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(piper_controller 
-#                 src/eef_cmd.cpp
+#     src/arm_controller.cpp
 # )
 
 ## Rename C++ executable without prefix

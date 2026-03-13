@@ -1,9 +1,14 @@
 #ifndef _piper_service_hpp_
 #define _piper_service_hpp_
 
+#include <memory>
+#include <vector>
+
 #include <ros/ros.h>
 
-#include "piper_controller/eef_cmd.hpp"
+#include "piper_controller/arm_controller.hpp"
+#include "piper_controller/eef_controller.hpp"
+#include "piper_controller/tasks_manager.hpp"
 #include "piper_msgs_srvs/piper_cmd.h"
 #include "serial_driver/serial_driver.hpp"
 
@@ -15,25 +20,52 @@ namespace piper {
 
 // ! ========================= 接 口 A P I 声 明 ========================= ! //
 
+/**
+ * @brief Piper 机械臂服务端类
+ */
 class Server {
 public:
+    /**
+     * @brief 构造函数
+     * @param nh ROS 节点句柄
+     * @param plan_group 机械臂规划组名称
+     */
     Server(ros::NodeHandle& nh, const std::string& plan_group);
+
+    /**
+     * @brief 末端控制命令回调
+     */
     bool eefPoseCmdCallback(piper_msgs_srvs::piper_cmd::Request& req,
         piper_msgs_srvs::piper_cmd::Response& res);
+
+    /**
+     * @brief 任务组命令回调
+     */
     bool taskGroupPlannerCallback(piper_msgs_srvs::piper_cmd::Request& req,
         piper_msgs_srvs::piper_cmd::Response& res);
 
 private:
     ros::ServiceServer _srv_eef_cmd_;
     ros::ServiceServer _srv_task_planner_;
-    piper::EefPoseCmd _eef_controller_;
-    piper::TaskGroupPlanner _task_planner_;
+    std::shared_ptr<piper::ArmController> _arm_controller_;
+    std::shared_ptr<piper::EndEffector> _eef_controller_;
+    std::shared_ptr<piper::TasksManager> _task_planner_;
+    std::string _task_group_name_;
+    int _next_task_id_;
     STM32Serial _stm32_serialer_;
 };
 
 class Client {
 public:
+    /**
+     * @brief 构造函数
+     * @param nh ROS 节点句柄
+     */
     Client(ros::NodeHandle& nh);
+
+    /**
+     * @brief 发送命令到指定服务
+     */
     bool sendCmd(ros::ServiceClient& client,
         const piper_msgs_srvs::piper_cmd::Request& req,
         piper_msgs_srvs::piper_cmd::Response& res);

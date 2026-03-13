@@ -86,15 +86,17 @@ void STM32Serial::disConnect() {
 /**
  * @brief 发送数据到 STM32 串口
  * @param data 要发送的数据
+ * @return 发送成功返回 true，失败返回 false
  */
-void STM32Serial::sendData(const std::string& data) {
+bool STM32Serial::sendData(const std::string& data) {
     if(!_is_connected_) {
         ROS_ERROR("STM32Serial 发送数据失败：未连接");
-        return;
+        return false;
     }
 
     size_t bytes_written = _serial_.write(data);
     ROS_INFO("STM32Serial 发送数据成功，字节数：%zu，内容：%s", bytes_written, data.c_str());
+    return true;
 }
 
 /**

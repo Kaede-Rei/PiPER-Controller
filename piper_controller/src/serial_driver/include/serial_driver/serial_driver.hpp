@@ -7,13 +7,13 @@
 #include <linux/can.h>
 #include <net/if.h>
 
-/* ========================= Typedef / 量 定 义 ========================= */
+// ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
 
 typedef struct can_frame CanFrame_t;
 typedef struct sockaddr_can CanAddr_t;
 typedef struct ifreq CanIfReq_t;
 
-/* ========================= 接 口 A P I 声 明 ========================= */
+// ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
 
 /**
  * @brief STM32 串口通信类
@@ -32,7 +32,7 @@ public:
     bool reConnect();
     void disConnect();
 
-    void sendData(const std::string& data);
+    bool sendData(const std::string& data);
     std::string rcvdData(uint32_t timeout_ms = 0);
     void clearBuffer(void);
 
