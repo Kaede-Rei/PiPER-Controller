@@ -8,6 +8,8 @@
 #include <sensor_msgs/JointState.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 
+#include "piper_controller/eef_controller.hpp"
+
 // ! ========================= 宏 定 义 ========================= ! //
 
 #define STM32_SERIAL_PORT "/dev/ttyACM0"

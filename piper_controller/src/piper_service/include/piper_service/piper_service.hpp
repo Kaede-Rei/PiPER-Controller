@@ -6,8 +6,6 @@
 
 #include <ros/ros.h>
 
-#include "piper_controller/arm_controller.hpp"
-#include "piper_controller/eef_controller.hpp"
 #include "piper_controller/tasks_manager.hpp"
 #include "piper_msgs_srvs/piper_cmd.h"
 #include "serial_driver/serial_driver.hpp"

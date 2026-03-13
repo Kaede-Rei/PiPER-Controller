@@ -20,7 +20,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_listener.h>
 
-#include "piper_controller/eef_controller.hpp"
+#include "piper_controller/eef_interface.hpp"
 #include "piper_controller/types.hpp"
 
 namespace piper {
