@@ -1,8 +1,10 @@
 #include "piper_controller/arm_controller.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <queue>
 #include <sstream>
+#include <unordered_map>
 
 #include <moveit/robot_trajectory/robot_trajectory.h>
 #include <moveit/trajectory_processing/iterative_spline_parameterization.h>
@@ -123,6 +125,10 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
                 bool res = this->_arm_.setJointValueTarget(joint_positions);
                 ROS_INFO("设置目标位姿（A*关节解）是否成功：%s", res ? "是" : "否");
                 return res;
+            }
+            else {
+                ROS_INFO("未找到可达解，无法设置目标位姿");
+                return false;
             }
 
             bool res = this->_arm_.setPoseTarget(pose);
@@ -795,98 +801,154 @@ SearchReachablePose_e ArmController::search_reachable_pose(
     double& score,
     std::vector<double>& reachable_joints,
     geometry_msgs::Pose& reachable_pose) {
-    ROS_INFO("开始A*尝试搜索最近可达目标...");
-    robot_state::RobotState current_state(*_arm_.getCurrentState());
-    const robot_state::JointModelGroup* joint_model_group = current_state.getJointModelGroup(_arm_.getName());
+    (void)current_pose;
 
-    double resolution = 0.05;
-    int max_depth = 8;
-    std::priority_queue<AStarNode_t, std::vector<AStarNode_t>, CompareAStarNode> open_list;
-
+    score = -1.0;
     reachable_joints.clear();
+    reachable_pose = target_pose;
 
-    if(current_state.setFromIK(joint_model_group, target_pose, 0.5)) {
-        current_state.copyJointGroupPositions(joint_model_group, reachable_joints);
-        reachable_pose = target_pose;
-        score = 0.0;
-        return SearchReachablePose_e::SOLUTION_FOUND;
-    }
-
-    tf2::Vector3 start_pos(current_pose.position.x, current_pose.position.y, current_pose.position.z);
-    tf2::Vector3 goal_pos(target_pose.position.x, target_pose.position.y, target_pose.position.z);
-    tf2::Vector3 direction = goal_pos - start_pos;
-    double total_dist = direction.length();
-
-    if(total_dist > 1e-6) {
-        direction.normalize();
-    }
-    else {
+    _current_state_ = _arm_.getCurrentState(1.0);
+    if(!_current_state_) {
+        ROS_ERROR("无法获取当前机械臂状态，A* 可达性搜索终止。");
         return SearchReachablePose_e::SOLUTION_NOT_FOUND;
     }
 
-    AStarNode_t start_node;
-    start_node.g_cost = 0;
-    start_node.h_cost = total_dist;
-    start_node.pose = current_pose;
-    start_node.depth = 0;
-    current_state.copyJointGroupPositions(joint_model_group, start_node.joint_positions);
-    open_list.push(start_node);
+    _jmg_ = _current_state_->getJointModelGroup(_arm_.getName());
+    if(!_jmg_) {
+        ROS_ERROR("无法获取关节模型组 '%s'，A* 可达性搜索终止。", _arm_.getName().c_str());
+        return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+    }
 
-    AStarNode_t best_node = start_node;
-    double min_dist_to_goal = total_dist;
-
-    while(!open_list.empty()) {
-        AStarNode_t current_node = open_list.top();
-        open_list.pop();
-
-        if(current_node.h_cost < 0.01) {
-            best_node = current_node;
-            break;
+    auto try_ik = [&](const geometry_msgs::Pose& pose_base, double candidate_score, SearchReachablePose_e state) {
+        moveit::core::RobotState state_copy(*_current_state_);
+        if(!state_copy.setFromIK(_jmg_, pose_base, 0.0)) {
+            return SearchReachablePose_e::SOLUTION_NOT_FOUND;
         }
+        state_copy.copyJointGroupPositions(_jmg_, reachable_joints);
+        reachable_pose = pose_base;
+        score = candidate_score;
+        return state;
+        };
 
-        if(current_node.depth >= max_depth) {
-            continue;
-        }
+    auto exact_result = try_ik(target_pose, 0.0, SearchReachablePose_e::SOLUTION_FOUND);
+    if(exact_result == SearchReachablePose_e::SOLUTION_FOUND) {
+        ROS_INFO("目标位姿可直接到达，无需 A* 搜索。");
+        return exact_result;
+    }
 
-        for(int i = 1; i <= 3; ++i) {
-            double step = resolution * i;
-            AStarNode_t neighbor;
-            neighbor.depth = current_node.depth + 1;
+    geometry_msgs::Pose target_pose_eef;
+    if(base_to_end_tf(target_pose, target_pose_eef) != ErrorCode::SUCCESS) {
+        ROS_ERROR("目标位姿转换到末端坐标系失败，A* 可达性搜索终止。");
+        return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+    }
 
-            tf2::Vector3 cur_pos(current_node.pose.position.x, current_node.pose.position.y, current_node.pose.position.z);
-            tf2::Vector3 next_pos = cur_pos + direction * step;
+    ros::NodeHandle pnh("~");
+    double step_deg = 5.0;
+    double radius_deg = 30.0;
+    int max_expand = 168;
+    pnh.param("reachable_pose_search/step_deg", step_deg, 5.0);
+    pnh.param("reachable_pose_search/radius_deg", radius_deg, 30.0);
+    max_expand = std::pow((2 * static_cast<int>(radius_deg / step_deg) + 1), 2) - 1;
 
-            neighbor.pose = target_pose;
-            neighbor.pose.position.x = next_pos.x();
-            neighbor.pose.position.y = next_pos.y();
-            neighbor.pose.position.z = next_pos.z();
+    const double step = std::max(step_deg, 0.1) * M_PI / 180.0;
+    const double radius = std::max(radius_deg, step_deg) * M_PI / 180.0;
 
-            neighbor.g_cost = current_node.g_cost + step;
-            neighbor.h_cost = (goal_pos - next_pos).length();
+    tf2::Quaternion q_orig;
+    tf2::fromMsg(target_pose_eef.orientation, q_orig);
+    double roll_orig = 0.0;
+    double pitch_orig = 0.0;
+    double yaw_orig = 0.0;
+    tf2::Matrix3x3(q_orig).getRPY(roll_orig, pitch_orig, yaw_orig);
 
-            robot_state::RobotState temp_state(current_state);
-            temp_state.setJointGroupPositions(joint_model_group, current_node.joint_positions);
+    auto encode_key = [](int roll_idx, int pitch_idx) -> std::int64_t {
+        return (static_cast<std::int64_t>(roll_idx) << 32) ^ static_cast<std::uint32_t>(pitch_idx);
+        };
 
-            if(temp_state.setFromIK(joint_model_group, neighbor.pose, 0.1)) {
-                temp_state.copyJointGroupPositions(joint_model_group, neighbor.joint_positions);
-                open_list.push(neighbor);
-                if(neighbor.h_cost < min_dist_to_goal) {
-                    min_dist_to_goal = neighbor.h_cost;
-                    best_node = neighbor;
+    auto heuristic = [](double droll, double dpitch) {
+        return std::hypot(droll, dpitch);
+        };
+
+    auto build_node = [&](double droll, double dpitch, double g_cost, int depth) {
+        AStarNode_t node;
+        node.g_cost = g_cost;
+        node.h_cost = heuristic(droll, dpitch);
+        node.depth = depth;
+        node.pose = target_pose_eef;
+
+        tf2::Quaternion q_candidate;
+        q_candidate.setRPY(roll_orig + droll, pitch_orig + dpitch, yaw_orig);
+        node.pose.orientation = tf2::toMsg(q_candidate);
+        return node;
+        };
+
+    std::priority_queue<AStarNode_t, std::vector<AStarNode_t>, CompareAStarNode> open_set;
+    std::unordered_map<std::int64_t, double> best_g_by_idx;
+
+    open_set.push(build_node(0.0, 0.0, 0.0, 0));
+    best_g_by_idx[encode_key(0, 0)] = 0.0;
+
+    const int dirs[8][2] = {
+        { 1, 0 }, { -1, 0 },
+        { 0, 1 }, { 0, -1 },
+        { 1, 1 }, { -1, -1 },
+        { 1, -1 }, { -1, 1 }
+    };
+
+    int expand_count = 0;
+    while(!open_set.empty() && expand_count < max_expand) {
+        AStarNode_t current_node = open_set.top();
+        open_set.pop();
+        ++expand_count;
+
+        tf2::Quaternion q_current;
+        tf2::fromMsg(current_node.pose.orientation, q_current);
+        double roll_now = 0.0;
+        double pitch_now = 0.0;
+        double yaw_now = 0.0;
+        tf2::Matrix3x3(q_current).getRPY(roll_now, pitch_now, yaw_now);
+
+        const double droll = roll_now - roll_orig;
+        const double dpitch = pitch_now - pitch_orig;
+
+        if(current_node.depth > 0) {
+            geometry_msgs::Pose pose_candidate_base;
+            if(end_to_base_tf(current_node.pose, pose_candidate_base) == ErrorCode::SUCCESS) {
+                auto approx_result = try_ik(pose_candidate_base, current_node.h_cost, SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND);
+                if(approx_result == SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND) {
+                    ROS_INFO("A* 搜索到近似可达位姿：droll=%.2f°, dpitch=%.2f°", droll * 180.0 / M_PI, dpitch * 180.0 / M_PI);
+                    return approx_result;
                 }
             }
         }
+
+        const int roll_idx = static_cast<int>(std::round(droll / step));
+        const int pitch_idx = static_cast<int>(std::round(dpitch / step));
+
+        for(const auto& dir : dirs) {
+            const int next_roll_idx = roll_idx + dir[0];
+            const int next_pitch_idx = pitch_idx + dir[1];
+
+            const double next_droll = next_roll_idx * step;
+            const double next_dpitch = next_pitch_idx * step;
+            if(std::hypot(next_droll, next_dpitch) > radius + 1e-12) {
+                continue;
+            }
+
+            const double move_cost = std::hypot(next_droll - droll, next_dpitch - dpitch);
+            const double next_g = current_node.g_cost + move_cost;
+            const std::int64_t key = encode_key(next_roll_idx, next_pitch_idx);
+
+            auto it = best_g_by_idx.find(key);
+            if(it != best_g_by_idx.end() && it->second <= next_g) {
+                continue;
+            }
+
+            best_g_by_idx[key] = next_g;
+            open_set.push(build_node(next_droll, next_dpitch, next_g, current_node.depth + 1));
+        }
     }
 
-    if(best_node.h_cost < total_dist * 0.99) {
-        reachable_joints = best_node.joint_positions;
-        reachable_pose = best_node.pose;
-        score = best_node.h_cost;
-        ROS_WARN("A*未发现精确解，使用了次优解 (残留误差: %f)", score);
-        return SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND;
-    }
-
-    score = -1.0;
+    ROS_WARN("A* 搜索未找到可达位姿（最大扩展=%d）。", max_expand);
     return SearchReachablePose_e::SOLUTION_NOT_FOUND;
 }
 

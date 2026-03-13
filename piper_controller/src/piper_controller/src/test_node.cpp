@@ -80,7 +80,8 @@ int main(int argc, char** argv) {
         }
 
         // 2) set_target(Pose) + plan + execute
-        geometry_msgs::Pose pose_target = arm->get_current_pose();
+        // geometry_msgs::Pose pose_target = arm->get_current_pose();
+        geometry_msgs::Pose pose_target = arm->rpy_to_pose(0.5, 0.5, 0.5, 0.2, 0.2, 0.3);
         pose_target.position.x += 0.03;
         pose_target.position.z += 0.03;
         log_result("set_target(Pose)", arm->set_target(pose_target));

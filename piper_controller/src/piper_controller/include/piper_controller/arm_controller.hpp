@@ -152,6 +152,11 @@ private:
     /// @brief TF 监听器
     tf2_ros::TransformListener _tf_listener_;
 
+    /// @brief 机械臂关节模型组指针
+    const robot_state::JointModelGroup* _jmg_;
+    /// @brief 当前机械臂状态指针
+    robot_state::RobotStatePtr _current_state_;
+
     /// @brief 规划基坐标系
     const std::string _base_link_;
     /// @brief 末端坐标系
@@ -225,7 +230,6 @@ ErrorCode ArmController::base_to_end_tf(const T& in, T& out) {
                 out = pose_out.pose.orientation;
             }
         }
-        ROS_INFO("坐标变换成功：%s -> %s", _base_link_.c_str(), _eef_link_.c_str());
         return ErrorCode::SUCCESS;
     }
     catch(const tf2::TransformException& e) {
@@ -279,7 +283,6 @@ ErrorCode ArmController::end_to_base_tf(const T& in, T& out) {
                 out = pose_out.pose.orientation;
             }
         }
-        ROS_INFO("坐标变换成功：%s -> %s", _eef_link_.c_str(), _base_link_.c_str());
         return ErrorCode::SUCCESS;
     }
     catch(const tf2::TransformException& e) {
