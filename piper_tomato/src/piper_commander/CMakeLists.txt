@@ -1,26 +1,24 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(piper_controller)
+project(piper_commander)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
-add_compile_options(-std=c++17)
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# add_compile_options(-std=c++11)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
-  actionlib
   geometry_msgs
   moveit_core
   moveit_ros_planning_interface
+  piper_controller
+  piper_msgs
   roscpp
   rospy
   std_msgs
   std_srvs
   tf2_geometry_msgs
   tf2_ros
-  serial_driver
 )
 
 ## System dependencies are found with CMake's conventions
@@ -113,9 +111,9 @@ find_package(catkin REQUIRED COMPONENTS
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-  INCLUDE_DIRS include
-  LIBRARIES piper_controller
-  CATKIN_DEPENDS actionlib geometry_msgs moveit_core moveit_ros_planning_interface roscpp rospy std_msgs std_srvs tf2_geometry_msgs tf2_ros
+#  INCLUDE_DIRS include
+#  LIBRARIES piper_commander
+#  CATKIN_DEPENDS geometry_msgs moveit_core moveit_ros_planning_interface piper_controller piper_msgs_srvs roscpp rospy serial_driver std_msgs std_srvs tf2_geometry_msgs tf2_ros
 #  DEPENDS system_lib
 )
 
@@ -131,11 +129,9 @@ include_directories(
 )
 
 ## Declare a C++ library
-add_library(${PROJECT_NAME}
-    src/arm_controller.cpp
-    src/eef_controller.cpp
-    src/tasks_manager.cpp
-)
+# add_library(${PROJECT_NAME}
+#   src/${PROJECT_NAME}/piper_commander.cpp
+# )
 
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
@@ -145,7 +141,7 @@ add_library(${PROJECT_NAME}
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
-add_executable(test_node src/test_node.cpp)
+add_executable(piper_commander src/piper_service.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -158,12 +154,7 @@ add_executable(test_node src/test_node.cpp)
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
-target_link_libraries(piper_controller 
-  ${catkin_LIBRARIES}
-)
-
-target_link_libraries(test_node
-  piper_controller
+target_link_libraries(piper_commander
   ${catkin_LIBRARIES}
 )
 
@@ -214,7 +205,7 @@ target_link_libraries(test_node
 #############
 
 ## Add gtest based cpp test target and link libraries
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_piper_controller.cpp)
+# catkin_add_gtest(${PROJECT_NAME}-test test/test_piper_commander.cpp)
 # if(TARGET ${PROJECT_NAME}-test)
 #   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
 # endif()

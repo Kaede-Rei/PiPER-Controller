@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-    <name>piper_controller</name>
+    <name>piper_commander</name>
     <version>0.0.0</version>
-    <description>The piper_controller package</description>
+    <description>The piper_commander package</description>
 
     <maintainer email="kaerei@foxmail.com">Kaede Rei</maintainer>
 
@@ -11,16 +11,17 @@
     <buildtool_depend>catkin</buildtool_depend>
 
     <depend>geometry_msgs</depend>
-    <depend>serial_driver</depend>
+    <depend>moveit_core</depend>
+    <depend>moveit_ros_planning_interface</depend>
     <depend>roscpp</depend>
     <depend>rospy</depend>
     <depend>std_msgs</depend>
     <depend>std_srvs</depend>
     <depend>tf2_geometry_msgs</depend>
     <depend>tf2_ros</depend>
-    <depend>actionlib</depend>
-    <depend>moveit_core</depend>
-    <depend>moveit_ros_planning_interface</depend>
+
+    <depend>piper_controller</depend>
+    <depend>piper_msgs</depend>
 
     <export>
 
