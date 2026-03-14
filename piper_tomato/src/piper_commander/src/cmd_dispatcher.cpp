@@ -1,4 +1,4 @@
-#include "piper_commander/piper_service.hpp"
+#include "piper_commander/cmd_dispatcher.hpp"
 
 // ! ========================= 宏 定 义 ========================= ! //
 
@@ -18,7 +18,4 @@
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
 
-int main(int argc, char** argv) {
 
-    return 0;
-}

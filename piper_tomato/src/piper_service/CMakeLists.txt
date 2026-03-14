@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   moveit_core
   moveit_ros_planning_interface
   piper_controller
+  piper_commander
   piper_msgs_srvs
   roscpp
   rospy

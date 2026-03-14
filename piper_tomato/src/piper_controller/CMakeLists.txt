@@ -134,7 +134,6 @@ include_directories(
 add_library(${PROJECT_NAME}
     src/arm_controller.cpp
     src/eef_controller.cpp
-    src/tasks_manager.cpp
 )
 
 ## Add cmake target dependencies of the library

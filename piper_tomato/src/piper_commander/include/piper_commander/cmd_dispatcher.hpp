@@ -1,5 +1,5 @@
-#ifndef _piper_service_hpp_
-#define _piper_service_hpp_
+#ifndef _cmd_dispatcher_hpp_
+#define _cmd_dispatcher_hpp_
 
 // ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
 
