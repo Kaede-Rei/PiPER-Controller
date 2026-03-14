@@ -114,6 +114,10 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
     }
 
     bool success = std::visit(variant_visitor{
+        [this](const std::monostate&) {
+            ROS_WARN("目标未设置");
+            return false;
+        },
         [this](const geometry_msgs::Pose& pose) {
             geometry_msgs::Pose current_pose = this->_arm_.getCurrentPose().pose;
             double score = -1.0;
@@ -167,6 +171,10 @@ ErrorCode ArmController::set_target_in_eef_frame(const TargetVariant& target) {
     }
 
     bool success = std::visit(variant_visitor{
+        [this](const std::monostate&) {
+            ROS_WARN("目标未设置");
+            return false;
+        },
         [this](const geometry_msgs::Pose& pose) {
             geometry_msgs::Pose transformed_pose;
             if(end_to_base_tf(pose, transformed_pose) != ErrorCode::SUCCESS) return false;
@@ -783,6 +791,17 @@ ErrorCode ArmController::reset_to_zero() {
  */
 geometry_msgs::Pose ArmController::extract_pose_from_target(const TargetVariant& target) const {
     return std::visit(variant_visitor{
+        [](const std::monostate&) {
+            geometry_msgs::Pose default_pose;
+            default_pose.position.x = 0.0;
+            default_pose.position.y = 0.0;
+            default_pose.position.z = 0.0;
+            default_pose.orientation.x = 0.0;
+            default_pose.orientation.y = 0.0;
+            default_pose.orientation.z = 0.0;
+            default_pose.orientation.w = 1.0;
+            return default_pose;
+        },
         [](const geometry_msgs::Pose& pose) {
             return pose;
         },

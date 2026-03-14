@@ -15,6 +15,7 @@ namespace piper {
  * @brief ErrorCode 枚举类：用于表示机械臂和末端执行器命令执行过程中可能出现的各种错误情况
  * @param SUCCESS 表示操作成功完成
  * @param FAILURE 表示操作失败，无具体错误信息
+ * @param CANCELLED 表示操作被取消，可能是由于用户请求或其他原因导致
  *
  * @param ASYNC_TASK_RUNNING 表示当前已有异步任务正在执行，无法执行新任务
  * @param INVALID_TARGET_TYPE 表示提供的目标类型无效，无法识别或处理
@@ -35,6 +36,7 @@ namespace piper {
 enum class ErrorCode {
     SUCCESS = 0,
     FAILURE,
+    CANCELLED,
 
     ASYNC_TASK_RUNNING,
     INVALID_TARGET_TYPE,
@@ -62,6 +64,7 @@ inline std::string err_to_string(ErrorCode code) {
     switch(code) {
         case ErrorCode::SUCCESS: return "SUCCESS";
         case ErrorCode::FAILURE: return "FAILURE";
+        case ErrorCode::CANCELLED: return "CANCELLED";
         case ErrorCode::ASYNC_TASK_RUNNING: return "ASYNC_TASK_RUNNING";
         case ErrorCode::INVALID_TARGET_TYPE: return "INVALID_TARGET_TYPE";
         case ErrorCode::TF_TRANSFORM_FAILED: return "TF_TRANSFORM_FAILED";
@@ -88,6 +91,7 @@ inline std::string err_to_string(ErrorCode code) {
  * @param PoseStamped 可用于带时间戳的坐标变换，适用于需要考虑时间因素的场景
  */
 using TargetVariant = std::variant<
+    std::monostate,
     geometry_msgs::Pose,
     geometry_msgs::Point,
     geometry_msgs::Quaternion,

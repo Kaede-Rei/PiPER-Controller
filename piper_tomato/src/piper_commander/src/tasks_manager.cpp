@@ -325,6 +325,13 @@ ErrorCode TasksManager::sort_tasks(TaskGroup& task_group) {
  */
 double TasksManager::calculate_dist(const TargetVariant& base, const TargetVariant& target, float weight_orient) {
     auto get_position = variant_visitor{
+        [](std::monostate) {
+            geometry_msgs::Point zero_point;
+            zero_point.x = 0.0;
+            zero_point.y = 0.0;
+            zero_point.z = 0.0;
+            return zero_point;
+        },
         [](const geometry_msgs::Pose& pose) {return pose.position; },
         [](const geometry_msgs::Point& point) {return point; },
         [](const geometry_msgs::Quaternion&) {
@@ -342,6 +349,14 @@ double TasksManager::calculate_dist(const TargetVariant& base, const TargetVaria
 
     double orient_dist = 0.0;
     auto get_orientation = variant_visitor{
+        [](std::monostate) {
+            geometry_msgs::Quaternion zero_quat;
+            zero_quat.x = 0.0;
+            zero_quat.y = 0.0;
+            zero_quat.z = 0.0;
+            zero_quat.w = 1.0;
+            return zero_quat;
+        },
         [](const geometry_msgs::Pose& pose) {return pose.orientation; },
         [](const geometry_msgs::Point&) {
             geometry_msgs::Quaternion zero_quat;

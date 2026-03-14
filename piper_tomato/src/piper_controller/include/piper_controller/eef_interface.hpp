@@ -216,6 +216,10 @@ public:
      */
     TargetVariant tcp_to_flange(const TargetVariant& tcp_target) const {
         return std::visit(variant_visitor{
+            [this](std::monostate) -> TargetVariant {
+                ROS_WARN("目标未设置");
+                return std::monostate{};
+            },
             [this](const geometry_msgs::Pose& pose) -> TargetVariant {
                 return pose_multiply(pose, pose_inverse(this->_tf_flange_tcp_));
             },
@@ -249,6 +253,10 @@ public:
      */
     TargetVariant flange_to_tcp(const TargetVariant& flange_target) const {
         return std::visit(variant_visitor{
+            [this](std::monostate) -> TargetVariant {
+                ROS_WARN("目标未设置");
+                return std::monostate{};
+            },
             [this](const geometry_msgs::Pose& pose) -> TargetVariant {
                 return pose_multiply(pose, this->_tf_flange_tcp_);
             },

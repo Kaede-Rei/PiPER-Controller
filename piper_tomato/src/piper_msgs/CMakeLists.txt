@@ -16,14 +16,13 @@ find_package(catkin REQUIRED COMPONENTS
 
 add_service_files(
     FILES
-    piper_cmd.srv
+    
 )
 
-# add_action_files(
-#   FILES
-#   Action1.action
-#   Action2.action
-# )
+add_action_files(
+    FILES
+
+)
 
 generate_messages(
     DEPENDENCIES
