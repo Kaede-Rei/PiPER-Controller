@@ -30,7 +30,8 @@ namespace piper {
  * @param MAX 枚举值数量，用于验证输入合法性
  */
 enum class ArmCmdType {
-    HOME = 0,
+    MIN = 0,
+    HOME,
     MOVE_JOINTS,
     MOVE_TARGET,
     MOVE_TARGET_IN_EEF_FRAME,

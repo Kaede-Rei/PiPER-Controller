@@ -38,6 +38,8 @@ ArmCmdResult ArmCmdDispatcher::dispatch(const ArmCmdRequest& req, FeedbackCb cb)
     _is_cancelled_.store(false);
 
     switch(req.type) {
+        case ArmCmdType::MIN:
+            return make_err(ErrorCode::FAILURE, "无效的命令类型：MIN");
         case ArmCmdType::HOME:
             return handle_home(req);
         case ArmCmdType::MOVE_JOINTS:
@@ -446,8 +448,10 @@ ArmCmdResult ArmCmdDispatcher::handle_set_joint_constraint(const ArmCmdRequest& 
         return make_err(ErrorCode::FAILURE, "关节约束值列表不能为空");
     }
 
+    uint8_t joint_count = 0;
     for(const std::string& joint_name : req.joint_names) {
-        _arm_->set_joint_constraint(joint_name, req.values[0], req.values[1], req.values[2]);
+        _arm_->set_joint_constraint(joint_name, req.joints[joint_count], req.values[joint_count * 2], req.values[joint_count * 2 + 1]);
+        joint_count++;
     }
 
     return make_ok();

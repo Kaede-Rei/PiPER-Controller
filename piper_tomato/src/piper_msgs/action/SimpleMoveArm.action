@@ -12,15 +12,17 @@ uint8 MOVE_BEZIER=8
 uint8 MOVE_DECARTES=9
 uint8 MOVE_TO_ZERO=16
 
-# 标准位姿字段
+# 通用位姿字段
 uint8 target_type
 uint8 TARGET_POSE=0
 uint8 TARGET_POINT=1
-uint8 TARGET_QUATERNION=2
-geometry_msgs/Pose pose
-geometry_msgs/Point point
-geometry_msgs/Quaternion quaternion
-geometry_msgs/Pose[] waypoints
+uint8 TARGET_ORIENTATION=2
+float64[] x
+float64[] y
+float64[] z
+float64[] roll
+float64[] pitch
+float64[] yaw
 
 # 目标关节名称
 string[] joint_names
@@ -39,11 +41,13 @@ bool success
 string message
 int32 error_code
 
-# 标准位姿字段
-geometry_msgs/Pose cur_pose
-geometry_msgs/Point point
-geometry_msgs/Quaternion quaternion
-geometry_msgs/Pose[] waypoints
+# 通用位姿字段
+float64 cur_x
+float64 cur_y
+float64 cur_z
+float64 cur_roll
+float64 cur_pitch
+float64 cur_yaw
 
 # 当前关节角列表
 float64[] cur_joint
@@ -56,11 +60,13 @@ string stage
 float64 progress
 string message
 
-# 标准位姿字段
-geometry_msgs/Pose cur_pose
-geometry_msgs/Point point
-geometry_msgs/Quaternion quaternion
-geometry_msgs/Pose[] waypoints
+# 通用位姿字段
+float64 cur_x
+float64 cur_y
+float64 cur_z
+float64 cur_roll
+float64 cur_pitch
+float64 cur_yaw
 
 # 当前关节角列表
 float64[] cur_joint

@@ -23,6 +23,7 @@ add_service_files(
 add_action_files(
     FILES
     MoveArm.action
+    SimpleMoveArm.action
 )
 
 generate_messages(
