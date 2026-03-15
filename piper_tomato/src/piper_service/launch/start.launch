@@ -1,6 +1,0 @@
-<launch>
-    <include file="$(find piper)/launch/start_single_piper.launch" />
-    <node name="delay_for_moveit" pkg="roscpp_tutorials" type="talker" launch-prefix="bash -c 'sleep 3; exec '" output="screen" />
-    <include file="$(find piper_with_gripper_moveit)/launch/demo.launch" />
-    <node pkg="piper_service" type="piper_service" name="piper_service" output="screen" />
-</launch>

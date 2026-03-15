@@ -1,19 +1,12 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(piper_service)
+project(piper_interface)
 
-## Compile as C++11, supported in ROS Kinetic and newer
-# add_compile_options(-std=c++11)
-
-## Find catkin macros and libraries
-## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
-## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   moveit_core
   moveit_ros_planning_interface
-  piper_controller
   piper_commander
-  piper_msgs_srvs
+  piper_msgs
   roscpp
   rospy
   serial_driver
@@ -114,7 +107,7 @@ find_package(catkin REQUIRED COMPONENTS
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
 #  INCLUDE_DIRS include
-#  LIBRARIES piper_service
+#  LIBRARIES piper_interface
 #  CATKIN_DEPENDS geometry_msgs moveit_core moveit_ros_planning_interface piper_controller piper_msgs_srvs roscpp rospy serial_driver std_msgs std_srvs tf2_geometry_msgs tf2_ros
 #  DEPENDS system_lib
 )
@@ -132,7 +125,7 @@ include_directories(
 
 ## Declare a C++ library
 # add_library(${PROJECT_NAME}
-#   src/${PROJECT_NAME}/piper_service.cpp
+#   src/${PROJECT_NAME}/piper_interface.cpp
 # )
 
 ## Add cmake target dependencies of the library
@@ -144,6 +137,7 @@ include_directories(
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 add_executable(piper_service src/piper_service.cpp)
+add_executable(piper_action src/piper_action.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -157,6 +151,9 @@ add_executable(piper_service src/piper_service.cpp)
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(piper_service
+  ${catkin_LIBRARIES}
+)
+target_link_libraries(piper_action
   ${catkin_LIBRARIES}
 )
 
@@ -207,7 +204,7 @@ target_link_libraries(piper_service
 #############
 
 ## Add gtest based cpp test target and link libraries
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_piper_service.cpp)
+# catkin_add_gtest(${PROJECT_NAME}-test test/test_piper_interface.cpp)
 # if(TARGET ${PROJECT_NAME}-test)
 #   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
 # endif()

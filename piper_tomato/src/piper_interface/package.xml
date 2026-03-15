@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-    <name>piper_commander</name>
+    <name>piper_interface</name>
     <version>0.0.0</version>
-    <description>The piper_commander package</description>
+    <description>The piper_interface package</description>
 
     <maintainer email="kaerei@foxmail.com">Kaede Rei</maintainer>
 
@@ -20,7 +20,8 @@
     <depend>tf2_geometry_msgs</depend>
     <depend>tf2_ros</depend>
 
-    <depend>piper_controller</depend>
+    <depend>piper_commander</depend>
+    <depend>piper_msgs</depend>
 
     <export>
 
