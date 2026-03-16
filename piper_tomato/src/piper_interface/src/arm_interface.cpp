@@ -16,25 +16,35 @@ namespace piper {
 
 // ! ========================= 接 口 类 / 函 数 实 现 ========================= ! //
 
-ArmAction::ArmAction(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string action_name)
+ArmMoveAction::ArmMoveAction(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string action_name)
     : _arm_(std::move(arm)), _dispatcher_(std::move(dispatcher)) {
     _as_ = std::make_unique<MoveArmAS>(nh, action_name, false);
-    _as_->registerGoalCallback(boost::bind(&ArmAction::on_goal, this));
-    _as_->registerPreemptCallback(boost::bind(&ArmAction::on_preempt, this));
+    _as_->registerGoalCallback(boost::bind(&ArmMoveAction::on_goal, this));
+    _as_->registerPreemptCallback(boost::bind(&ArmMoveAction::on_preempt, this));
     _as_->start();
 }
 
-SimpleArmAction::SimpleArmAction(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string action_name)
+SimpleArmMoveAction::SimpleArmMoveAction(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string action_name)
     : _arm_(std::move(arm)), _dispatcher_(std::move(dispatcher)) {
     _as_ = std::make_unique<MoveArmAS>(nh, action_name, false);
-    _as_->registerGoalCallback(boost::bind(&SimpleArmAction::on_goal, this));
-    _as_->registerPreemptCallback(boost::bind(&SimpleArmAction::on_preempt, this));
+    _as_->registerGoalCallback(boost::bind(&SimpleArmMoveAction::on_goal, this));
+    _as_->registerPreemptCallback(boost::bind(&SimpleArmMoveAction::on_preempt, this));
     _as_->start();
+}
+
+ArmConfigService::ArmConfigService(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string service_name)
+    : _arm_(std::move(arm)), _dispatcher_(std::move(dispatcher)) {
+    _srv_ = std::make_unique<ros::ServiceServer>(nh.advertiseService(service_name, &ArmConfigService::on_request, this));
+}
+
+ArmQueryService::ArmQueryService(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string service_name)
+    : _arm_(std::move(arm)), _dispatcher_(std::move(dispatcher)) {
+    _srv_ = std::make_unique<ros::ServiceServer>(nh.advertiseService(service_name, &ArmQueryService::on_request, this));
 }
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
 
-bool ArmAction::convert_goal_to_request(const piper_msgs::MoveArmGoal& goal, ArmCmdRequest& req) {
+bool ArmMoveAction::convert_goal_to_request(const piper_msgs::MoveArmGoal& goal, ArmCmdRequest& req) {
     req.type = static_cast<ArmCmdType>(goal.command_type);
     if(!(ArmCmdType::MIN < req.type && req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
@@ -57,7 +67,7 @@ bool ArmAction::convert_goal_to_request(const piper_msgs::MoveArmGoal& goal, Arm
     return true;
 }
 
-void ArmAction::on_goal() {
+void ArmMoveAction::on_goal() {
     auto goal = _as_->acceptNewGoal();
     if(!goal) {
         piper_msgs::MoveArmResult res;
@@ -98,7 +108,7 @@ void ArmAction::on_goal() {
     else _as_->setAborted(res, res.message);
 }
 
-void ArmAction::on_preempt() {
+void ArmMoveAction::on_preempt() {
     _dispatcher_->cancel();
     piper_msgs::MoveArmResult res;
     res.success = false;
@@ -106,7 +116,7 @@ void ArmAction::on_preempt() {
     _as_->setPreempted(res, res.message);
 }
 
-bool SimpleArmAction::convert_goal_to_request(const piper_msgs::SimpleMoveArmGoal& goal, ArmCmdRequest& req) {
+bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs::SimpleMoveArmGoal& goal, ArmCmdRequest& req) {
     req.type = static_cast<ArmCmdType>(goal.command_type);
     if(!(ArmCmdType::MIN < req.type && req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
@@ -168,7 +178,7 @@ bool SimpleArmAction::convert_goal_to_request(const piper_msgs::SimpleMoveArmGoa
     return true;
 }
 
-void SimpleArmAction::on_goal() {
+void SimpleArmMoveAction::on_goal() {
     auto goal = _as_->acceptNewGoal();
     if(!goal) {
         piper_msgs::SimpleMoveArmResult res;
@@ -213,12 +223,92 @@ void SimpleArmAction::on_goal() {
     else _as_->setAborted(res, res.message);
 }
 
-void SimpleArmAction::on_preempt() {
+void SimpleArmMoveAction::on_preempt() {
     _dispatcher_->cancel();
     piper_msgs::SimpleMoveArmResult res;
     res.success = false;
     res.message = "目标被取消";
     _as_->setPreempted(res, res.message);
+}
+
+bool ArmConfigService::convert_srvreq_to_armreq(const piper_msgs::ConfigArm::Request& srv_req, ArmCmdRequest& arm_req) {
+    arm_req.type = static_cast<ArmCmdType>(srv_req.command_type);
+    if(!(ArmCmdType::MIN < arm_req.type && arm_req.type < ArmCmdType::MAX)) {
+        ROS_WARN("接收到无效的命令类型: %d", srv_req.command_type);
+        return false;
+    }
+
+    if(srv_req.command_type == srv_req.SET_ORIENTATION_CONSTRAINT) arm_req.target = srv_req.quaternion;
+    else if(srv_req.command_type == srv_req.SET_POSITION_CONSTRAINT) arm_req.target = srv_req.point;
+    else if(srv_req.command_type == srv_req.SET_JOINT_CONSTRAINT) {
+        arm_req.joint_names = srv_req.joint_names;
+        arm_req.joints = srv_req.joints;
+    }
+    else {
+        ROS_WARN("接收到无效的命令类型: %d", srv_req.command_type);
+        return false;
+    }
+    arm_req.values = srv_req.values;
+
+    return true;
+}
+
+bool ArmConfigService::on_request(piper_msgs::ConfigArm::Request& req, piper_msgs::ConfigArm::Response& res) {
+    if(!_arm_ || !_dispatcher_) {
+        res.success = false;
+        res.message = "控制器未初始化";
+        return true;
+    }
+
+    ArmCmdRequest arm_req;
+    if(!convert_srvreq_to_armreq(req, arm_req)) {
+        res.success = false;
+        res.message = "无效的请求";
+        return true;
+    }
+
+    auto result = _dispatcher_->dispatch(arm_req);
+    res.success = result.success;
+    res.message = result.message;
+    res.error_code = static_cast<uint8_t>(result.error_code);
+
+    return true;
+}
+
+bool ArmQueryService::convert_srvreq_to_armreq(const piper_msgs::QueryArm::Request& srv_req, ArmCmdRequest& arm_req) {
+    arm_req.type = static_cast<ArmCmdType>(srv_req.command_type);
+    if(!(ArmCmdType::MIN < arm_req.type && arm_req.type < ArmCmdType::MAX)) {
+        ROS_WARN("接收到无效的命令类型: %d", srv_req.command_type);
+        return false;
+    }
+
+    arm_req.values = srv_req.values;
+
+    return true;
+}
+
+bool ArmQueryService::on_request(piper_msgs::QueryArm::Request& req, piper_msgs::QueryArm::Response& res) {
+    if(!_arm_ || !_dispatcher_) {
+        res.success = false;
+        res.message = "控制器未初始化";
+        return true;
+    }
+
+    ArmCmdRequest arm_req;
+    if(!convert_srvreq_to_armreq(req, arm_req)) {
+        res.success = false;
+        res.message = "无效的请求";
+        return true;
+    }
+
+    auto result = _dispatcher_->dispatch(arm_req);
+    res.success = result.success;
+    res.message = result.message;
+    res.error_code = static_cast<uint8_t>(result.error_code);
+    res.cur_pose = result.current_pose;
+    res.cur_joint = result.current_joints;
+
+    return true;
 }
 
 }

@@ -13,15 +13,7 @@ float64[] values
 
 bool success
 string message
-int32 error_code
-
-# 通用位姿字段
-float64 cur_x
-float64 cur_y
-float64 cur_z
-float64 cur_roll
-float64 cur_pitch
-float64 cur_yaw
+uint8 error_code
 
 # 标准位姿字段
 geometry_msgs/Pose cur_pose

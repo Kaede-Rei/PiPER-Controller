@@ -86,7 +86,6 @@ struct ArmCmdResult {
 
     geometry_msgs::Pose current_pose;
     std::vector<double> current_joints;
-
 };
 
 /**

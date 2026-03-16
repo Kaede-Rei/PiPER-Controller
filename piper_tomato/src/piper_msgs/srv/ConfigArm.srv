@@ -5,44 +5,23 @@ uint8 SET_ORIENTATION_CONSTRAINT=10
 uint8 SET_POSITION_CONSTRAINT=11
 uint8 SET_JOINT_CONSTRAINT=12
 
-# 通俗位姿字段
-float64 x
-float64 y
-float64 z
-float64 roll
-float64 pitch
-float64 yaw
-
 # 标准字段
-geometry_msgs/Pose pose
 geometry_msgs/Point point
 geometry_msgs/Quaternion quaternion
 
-# 关节约束
+# 约束名称列表
 string[] joint_names
+
+# 约束关节角列表
+float64[] joints
 
 # 通用数值参数
 float64[] values
 
 ---
+
 # === Response ===
 
 bool success
 string message
-int32 error_code
-
-# 通用位姿字段
-float64 cur_x
-float64 cur_y
-float64 cur_z
-float64 cur_roll
-float64 cur_pitch
-float64 cur_yaw
-
-# 标准位姿字段
-geometry_msgs/Pose cur_pose
-geometry_msgs/Point point
-geometry_msgs/Quaternion quaternion
-
-# 当前关节角列表
-float64[] cur_joint
+uint8 error_code
