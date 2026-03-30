@@ -6,10 +6,10 @@
 #include "piper_interface/interface_module.hpp"
 #include "piper_controller/arm_controller.hpp"
 #include "piper_commander/cmd_dispatcher.hpp"
-#include "piper_msgs/MoveArmAction.h"
-#include "piper_msgs/SimpleMoveArmAction.h"
-#include "piper_msgs/ConfigArm.h"
-#include "piper_msgs/QueryArm.h"
+#include "piper_msgs2/MoveArmAction.h"
+#include "piper_msgs2/SimpleMoveArmAction.h"
+#include "piper_msgs2/ConfigArm.h"
+#include "piper_msgs2/QueryArm.h"
 
 namespace piper {
 
@@ -24,7 +24,7 @@ namespace piper {
  */
 class ArmMoveAction : public ROSModuleInterface {
 public:
-    using MoveArmAS = actionlib::SimpleActionServer<piper_msgs::MoveArmAction>;
+    using MoveArmAS = actionlib::SimpleActionServer<piper_msgs2::MoveArmAction>;
     ArmMoveAction(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string action_name);
     ~ArmMoveAction() = default;
 
@@ -36,7 +36,7 @@ public:
 private:
     void on_goal();
     void on_preempt();
-    bool convert_goal_to_request(const piper_msgs::MoveArmGoal& goal, ArmCmdRequest& req);
+    bool convert_goal_to_request(const piper_msgs2::MoveArmGoal& goal, ArmCmdRequest& req);
 
 private:
     std::unique_ptr<MoveArmAS> _as_;
@@ -49,7 +49,7 @@ private:
  */
 class SimpleArmMoveAction : public ROSModuleInterface {
 public:
-    using MoveArmAS = actionlib::SimpleActionServer<piper_msgs::SimpleMoveArmAction>;
+    using MoveArmAS = actionlib::SimpleActionServer<piper_msgs2::SimpleMoveArmAction>;
     SimpleArmMoveAction(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string action_name);
     ~SimpleArmMoveAction() = default;
 
@@ -61,7 +61,7 @@ public:
 private:
     void on_goal();
     void on_preempt();
-    bool convert_goal_to_request(const piper_msgs::SimpleMoveArmGoal& goal, ArmCmdRequest& req);
+    bool convert_goal_to_request(const piper_msgs2::SimpleMoveArmGoal& goal, ArmCmdRequest& req);
 
 private:
     std::unique_ptr<MoveArmAS> _as_;
@@ -83,8 +83,8 @@ public:
     ArmConfigService& operator=(ArmConfigService&&) = delete;
 
 private:
-    bool on_request(piper_msgs::ConfigArm::Request& req, piper_msgs::ConfigArm::Response& res);
-    bool convert_srvreq_to_armreq(const piper_msgs::ConfigArm::Request& srv_req, ArmCmdRequest& arm_req);
+    bool on_request(piper_msgs2::ConfigArm::Request& req, piper_msgs2::ConfigArm::Response& res);
+    bool convert_srvreq_to_armreq(const piper_msgs2::ConfigArm::Request& srv_req, ArmCmdRequest& arm_req);
 
 private:
     std::unique_ptr<ros::ServiceServer> _srv_;
@@ -106,8 +106,8 @@ public:
     ArmQueryService& operator=(ArmQueryService&&) = delete;
 
 private:
-    bool on_request(piper_msgs::QueryArm::Request& req, piper_msgs::QueryArm::Response& res);
-    bool convert_srvreq_to_armreq(const piper_msgs::QueryArm::Request& srv_req, ArmCmdRequest& arm_req);
+    bool on_request(piper_msgs2::QueryArm::Request& req, piper_msgs2::QueryArm::Response& res);
+    bool convert_srvreq_to_armreq(const piper_msgs2::QueryArm::Request& srv_req, ArmCmdRequest& arm_req);
 
 private:
     std::unique_ptr<ros::ServiceServer> _srv_;

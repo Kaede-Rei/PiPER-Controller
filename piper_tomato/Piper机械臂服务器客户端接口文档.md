@@ -8,13 +8,13 @@
 
 - **服务名称：** `/piper_server/eef_cmd`
 
-- **服务类型：** `piper_msgs_srvs::piper_cmd`
+- **服务类型：** `piper_msgs2_srvs::piper_cmd`
 
 ### 1.1. 任务组规划服务
 
 - **服务名称：** `/piper_server/task_planner`
 
-- **服务类型：** `piper_msgs_srvs::piper_cmd`
+- **服务类型：** `piper_msgs2_srvs::piper_cmd`
 
 ------
 

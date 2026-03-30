@@ -78,7 +78,7 @@ ArmQueryService::ArmQueryService(ros::NodeHandle& nh, std::shared_ptr<ArmControl
  * @param req 转换后的 ArmCmdRequest
  * @return 转换是否成功
  */
-bool ArmMoveAction::convert_goal_to_request(const piper_msgs::MoveArmGoal& goal, ArmCmdRequest& req) {
+bool ArmMoveAction::convert_goal_to_request(const piper_msgs2::MoveArmGoal& goal, ArmCmdRequest& req) {
     req.type = static_cast<ArmCmdType>(goal.command_type);
     if(!(ArmCmdType::MIN < req.type && req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
@@ -107,7 +107,7 @@ bool ArmMoveAction::convert_goal_to_request(const piper_msgs::MoveArmGoal& goal,
 void ArmMoveAction::on_goal() {
     auto goal = _as_->acceptNewGoal();
     if(!goal) {
-        piper_msgs::MoveArmResult res;
+        piper_msgs2::MoveArmResult res;
         res.success = false;
         res.message = "空目标";
         _as_->setAborted(res, res.message);
@@ -117,7 +117,7 @@ void ArmMoveAction::on_goal() {
 
     ArmCmdRequest req;
     if(!convert_goal_to_request(*goal, req)) {
-        piper_msgs::MoveArmResult res;
+        piper_msgs2::MoveArmResult res;
         res.success = false;
         res.message = "无效的目标";
         _as_->setAborted(res, res.message);
@@ -126,14 +126,14 @@ void ArmMoveAction::on_goal() {
     }
 
     auto result = _dispatcher_->dispatch(req, [this](const ArmCmdFeedback& fb) {
-        piper_msgs::MoveArmFeedback feedback;
+        piper_msgs2::MoveArmFeedback feedback;
         feedback.stage = fb.stage;
         feedback.progress = fb.progress;
         feedback.message = fb.message;
         this->_as_->publishFeedback(feedback);
         });
 
-    piper_msgs::MoveArmResult res;
+    piper_msgs2::MoveArmResult res;
     res.success = result.success;
     res.message = result.message;
     res.error_code = static_cast<uint8_t>(result.error_code);
@@ -150,7 +150,7 @@ void ArmMoveAction::on_goal() {
  */
 void ArmMoveAction::on_preempt() {
     _dispatcher_->cancel();
-    piper_msgs::MoveArmResult res;
+    piper_msgs2::MoveArmResult res;
     res.success = false;
     res.message = "目标被取消";
     _as_->setPreempted(res, res.message);
@@ -162,7 +162,7 @@ void ArmMoveAction::on_preempt() {
  * @param req 转换后的 ArmCmdRequest
  * @return 转换是否成功
  */
-bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs::SimpleMoveArmGoal& goal, ArmCmdRequest& req) {
+bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveArmGoal& goal, ArmCmdRequest& req) {
     req.type = static_cast<ArmCmdType>(goal.command_type);
     if(!(ArmCmdType::MIN < req.type && req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
@@ -230,7 +230,7 @@ bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs::SimpleMoveAr
 void SimpleArmMoveAction::on_goal() {
     auto goal = _as_->acceptNewGoal();
     if(!goal) {
-        piper_msgs::SimpleMoveArmResult res;
+        piper_msgs2::SimpleMoveArmResult res;
         res.success = false;
         res.message = "空目标";
         _as_->setAborted(res, res.message);
@@ -240,7 +240,7 @@ void SimpleArmMoveAction::on_goal() {
 
     ArmCmdRequest req;
     if(!convert_goal_to_request(*goal, req)) {
-        piper_msgs::SimpleMoveArmResult res;
+        piper_msgs2::SimpleMoveArmResult res;
         res.success = false;
         res.message = "无效的目标";
         _as_->setAborted(res, res.message);
@@ -250,7 +250,7 @@ void SimpleArmMoveAction::on_goal() {
 
     auto result = _dispatcher_->dispatch(req);
 
-    piper_msgs::SimpleMoveArmResult res;
+    piper_msgs2::SimpleMoveArmResult res;
     res.success = result.success;
     res.message = result.message;
     res.error_code = static_cast<uint8_t>(result.error_code);
@@ -277,7 +277,7 @@ void SimpleArmMoveAction::on_goal() {
  */
 void SimpleArmMoveAction::on_preempt() {
     _dispatcher_->cancel();
-    piper_msgs::SimpleMoveArmResult res;
+    piper_msgs2::SimpleMoveArmResult res;
     res.success = false;
     res.message = "目标被取消";
     _as_->setPreempted(res, res.message);
@@ -289,7 +289,7 @@ void SimpleArmMoveAction::on_preempt() {
  * @param arm_req 转换后的 ArmCmdRequest
  * @return 转换是否成功
  */
-bool ArmConfigService::convert_srvreq_to_armreq(const piper_msgs::ConfigArm::Request& srv_req, ArmCmdRequest& arm_req) {
+bool ArmConfigService::convert_srvreq_to_armreq(const piper_msgs2::ConfigArm::Request& srv_req, ArmCmdRequest& arm_req) {
     arm_req.type = static_cast<ArmCmdType>(srv_req.command_type);
     if(!(ArmCmdType::MIN < arm_req.type && arm_req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", srv_req.command_type);
@@ -317,7 +317,7 @@ bool ArmConfigService::convert_srvreq_to_armreq(const piper_msgs::ConfigArm::Req
  * @param res ConfigArm Service 的响应
  * @return 是否成功处理请求
  */
-bool ArmConfigService::on_request(piper_msgs::ConfigArm::Request& req, piper_msgs::ConfigArm::Response& res) {
+bool ArmConfigService::on_request(piper_msgs2::ConfigArm::Request& req, piper_msgs2::ConfigArm::Response& res) {
     if(!_arm_ || !_dispatcher_) {
         res.success = false;
         res.message = "控制器未初始化";
@@ -345,7 +345,7 @@ bool ArmConfigService::on_request(piper_msgs::ConfigArm::Request& req, piper_msg
  * @param arm_req 转换后的 ArmCmdRequest
  * @return 转换是否成功
  */
-bool ArmQueryService::convert_srvreq_to_armreq(const piper_msgs::QueryArm::Request& srv_req, ArmCmdRequest& arm_req) {
+bool ArmQueryService::convert_srvreq_to_armreq(const piper_msgs2::QueryArm::Request& srv_req, ArmCmdRequest& arm_req) {
     arm_req.type = static_cast<ArmCmdType>(srv_req.command_type);
     if(!(ArmCmdType::MIN < arm_req.type && arm_req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", srv_req.command_type);
@@ -363,7 +363,7 @@ bool ArmQueryService::convert_srvreq_to_armreq(const piper_msgs::QueryArm::Reque
  * @param res QueryArm Service 的响应
  * @return 是否成功处理请求
  */
-bool ArmQueryService::on_request(piper_msgs::QueryArm::Request& req, piper_msgs::QueryArm::Response& res) {
+bool ArmQueryService::on_request(piper_msgs2::QueryArm::Request& req, piper_msgs2::QueryArm::Response& res) {
     if(!_arm_ || !_dispatcher_) {
         res.success = false;
         res.message = "控制器未初始化";

@@ -7,7 +7,7 @@ find_package(catkin REQUIRED COMPONENTS
   moveit_ros_planning_interface
   piper_controller
   piper_commander
-  piper_msgs
+  piper_msgs2
   roscpp
   rospy
   serial_driver
@@ -109,8 +109,8 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES piper_interface
-#  CATKIN_DEPENDS geometry_msgs moveit_core moveit_ros_planning_interface piper_controller piper_commander piper_msgs roscpp rospy std_msgs std_srvs tf2_geometry_msgs tf2_ros
- CATKIN_DEPENDS geometry_msgs piper_controller piper_commander piper_msgs roscpp std_msgs std_srvs
+#  CATKIN_DEPENDS geometry_msgs moveit_core moveit_ros_planning_interface piper_controller piper_commander piper_msgs2 roscpp rospy std_msgs std_srvs tf2_geometry_msgs tf2_ros
+ CATKIN_DEPENDS geometry_msgs piper_controller piper_commander piper_msgs2 roscpp std_msgs std_srvs
 #  DEPENDS system_lib
 )
 
