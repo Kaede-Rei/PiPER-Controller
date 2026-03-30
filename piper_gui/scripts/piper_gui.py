@@ -9,7 +9,7 @@ import rospy
 from piper_msgs_srvs.srv import piper_cmd, piper_cmdRequest  # 请确保ROS服务消息包名正确
 
 # 添加sdk路径
-sys.path.append("/home/hxloong/.local/lib/python3.8/site-packages")
+# sys.path.append("/home/hxloong/.local/lib/python3.8/site-packages")
 from pyorbbecsdk import OBFormat, OBSensorType, OBAlignMode, OBPropertyID
 from pyorbbecsdk import Pipeline, Config, VideoFrame
 
@@ -465,13 +465,13 @@ class MainWindow(QMainWindow):
             self.ros_available = False
 
     def send_arm_command(self, x, y, z):
-        """发送机械臂控制指令到ROS服务"""
         if not self.ros_available:
             print("[ROS] 未连接到ROS，跳过发送指令")
             return False
 
         try:
             req = piper_cmdRequest()
+            req.command = "goal_eef"
             req.x = x
             req.y = y
             req.z = z
@@ -482,7 +482,12 @@ class MainWindow(QMainWindow):
 
             print(f"[ROS] 发送机械臂指令: x={x:.4f}, y={y:.4f}, z={z:.4f}")
             resp = self.cmd_service_client(req)
-            print(f"[ROS] 服务响应成功")
+            print(f"[ROS] 服务返回: {resp!r}")
+
+            if hasattr(resp, "success"):
+                print(f"[ROS] 业务成功标志: {resp.success}")
+                return bool(resp.success)
+
             return True
 
         except rospy.ServiceException as e:
@@ -609,7 +614,9 @@ class MainWindow(QMainWindow):
             return
 
         depth_m = depth_raw / 1000
-        x_cam, y_cam, z_cam = depth_to_pointcloud(u, v, depth_m, self.depth_intrinsics)
+        x_cam, y_cam, z_cam = depth_to_pointcloud(
+            du, dv, depth_m, self.depth_intrinsics
+        )
         x_arm, y_arm, z_arm = hand_eye_calibration(x_cam, y_cam, z_cam)
 
         # 存储目标坐标并启用发送按钮
