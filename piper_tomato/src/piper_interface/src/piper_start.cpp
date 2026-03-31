@@ -23,6 +23,9 @@ int main(int argc, char** argv) {
     ros::NodeHandle nh;
     ros::NodeHandle pnh("~");
 
+    ros::AsyncSpinner spinner(4);
+    spinner.start();
+
     piper::ROSInterfaceConfig config;
     config.arm_group_name = pnh.param<std::string>("start/arm_group_name", "arm");
     config.arm_move_action = { pnh.param<bool>("start/arm_move_action/enabled", true), pnh.param<std::string>("start/arm_move_action/name", "move_arm") };
@@ -31,6 +34,6 @@ int main(int argc, char** argv) {
     config.arm_query_service = { pnh.param<bool>("start/arm_query_service/enabled", true), pnh.param<std::string>("start/arm_query_service/name", "arm_query") };
     piper::ROSInterface piper_interface(nh, config);
 
-    ros::spin();
+    ros::waitForShutdown();
     return 0;
 }

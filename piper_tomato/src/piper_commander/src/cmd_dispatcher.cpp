@@ -467,8 +467,13 @@ ArmCmdResult ArmCmdDispatcher::handle_get_current_joints(const ArmCmdRequest& re
         return make_cancelled();
     }
 
+    auto current_joints = _arm_->get_current_joints();
+    if(current_joints.empty()) {
+        return make_err(ErrorCode::FAILURE, "获取当前关节角失败");
+    }
+
     ArmCmdResult result = make_ok("获取当前关节角成功");
-    result.current_joints = _arm_->get_current_joints();
+    result.current_joints = std::move(current_joints);
     return result;
 }
 

@@ -5,19 +5,130 @@ import os
 import sys
 import time
 import math
+import copy
+import shlex
 import signal
 import subprocess
+from urllib.parse import urlparse
 
+import rosgraph
 import rospy
 import actionlib
 
 from geometry_msgs.msg import Pose, Point, Quaternion
 from sensor_msgs.msg import JointState
 
-from piper_msgs.srv import QueryArm, QueryArmRequest
-from piper_msgs.srv import ConfigArm, ConfigArmRequest
-from piper_msgs.msg import MoveArmAction, MoveArmGoal
-from piper_msgs.msg import SimpleMoveArmAction, SimpleMoveArmGoal
+from piper_msgs2.srv import QueryArm, QueryArmRequest
+from piper_msgs2.srv import ConfigArm, ConfigArmRequest
+from piper_msgs2.msg import MoveArmAction, MoveArmGoal
+from piper_msgs2.msg import SimpleMoveArmAction, SimpleMoveArmGoal
+
+# =========================
+# roscore / 进程管理
+# =========================
+
+
+def is_local_master():
+    master_uri = os.environ.get("ROS_MASTER_URI", "http://localhost:11311")
+    host = urlparse(master_uri).hostname
+    return host in (None, "localhost", "127.0.0.1")
+
+
+def wait_master_online(timeout=10.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if rosgraph.is_master_online():
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def start_roscore_if_needed():
+    if rosgraph.is_master_online():
+        print("[INFO] 检测到 roscore 已在线，复用现有 master")
+        return None
+
+    if not is_local_master():
+        raise RuntimeError(
+            "当前 ROS_MASTER_URI 不是本地地址，且 master 不在线，拒绝自动启动本地 roscore。"
+        )
+
+    print("[INFO] 未检测到 roscore，正在自动启动本地 roscore ...")
+    proc = subprocess.Popen(
+        ["roscore"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        preexec_fn=os.setsid,
+    )
+
+    if not wait_master_online(timeout=10.0):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        except Exception:
+            pass
+        raise RuntimeError("roscore 启动失败或超时")
+
+    print(f"[INFO] roscore 已启动，PID={proc.pid}")
+    return proc
+
+
+def stop_process_group(proc, name="process", timeout=10):
+    if proc is None:
+        return
+    if proc.poll() is not None:
+        return
+
+    print(f"[INFO] 关闭 {name} (PID={proc.pid}) ...")
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        proc.wait(timeout=timeout)
+    except Exception:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            pass
+
+
+# =========================
+# 数学工具
+# =========================
+
+
+def quat_norm(q):
+    return math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+
+
+def normalize_quaternion(q):
+    n = quat_norm(q)
+    if n < 1e-12:
+        return Quaternion(0.0, 0.0, 0.0, 1.0)
+    return Quaternion(q.x / n, q.y / n, q.z / n, q.w / n)
+
+
+def quaternion_to_rpy(q):
+    q = normalize_quaternion(q)
+    x, y, z, w = q.x, q.y, q.z, q.w
+
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    if abs(sinp) >= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return roll, pitch, yaw
+
+
+# =========================
+# Runner
+# =========================
 
 
 class Runner:
@@ -25,7 +136,14 @@ class Runner:
         self.pass_items = []
         self.fail_items = []
         self.warn_items = []
+
         self.launch_proc = None
+        self.move_client = None
+        self.simple_client = None
+
+        self.launch_cmd = os.environ.get(
+            "TEST_LAUNCH_CMD", "roslaunch --wait piper_interface piper_start.launch"
+        )
 
         self.query_srv_name = rospy.get_param("~arm_query_service", "/arm_query")
         self.config_srv_name = rospy.get_param("~arm_config_service", "/arm_config")
@@ -34,18 +152,22 @@ class Runner:
             "~simple_move_arm_action", "/simple_move_arm"
         )
 
-        # 如果你的真实关节名不同，可以 rosparam 或环境变量改掉
         self.test_joint_name = rospy.get_param(
             "~test_joint_name", os.environ.get("TEST_JOINT_NAME", "link1")
         )
 
-        # 是否执行 HOME / MOVE_TO_ZERO 这类“可能真的会动”的测试
         self.run_reset_tests = rospy.get_param("~run_reset_tests", True)
         self.run_end_tests = rospy.get_param("~run_end_tests", True)
+
+        # 关键：为了“看全程”，每一步后停一下
+        self.step_pause_sec = float(rospy.get_param("~step_pause_sec", 2.0))
+        self.final_hold_forever = bool(rospy.get_param("~final_hold_forever", True))
+        self.final_hold_sec = float(rospy.get_param("~final_hold_sec", 20.0))
 
         self.cur_pose = None
         self.cur_joints = []
 
+    # ---------- 输出 ----------
     def info(self, msg):
         print(f"[INFO] {msg}")
 
@@ -85,22 +207,20 @@ class Runner:
         print()
         return 0 if not self.fail_items else 1
 
+    # ---------- 启停 launch ----------
     def start_launch(self):
-        self.info("启动 piper_interface piper_start.launch ...")
+        self.info(f"启动系统: {self.launch_cmd}")
+        cmd = shlex.split(self.launch_cmd)
         self.launch_proc = subprocess.Popen(
-            ["roslaunch", "piper_interface", "piper_start.launch"]
+            cmd,
+            preexec_fn=os.setsid,
         )
         self.info(f"roslaunch 已启动，PID={self.launch_proc.pid}")
 
     def stop_launch(self):
-        if self.launch_proc and self.launch_proc.poll() is None:
-            self.info(f"关闭 roslaunch (PID={self.launch_proc.pid}) ...")
-            try:
-                self.launch_proc.send_signal(signal.SIGINT)
-                self.launch_proc.wait(timeout=10)
-            except Exception:
-                self.launch_proc.kill()
+        stop_process_group(self.launch_proc, name="roslaunch", timeout=10)
 
+    # ---------- 等待系统 ----------
     def wait_for_system(self):
         try:
             rospy.wait_for_service(self.query_srv_name, timeout=90.0)
@@ -145,12 +265,14 @@ class Runner:
         except Exception:
             pass
 
+    # ---------- service ----------
     def query_proxy(self):
         return rospy.ServiceProxy(self.query_srv_name, QueryArm)
 
     def config_proxy(self):
         return rospy.ServiceProxy(self.config_srv_name, ConfigArm)
 
+    # ---------- 查询 ----------
     def check_query_current_joints(self):
         self.info("测试 QueryArm: GET_CURRENT_JOINTS")
         try:
@@ -191,8 +313,7 @@ class Runner:
                 return
 
             q = res.cur_pose.orientation
-            q_norm = math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
-            if q_norm < 1e-6:
+            if quat_norm(q) < 1e-6:
                 self.fail("GET_CURRENT_POSE 返回了无效四元数")
                 return
 
@@ -201,6 +322,7 @@ class Runner:
         except Exception as e:
             self.fail(f"GET_CURRENT_POSE 调用异常: {e}")
 
+    # ---------- 配置 ----------
     def check_config_orientation_constraint(self):
         self.info("测试 ConfigArm: SET_ORIENTATION_CONSTRAINT")
         try:
@@ -230,7 +352,7 @@ class Runner:
             req = ConfigArmRequest()
             req.command_type = ConfigArmRequest.SET_POSITION_CONSTRAINT
             req.quaternion = Quaternion(0.0, 0.0, 0.0, 1.0)
-            req.point = Point(0.3, 0.0, 0.2)
+            req.point = Point(0.30, 0.00, 0.20)
             req.joint_names = []
             req.joints = []
             req.values = [0.05, 0.05, 0.05]
@@ -255,7 +377,6 @@ class Runner:
             req.point = Point(0.0, 0.0, 0.0)
             req.joint_names = [self.test_joint_name]
             req.joints = [0.0]
-            # dispatcher 按 joint_count*2 / joint_count*2+1 读范围值
             req.values = [0.1, 0.1]
 
             res = srv(req)
@@ -268,6 +389,7 @@ class Runner:
         except Exception as e:
             self.fail(f"SET_JOINT_CONSTRAINT 调用异常: {e}")
 
+    # ---------- 辅助 ----------
     def _identity_pose(self):
         p = Pose()
         p.position.x = 0.0
@@ -279,25 +401,74 @@ class Runner:
         p.orientation.w = 1.0
         return p
 
+    def _copy_pose(self, pose):
+        return copy.deepcopy(pose)
+
+    def _pose_offset(self, base_pose, dx=0.0, dy=0.0, dz=0.0):
+        p = self._copy_pose(base_pose)
+        p.position.x += dx
+        p.position.y += dy
+        p.position.z += dz
+        return p
+
     def _require_current_state(self):
         if self.cur_pose is None:
             self.warn("当前 pose 不可用，使用单位姿态兜底")
             self.cur_pose = self._identity_pose()
+
         if not self.cur_joints:
             self.warn("当前 joints 不可用，使用全零兜底")
             self.cur_joints = [0.0] * 6
 
+    def _current_rpy_or_zero(self):
+        if self.cur_pose is None:
+            return (0.0, 0.0, 0.0)
+
+        q = self.cur_pose.orientation
+        if quat_norm(q) < 1e-6:
+            self.warn("当前 pose 四元数无效，SimpleMoveArm 将使用 0/0/0 RPY 兜底")
+            return (0.0, 0.0, 0.0)
+
+        try:
+            return quaternion_to_rpy(q)
+        except Exception as e:
+            self.warn(f"四元数转 RPY 失败，使用 0/0/0 兜底: {e}")
+            return (0.0, 0.0, 0.0)
+
+    def _visible_joint_target(self, base_joints, offsets):
+        out = list(base_joints)
+        for i, off in enumerate(offsets):
+            if i < len(out):
+                out[i] += off
+        return out
+
+    def _pause_watch(self, label):
+        prompt = f"[INFO] {label} 完成，按 Enter 继续下一步..."
+        try:
+            # 交互终端下：等待用户回车
+            if sys.stdin and sys.stdin.isatty():
+                input(prompt)
+            else:
+                # 非交互环境下避免卡死
+                self.warn(f"{label} 完成，但当前不是交互终端，自动继续")
+        except EOFError:
+            self.warn(f"{label} 完成，但 stdin 已关闭，自动继续")
+        except KeyboardInterrupt:
+            raise
+
+    # ---------- action send ----------
     def send_move_arm(self, name, fill_goal_fn, timeout=30.0):
         self.info(f"测试 ArmMoveAction: {name}")
         try:
             goal = MoveArmGoal()
             fill_goal_fn(goal)
+
             self.move_client.send_goal(goal)
             finished = self.move_client.wait_for_result(rospy.Duration(timeout))
             if not finished:
                 self.move_client.cancel_goal()
                 self.fail(f"{name} 超时")
-                return
+                return False
 
             state = self.move_client.get_state()
             result = self.move_client.get_result()
@@ -305,22 +476,27 @@ class Runner:
 
             if result and result.success:
                 self.ok(f"ArmMoveAction::{name} 成功")
+                self._pause_watch(name)
+                return True
             else:
                 self.fail(f"ArmMoveAction::{name} 失败, state={state}, result={result}")
+                return False
         except Exception as e:
             self.fail(f"ArmMoveAction::{name} 异常: {e}")
+            return False
 
     def send_simple_move_arm(self, name, fill_goal_fn, timeout=30.0):
         self.info(f"测试 SimpleMoveArmAction: {name}")
         try:
             goal = SimpleMoveArmGoal()
             fill_goal_fn(goal)
+
             self.simple_client.send_goal(goal)
             finished = self.simple_client.wait_for_result(rospy.Duration(timeout))
             if not finished:
                 self.simple_client.cancel_goal()
                 self.fail(f"{name} 超时")
-                return
+                return False
 
             state = self.simple_client.get_state()
             result = self.simple_client.get_result()
@@ -328,19 +504,37 @@ class Runner:
 
             if result and result.success:
                 self.ok(f"SimpleMoveArmAction::{name} 成功")
+                self._pause_watch(name)
+                return True
             else:
                 self.fail(
                     f"SimpleMoveArmAction::{name} 失败, state={state}, result={result}"
                 )
+                return False
         except Exception as e:
             self.fail(f"SimpleMoveArmAction::{name} 异常: {e}")
+            return False
 
-    def test_move_arm_all(self):
+    # ---------- MoveArm: 可见版 ----------
+    def test_move_arm_all_visible(self):
         self._require_current_state()
 
         def dummy_point(g):
             g.target_type = MoveArmGoal.TARGET_POINT
             g.point = Point(0.0, 0.0, 0.0)
+
+        pose_up = self._pose_offset(self.cur_pose, dz=0.04)
+        pose_down = self._pose_offset(self.cur_pose, dz=-0.02)
+        pose_left = self._pose_offset(self.cur_pose, dy=0.03, dz=0.02)
+        pose_right = self._pose_offset(self.cur_pose, dy=-0.03, dz=0.02)
+        pose_forward = self._pose_offset(self.cur_pose, dx=0.04, dz=0.03)
+
+        joints_a = self._visible_joint_target(
+            self.cur_joints, [0.35, 0.20, 0.00, 0.00, 0.00, 0.00]
+        )
+        joints_b = self._visible_joint_target(
+            self.cur_joints, [-0.25, 0.30, 0.10, 0.00, 0.00, 0.00]
+        )
 
         if self.run_reset_tests:
             self.send_move_arm(
@@ -356,23 +550,35 @@ class Runner:
             )
 
         self.send_move_arm(
-            "MOVE_JOINTS",
+            "MOVE_JOINTS_A",
             lambda g: (
                 setattr(g, "command_type", MoveArmGoal.MOVE_JOINTS),
                 dummy_point(g),
                 setattr(g, "joint_names", []),
-                setattr(g, "joints", self.cur_joints),
+                setattr(g, "joints", joints_a),
                 setattr(g, "values", []),
                 setattr(g, "waypoints", []),
             ),
         )
 
         self.send_move_arm(
-            "MOVE_TARGET",
+            "MOVE_JOINTS_B",
+            lambda g: (
+                setattr(g, "command_type", MoveArmGoal.MOVE_JOINTS),
+                dummy_point(g),
+                setattr(g, "joint_names", []),
+                setattr(g, "joints", joints_b),
+                setattr(g, "values", []),
+                setattr(g, "waypoints", []),
+            ),
+        )
+
+        self.send_move_arm(
+            "MOVE_TARGET_UP",
             lambda g: (
                 setattr(g, "command_type", MoveArmGoal.MOVE_TARGET),
                 setattr(g, "target_type", MoveArmGoal.TARGET_POSE),
-                setattr(g, "pose", self.cur_pose),
+                setattr(g, "pose", pose_up),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -381,11 +587,24 @@ class Runner:
         )
 
         self.send_move_arm(
-            "MOVE_TARGET_IN_EEF_FRAME",
+            "MOVE_TARGET_FORWARD",
+            lambda g: (
+                setattr(g, "command_type", MoveArmGoal.MOVE_TARGET),
+                setattr(g, "target_type", MoveArmGoal.TARGET_POSE),
+                setattr(g, "pose", pose_forward),
+                setattr(g, "joint_names", []),
+                setattr(g, "joints", []),
+                setattr(g, "values", []),
+                setattr(g, "waypoints", []),
+            ),
+        )
+
+        self.send_move_arm(
+            "MOVE_TARGET_IN_EEF_FRAME_ZPLUS",
             lambda g: (
                 setattr(g, "command_type", MoveArmGoal.MOVE_TARGET_IN_EEF_FRAME),
                 setattr(g, "target_type", MoveArmGoal.TARGET_POSE),
-                setattr(g, "pose", self._identity_pose()),
+                setattr(g, "pose", self._pose_offset(self._identity_pose(), dz=0.05)),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -395,62 +614,62 @@ class Runner:
 
         if self.run_end_tests:
             self.send_move_arm(
-                "TELESCOPIC_END",
+                "TELESCOPIC_END_PLUS",
                 lambda g: (
                     setattr(g, "command_type", MoveArmGoal.TELESCOPIC_END),
                     dummy_point(g),
                     setattr(g, "joint_names", []),
                     setattr(g, "joints", []),
-                    setattr(g, "values", [0.0]),
+                    setattr(g, "values", [0.02]),
                     setattr(g, "waypoints", []),
                 ),
             )
 
             self.send_move_arm(
-                "ROTATE_END",
+                "ROTATE_END_PLUS",
                 lambda g: (
                     setattr(g, "command_type", MoveArmGoal.ROTATE_END),
                     dummy_point(g),
                     setattr(g, "joint_names", []),
                     setattr(g, "joints", []),
-                    setattr(g, "values", [0.0]),
+                    setattr(g, "values", [0.30]),
                     setattr(g, "waypoints", []),
                 ),
             )
 
         self.send_move_arm(
-            "MOVE_LINE",
+            "MOVE_LINE_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", MoveArmGoal.MOVE_LINE),
                 dummy_point(g),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
-                setattr(g, "waypoints", [self.cur_pose, self.cur_pose]),
+                setattr(g, "waypoints", [pose_left, pose_right]),
             ),
         )
 
         self.send_move_arm(
-            "MOVE_BEZIER",
+            "MOVE_BEZIER_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", MoveArmGoal.MOVE_BEZIER),
                 dummy_point(g),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
-                setattr(g, "waypoints", [self.cur_pose, self.cur_pose, self.cur_pose]),
+                setattr(g, "waypoints", [pose_up, pose_left, pose_down]),
             ),
         )
 
         self.send_move_arm(
-            "MOVE_DECARTES",
+            "MOVE_DECARTES_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", MoveArmGoal.MOVE_DECARTES),
                 dummy_point(g),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
-                setattr(g, "waypoints", [self.cur_pose, self.cur_pose]),
+                setattr(g, "waypoints", [pose_right, pose_forward, pose_up]),
             ),
         )
 
@@ -467,12 +686,10 @@ class Runner:
                 ),
             )
 
-    def test_simple_move_arm_all(self):
+    # ---------- SimpleMoveArm: 可见版 ----------
+    def test_simple_move_arm_all_visible(self):
         self._require_current_state()
-
-        q = self.cur_pose.orientation
-        # 这里只给 0，简单 action 会转成 RPY；不强求和当前姿态一致，只求走通接口
-        zero_rpy = (0.0, 0.0, 0.0)
+        cur_rpy = self._current_rpy_or_zero()
 
         def fill_dummy_arrays(g):
             g.x = [0.0]
@@ -481,6 +698,15 @@ class Runner:
             g.roll = [0.0]
             g.pitch = [0.0]
             g.yaw = [0.0]
+
+        joints_c = self._visible_joint_target(
+            self.cur_joints, [0.20, -0.20, 0.15, 0.0, 0.0, 0.0]
+        )
+
+        x0 = self.cur_pose.position.x
+        y0 = self.cur_pose.position.y
+        z0 = self.cur_pose.position.z
+        r0, p0, yaw0 = cur_rpy
 
         if self.run_reset_tests:
             self.send_simple_move_arm(
@@ -496,28 +722,28 @@ class Runner:
             )
 
         self.send_simple_move_arm(
-            "MOVE_JOINTS",
+            "MOVE_JOINTS_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", SimpleMoveArmGoal.MOVE_JOINTS),
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POINT),
                 fill_dummy_arrays(g),
                 setattr(g, "joint_names", []),
-                setattr(g, "joints", self.cur_joints),
+                setattr(g, "joints", joints_c),
                 setattr(g, "values", []),
             ),
         )
 
         self.send_simple_move_arm(
-            "MOVE_TARGET",
+            "MOVE_TARGET_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", SimpleMoveArmGoal.MOVE_TARGET),
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
-                setattr(g, "x", [self.cur_pose.position.x]),
-                setattr(g, "y", [self.cur_pose.position.y]),
-                setattr(g, "z", [self.cur_pose.position.z]),
-                setattr(g, "roll", [zero_rpy[0]]),
-                setattr(g, "pitch", [zero_rpy[1]]),
-                setattr(g, "yaw", [zero_rpy[2]]),
+                setattr(g, "x", [x0 + 0.03]),
+                setattr(g, "y", [y0 + 0.02]),
+                setattr(g, "z", [z0 + 0.03]),
+                setattr(g, "roll", [r0]),
+                setattr(g, "pitch", [p0]),
+                setattr(g, "yaw", [yaw0]),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -525,13 +751,13 @@ class Runner:
         )
 
         self.send_simple_move_arm(
-            "MOVE_TARGET_IN_EEF_FRAME",
+            "MOVE_TARGET_IN_EEF_FRAME_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", SimpleMoveArmGoal.MOVE_TARGET_IN_EEF_FRAME),
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
                 setattr(g, "x", [0.0]),
                 setattr(g, "y", [0.0]),
-                setattr(g, "z", [0.0]),
+                setattr(g, "z", [0.05]),
                 setattr(g, "roll", [0.0]),
                 setattr(g, "pitch", [0.0]),
                 setattr(g, "yaw", [0.0]),
@@ -543,40 +769,40 @@ class Runner:
 
         if self.run_end_tests:
             self.send_simple_move_arm(
-                "TELESCOPIC_END",
+                "TELESCOPIC_END_VISIBLE",
                 lambda g: (
                     setattr(g, "command_type", SimpleMoveArmGoal.TELESCOPIC_END),
                     setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POINT),
                     fill_dummy_arrays(g),
                     setattr(g, "joint_names", []),
                     setattr(g, "joints", []),
-                    setattr(g, "values", [0.0]),
+                    setattr(g, "values", [0.02]),
                 ),
             )
 
             self.send_simple_move_arm(
-                "ROTATE_END",
+                "ROTATE_END_VISIBLE",
                 lambda g: (
                     setattr(g, "command_type", SimpleMoveArmGoal.ROTATE_END),
                     setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POINT),
                     fill_dummy_arrays(g),
                     setattr(g, "joint_names", []),
                     setattr(g, "joints", []),
-                    setattr(g, "values", [0.0]),
+                    setattr(g, "values", [0.30]),
                 ),
             )
 
         self.send_simple_move_arm(
-            "MOVE_LINE",
+            "MOVE_LINE_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", SimpleMoveArmGoal.MOVE_LINE),
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
-                setattr(g, "x", [self.cur_pose.position.x, self.cur_pose.position.x]),
-                setattr(g, "y", [self.cur_pose.position.y, self.cur_pose.position.y]),
-                setattr(g, "z", [self.cur_pose.position.z, self.cur_pose.position.z]),
-                setattr(g, "roll", [0.0, 0.0]),
-                setattr(g, "pitch", [0.0, 0.0]),
-                setattr(g, "yaw", [0.0, 0.0]),
+                setattr(g, "x", [x0, x0 + 0.03, x0 + 0.01]),
+                setattr(g, "y", [y0, y0 + 0.02, y0 - 0.02]),
+                setattr(g, "z", [z0 + 0.03, z0 + 0.05, z0 + 0.02]),
+                setattr(g, "roll", [r0, r0, r0]),
+                setattr(g, "pitch", [p0, p0, p0]),
+                setattr(g, "yaw", [yaw0, yaw0, yaw0]),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -584,40 +810,16 @@ class Runner:
         )
 
         self.send_simple_move_arm(
-            "MOVE_BEZIER",
+            "MOVE_BEZIER_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", SimpleMoveArmGoal.MOVE_BEZIER),
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
-                setattr(
-                    g,
-                    "x",
-                    [
-                        self.cur_pose.position.x,
-                        self.cur_pose.position.x,
-                        self.cur_pose.position.x,
-                    ],
-                ),
-                setattr(
-                    g,
-                    "y",
-                    [
-                        self.cur_pose.position.y,
-                        self.cur_pose.position.y,
-                        self.cur_pose.position.y,
-                    ],
-                ),
-                setattr(
-                    g,
-                    "z",
-                    [
-                        self.cur_pose.position.z,
-                        self.cur_pose.position.z,
-                        self.cur_pose.position.z,
-                    ],
-                ),
-                setattr(g, "roll", [0.0, 0.0, 0.0]),
-                setattr(g, "pitch", [0.0, 0.0, 0.0]),
-                setattr(g, "yaw", [0.0, 0.0, 0.0]),
+                setattr(g, "x", [x0, x0 + 0.02, x0 + 0.05]),
+                setattr(g, "y", [y0, y0 + 0.03, y0]),
+                setattr(g, "z", [z0 + 0.02, z0 + 0.06, z0 + 0.03]),
+                setattr(g, "roll", [r0, r0, r0]),
+                setattr(g, "pitch", [p0, p0, p0]),
+                setattr(g, "yaw", [yaw0, yaw0, yaw0]),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -625,16 +827,16 @@ class Runner:
         )
 
         self.send_simple_move_arm(
-            "MOVE_DECARTES",
+            "MOVE_DECARTES_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", SimpleMoveArmGoal.MOVE_DECARTES),
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
-                setattr(g, "x", [self.cur_pose.position.x, self.cur_pose.position.x]),
-                setattr(g, "y", [self.cur_pose.position.y, self.cur_pose.position.y]),
-                setattr(g, "z", [self.cur_pose.position.z, self.cur_pose.position.z]),
-                setattr(g, "roll", [0.0, 0.0]),
-                setattr(g, "pitch", [0.0, 0.0]),
-                setattr(g, "yaw", [0.0, 0.0]),
+                setattr(g, "x", [x0 + 0.01, x0 + 0.04, x0 + 0.02]),
+                setattr(g, "y", [y0 - 0.02, y0, y0 + 0.02]),
+                setattr(g, "z", [z0 + 0.03, z0 + 0.04, z0 + 0.02]),
+                setattr(g, "roll", [r0, r0, r0]),
+                setattr(g, "pitch", [p0, p0, p0]),
+                setattr(g, "yaw", [yaw0, yaw0, yaw0]),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -654,6 +856,7 @@ class Runner:
                 ),
             )
 
+    # ---------- 主流程 ----------
     def run(self):
         self.start_launch()
         time.sleep(5.0)
@@ -667,20 +870,43 @@ class Runner:
         self.check_config_position_constraint()
         self.check_config_joint_constraint()
 
-        self.test_move_arm_all()
-        self.test_simple_move_arm_all()
+        self.test_move_arm_all_visible()
+        self.test_simple_move_arm_all_visible()
 
-        return self.summary()
+        code = self.summary()
+
+        self.info("所有测试已结束。按 Enter 退出并关闭 roslaunch / roscore ...")
+        try:
+            if sys.stdin and sys.stdin.isatty():
+                input()
+            else:
+                self.warn("当前不是交互终端，3 秒后自动退出")
+                time.sleep(3.0)
+        except EOFError:
+            self.warn("stdin 已关闭，自动退出")
+        except KeyboardInterrupt:
+            pass
+
+        return code
 
 
 def main():
-    rospy.init_node("piper_full_interface_tester", anonymous=True)
-    runner = Runner()
+    roscore_proc = None
+    runner = None
+
     try:
+        roscore_proc = start_roscore_if_needed()
+
+        rospy.init_node("piper_full_interface_tester", anonymous=True)
+
+        runner = Runner()
         code = runner.run()
+        sys.exit(code)
+
     finally:
-        runner.stop_launch()
-    sys.exit(code)
+        if runner is not None:
+            runner.stop_launch()
+        stop_process_group(roscore_proc, name="roscore", timeout=5)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 <launch>
+    <include file="$(find piper_with_gripper_moveit)/launch/demo.launch" />
     <node pkg="piper_interface" type="piper_start" name="piper_start" output="screen">
         <rosparam command="load" file="$(find piper_interface)/config/config.yaml" />
     </node>
