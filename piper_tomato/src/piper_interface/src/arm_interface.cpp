@@ -12,7 +12,10 @@ namespace piper {
 
 // ! ========================= 私 有 量 / 函 数 声 明 ========================= ! //
 
-
+bool xyz_sizes_match(const piper_msgs2::SimpleMoveArmGoal& goal);
+bool rpy_sizes_match(const piper_msgs2::SimpleMoveArmGoal& goal);
+geometry_msgs::Quaternion quat_from_rpy(double roll, double pitch, double yaw);
+geometry_msgs::Pose pose_from_goal(const piper_msgs2::SimpleMoveArmGoal& goal, std::size_t index);
 
 // ! ========================= 接 口 类 / 函 数 实 现 ========================= ! //
 
@@ -79,11 +82,13 @@ ArmQueryService::ArmQueryService(ros::NodeHandle& nh, std::shared_ptr<ArmControl
  * @return 转换是否成功
  */
 bool ArmMoveAction::convert_goal_to_request(const piper_msgs2::MoveArmGoal& goal, ArmCmdRequest& req) {
+    req = ArmCmdRequest{};
     req.type = static_cast<ArmCmdType>(goal.command_type);
     if(!(ArmCmdType::MIN < req.type && req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
         return false;
     }
+
     req.joint_names = goal.joint_names;
     req.joints = goal.joints;
 
@@ -163,28 +168,28 @@ void ArmMoveAction::on_preempt() {
  * @return 转换是否成功
  */
 bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveArmGoal& goal, ArmCmdRequest& req) {
+    req = ArmCmdRequest{};
     req.type = static_cast<ArmCmdType>(goal.command_type);
     if(!(ArmCmdType::MIN < req.type && req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
         return false;
     }
+
     req.joint_names = goal.joint_names;
     req.joints = goal.joints;
 
     if(goal.target_type == goal.TARGET_POSE) {
-        geometry_msgs::Pose pose;
-        pose.position.x = goal.x[0];
-        pose.position.y = goal.y[0];
-        pose.position.z = goal.z[0];
-        tf2::Quaternion quat;
-        quat.setRPY(goal.roll[0], goal.pitch[0], goal.yaw[0]);
-        pose.orientation.x = quat.x();
-        pose.orientation.y = quat.y();
-        pose.orientation.z = quat.z();
-        pose.orientation.w = quat.w();
-        req.target = pose;
+        if(!xyz_sizes_match(goal) || !rpy_sizes_match(goal) || goal.x.empty()) {
+            ROS_WARN("接收到的目标位姿数据长度不匹配");
+            return false;
+        }
+        req.target = pose_from_goal(goal, 0);
     }
     else if(goal.target_type == goal.TARGET_POINT) {
+        if(!xyz_sizes_match(goal) || goal.x.empty()) {
+            ROS_WARN("接收到的目标点数据长度不匹配");
+            return false;
+        }
         geometry_msgs::Point point;
         point.x = goal.x[0];
         point.y = goal.y[0];
@@ -192,14 +197,11 @@ bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveA
         req.target = point;
     }
     else if(goal.target_type == goal.TARGET_ORIENTATION) {
-        tf2::Quaternion quat;
-        quat.setRPY(goal.roll[0], goal.pitch[0], goal.yaw[0]);
-        geometry_msgs::Quaternion orientation;
-        orientation.x = quat.x();
-        orientation.y = quat.y();
-        orientation.z = quat.z();
-        orientation.w = quat.w();
-        req.target = orientation;
+        if(!rpy_sizes_match(goal) || goal.roll.empty()) {
+            ROS_WARN("接收到的目标姿态数据长度不匹配");
+            return false;
+        }
+        req.target = quat_from_rpy(goal.roll[0], goal.pitch[0], goal.yaw[0]);
     }
     else {
         ROS_WARN("接收到无效的目标类型: %d", goal.target_type);
@@ -207,19 +209,7 @@ bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveA
     }
 
     req.values = goal.values;
-    for(size_t i = 0; i < goal.x.size(); ++i) {
-        geometry_msgs::Pose waypoint;
-        waypoint.position.x = goal.x[i];
-        waypoint.position.y = goal.y[i];
-        waypoint.position.z = goal.z[i];
-        tf2::Quaternion quat;
-        quat.setRPY(goal.roll[i], goal.pitch[i], goal.yaw[i]);
-        waypoint.orientation.x = quat.x();
-        waypoint.orientation.y = quat.y();
-        waypoint.orientation.z = quat.z();
-        waypoint.orientation.w = quat.w();
-        req.waypoints.push_back(waypoint);
-    }
+    for(size_t i = 0; i < goal.x.size(); ++i) req.waypoints.push_back(pose_from_goal(goal, i));
 
     return true;
 }
@@ -385,6 +375,38 @@ bool ArmQueryService::on_request(piper_msgs2::QueryArm::Request& req, piper_msgs
     res.cur_joint = result.current_joints;
 
     return true;
+}
+
+bool xyz_sizes_match(const piper_msgs2::SimpleMoveArmGoal& goal) {
+    return goal.x.size() == goal.y.size() &&
+        goal.x.size() == goal.z.size();
+}
+
+bool rpy_sizes_match(const piper_msgs2::SimpleMoveArmGoal& goal) {
+    return goal.roll.size() == goal.pitch.size() &&
+        goal.roll.size() == goal.yaw.size();
+}
+
+geometry_msgs::Quaternion quat_from_rpy(double roll, double pitch, double yaw) {
+    tf2::Quaternion quat;
+    quat.setRPY(roll, pitch, yaw);
+    quat.normalize();
+
+    geometry_msgs::Quaternion out;
+    out.x = quat.x();
+    out.y = quat.y();
+    out.z = quat.z();
+    out.w = quat.w();
+    return out;
+}
+
+geometry_msgs::Pose pose_from_goal(const piper_msgs2::SimpleMoveArmGoal& goal, std::size_t index) {
+    geometry_msgs::Pose pose;
+    pose.position.x = goal.x[index];
+    pose.position.y = goal.y[index];
+    pose.position.z = goal.z[index];
+    pose.orientation = quat_from_rpy(goal.roll[index], goal.pitch[index], goal.yaw[index]);
+    return pose;
 }
 
 }
