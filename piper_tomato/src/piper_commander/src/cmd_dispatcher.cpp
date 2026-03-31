@@ -189,11 +189,17 @@ ArmCmdResult ArmCmdDispatcher::execute_if_not_cancelled(ErrorCode code, Feedback
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
 ArmCmdResult ArmCmdDispatcher::handle_home(const ArmCmdRequest& req) {
+    (void)req;
+
     if(is_cancelled()) {
         return make_cancelled();
     }
 
-    _arm_->home();
+    const ErrorCode code = _arm_->home();
+    if(code != ErrorCode::SUCCESS) {
+        return make_err(code, "执行 HOME 失败：" + err_to_string(code));
+    }
+
     return make_ok();
 }
 
@@ -396,14 +402,19 @@ ArmCmdResult ArmCmdDispatcher::handle_set_orientation_constraint(const ArmCmdReq
     if(is_cancelled()) {
         return make_cancelled();
     }
-    if(std::holds_alternative<std::monostate>(req.target) || !std::holds_alternative<geometry_msgs::Quaternion>(req.target)) {
-        return make_err(ErrorCode::FAILURE, "目标必须是一个 Quaternion");
+
+    if(std::holds_alternative<std::monostate>(req.target) ||
+        !std::holds_alternative<geometry_msgs::Quaternion>(req.target)) {
+        return make_err(ErrorCode::INVALID_PARAMETER, "目标必须是一个 Quaternion");
     }
 
-    geometry_msgs::Quaternion target_orientation = std::get<geometry_msgs::Quaternion>(req.target);
-    _arm_->set_orientation_constraint(target_orientation);
+    const geometry_msgs::Quaternion target_orientation =
+        std::get<geometry_msgs::Quaternion>(req.target);
 
-    return make_ok();
+    _arm_->set_orientation_constraint(target_orientation);
+    _arm_->apply_constraints();
+
+    return make_ok("姿态约束已设置并应用");
 }
 
 /**
@@ -415,11 +426,14 @@ ArmCmdResult ArmCmdDispatcher::handle_set_position_constraint(const ArmCmdReques
     if(is_cancelled()) {
         return make_cancelled();
     }
-    if(std::holds_alternative<std::monostate>(req.target) || !std::holds_alternative<geometry_msgs::Point>(req.target)) {
-        return make_err(ErrorCode::FAILURE, "目标必须是一个 Point");
+
+    if(std::holds_alternative<std::monostate>(req.target) ||
+        !std::holds_alternative<geometry_msgs::Point>(req.target)) {
+        return make_err(ErrorCode::INVALID_PARAMETER, "目标必须是一个 Point");
     }
+
     if(req.values.size() != 3) {
-        return make_err(ErrorCode::FAILURE, "位置约束需要一个三维向量参数，表示约束范围大小");
+        return make_err(ErrorCode::INVALID_PARAMETER, "位置约束需要 3 个范围参数：x/y/z");
     }
 
     geometry_msgs::Point target_position = std::get<geometry_msgs::Point>(req.target);
@@ -427,9 +441,11 @@ ArmCmdResult ArmCmdDispatcher::handle_set_position_constraint(const ArmCmdReques
     scope_size.x = req.values[0];
     scope_size.y = req.values[1];
     scope_size.z = req.values[2];
-    _arm_->set_position_constraint(target_position, scope_size);
 
-    return make_ok();
+    _arm_->set_position_constraint(target_position, scope_size);
+    _arm_->apply_constraints();
+
+    return make_ok("位置约束已设置并应用");
 }
 
 /**
@@ -441,20 +457,32 @@ ArmCmdResult ArmCmdDispatcher::handle_set_joint_constraint(const ArmCmdRequest& 
     if(is_cancelled()) {
         return make_cancelled();
     }
+
     if(req.joint_names.empty()) {
-        return make_err(ErrorCode::FAILURE, "关节约束名称列表不能为空");
-    }
-    if(req.values.empty()) {
-        return make_err(ErrorCode::FAILURE, "关节约束值列表不能为空");
+        return make_err(ErrorCode::INVALID_PARAMETER, "关节约束名称列表不能为空");
     }
 
-    uint8_t joint_count = 0;
-    for(const std::string& joint_name : req.joint_names) {
-        _arm_->set_joint_constraint(joint_name, req.joints[joint_count], req.values[joint_count * 2], req.values[joint_count * 2 + 1]);
-        joint_count++;
+    if(req.joints.size() != req.joint_names.size()) {
+        return make_err(ErrorCode::INVALID_PARAMETER,
+            "关节约束 joint_names 与 joints 数量不一致");
     }
 
-    return make_ok();
+    if(req.values.size() != req.joint_names.size() * 2) {
+        return make_err(ErrorCode::INVALID_PARAMETER,
+            "关节约束 values 数量必须等于 joint_names.size() * 2");
+    }
+
+    for(std::size_t i = 0; i < req.joint_names.size(); ++i) {
+        _arm_->set_joint_constraint(
+            req.joint_names[i],
+            req.joints[i],
+            req.values[i * 2],
+            req.values[i * 2 + 1]);
+    }
+
+    _arm_->apply_constraints();
+
+    return make_ok("关节约束已设置并应用");
 }
 
 /**

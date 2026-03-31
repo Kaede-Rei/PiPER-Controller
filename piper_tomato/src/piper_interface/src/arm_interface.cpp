@@ -207,7 +207,7 @@ bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveA
     }
 
     req.values = goal.values;
-    for(size_t i = 1; i < goal.x.size(); ++i) {
+    for(size_t i = 0; i < goal.x.size(); ++i) {
         geometry_msgs::Pose waypoint;
         waypoint.position.x = goal.x[i];
         waypoint.position.y = goal.y[i];

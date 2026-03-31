@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
         geometry_msgs::Pose line_start = arm->get_current_pose();
         geometry_msgs::Pose line_end = line_start;
         line_end.position.y += 0.02;
-        auto line_ret = arm->set_line(line_start, line_end, 0.01, 0.0, piper::TimeParamMethod::TOTG, 0.1, 0.1);
+        auto line_ret = arm->set_line(line_start, line_end);
         log_result("set_line", line_ret.error_code);
         if(line_ret.error_code == piper::ErrorCode::SUCCESS) {
             log_result("execute(line_trajectory)", arm->execute(line_ret.trajectory));
@@ -157,7 +157,7 @@ int main(int argc, char** argv) {
         bezier_via.position.x += 0.02;
         bezier_via.position.y += 0.03;
         bezier_end.position.x += 0.04;
-        auto bezier_ret = arm->set_bezier_curve(bezier_start, bezier_via, bezier_end, 20, 0.01, 0.0, piper::TimeParamMethod::TOTG, 0.1, 0.1);
+        auto bezier_ret = arm->set_bezier_curve(bezier_start, bezier_via, bezier_end, 20, 0.01);
         log_result("set_bezier_curve", bezier_ret.error_code);
         if(bezier_ret.error_code == piper::ErrorCode::SUCCESS) {
             std::atomic<bool> async_exec_done{ false };

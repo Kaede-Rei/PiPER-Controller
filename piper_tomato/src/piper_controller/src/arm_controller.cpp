@@ -82,10 +82,28 @@ ArmController::~ArmController() {
 /**
  * @brief 回到命名位姿 home
  */
-void ArmController::home() {
-    ROS_INFO("将末端执行器复位到 home 位姿");
-    _arm_.setNamedTarget("zero");
-    _arm_.move();
+ErrorCode ArmController::home() {
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，无法执行 home");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    ROS_INFO("将机械臂复位到命名位姿 zero");
+
+    const bool target_ok = _arm_.setNamedTarget("zero");
+    if(!target_ok) {
+        ROS_WARN("设置命名位姿 zero 失败");
+        return ErrorCode::TARGET_OUT_OF_BOUNDS;
+    }
+
+    const moveit::core::MoveItErrorCode err_code = _arm_.move();
+    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+        ROS_WARN("执行 home 失败，错误码：%d", err_code.val);
+        return ErrorCode::EXECUTION_FAILED;
+    }
+
+    ROS_INFO("执行 home 成功");
+    return ErrorCode::SUCCESS;
 }
 
 /**
@@ -113,50 +131,54 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
         return ErrorCode::ASYNC_TASK_RUNNING;
     }
 
-    bool success = std::visit(variant_visitor{
-        [this](const std::monostate&) {
+    ErrorCode result = ErrorCode::INVALID_TARGET_TYPE;
+
+    std::visit(variant_visitor{
+        [this, &result](const std::monostate&) {
             ROS_WARN("目标未设置");
-            return false;
+            result = ErrorCode::INVALID_TARGET_TYPE;
         },
-        [this](const geometry_msgs::Pose& pose) {
+        [this, &result](const geometry_msgs::Pose& pose) {
             geometry_msgs::Pose current_pose = this->_arm_.getCurrentPose().pose;
             double score = -1.0;
             std::vector<double> joint_positions;
             geometry_msgs::Pose reachable_pose;
 
-            auto result = search_reachable_pose(current_pose, pose, score, joint_positions, reachable_pose);
-            if(result == SearchReachablePose_e::SOLUTION_FOUND || result == SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND) {
-                bool res = this->_arm_.setJointValueTarget(joint_positions);
-                ROS_INFO("设置目标位姿（A*关节解）是否成功：%s", res ? "是" : "否");
-                return res;
-            }
-            else {
-                ROS_INFO("未找到可达解，无法设置目标位姿");
-                return false;
+            const auto search_result = search_reachable_pose(
+                current_pose, pose, score, joint_positions, reachable_pose);
+
+            if((search_result == SearchReachablePose_e::SOLUTION_FOUND ||
+                search_result == SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND) &&
+               !joint_positions.empty()) {
+                const bool ok = this->_arm_.setJointValueTarget(joint_positions);
+                ROS_INFO("设置目标位姿（IK/A*关节解）是否成功：%s", ok ? "是" : "否");
+                result = ok ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
+                return;
             }
 
-            bool res = this->_arm_.setPoseTarget(pose);
-            ROS_INFO("设置目标位姿是否成功：%s", res ? "是" : "否");
-            return res;
+            ROS_INFO("未找到可达关节解，回退到 MoveIt PoseTarget 规划");
+            const bool ok = this->_arm_.setPoseTarget(pose);
+            ROS_INFO("设置目标位姿（PoseTarget）是否成功：%s", ok ? "是" : "否");
+            result = ok ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
         },
-        [this](const geometry_msgs::Point& point) {
-            bool res = this->_arm_.setPositionTarget(point.x, point.y, point.z);
-            ROS_INFO("设置目标位置是否成功：%s", res ? "是" : "否");
-            return res;
+        [this, &result](const geometry_msgs::Point& point) {
+            const bool ok = this->_arm_.setPositionTarget(point.x, point.y, point.z);
+            ROS_INFO("设置目标位置是否成功：%s", ok ? "是" : "否");
+            result = ok ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
         },
-        [this](const geometry_msgs::Quaternion& quat) {
-            bool res = this->_arm_.setOrientationTarget(quat.x, quat.y, quat.z, quat.w);
-            ROS_INFO("设置目标姿态是否成功：%s", res ? "是" : "否");
-            return res;
+        [this, &result](const geometry_msgs::Quaternion& quat) {
+            const bool ok = this->_arm_.setOrientationTarget(quat.x, quat.y, quat.z, quat.w);
+            ROS_INFO("设置目标姿态是否成功：%s", ok ? "是" : "否");
+            result = ok ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
         },
-        [this](const geometry_msgs::PoseStamped& pose_stamped) {
-            bool res = this->_arm_.setPoseTarget(pose_stamped);
-            ROS_INFO("设置目标位姿（带时间戳）是否成功：%s", res ? "是" : "否");
-            return res;
+        [this, &result](const geometry_msgs::PoseStamped& pose_stamped) {
+            const bool ok = this->_arm_.setPoseTarget(pose_stamped);
+            ROS_INFO("设置目标位姿（带时间戳）是否成功：%s", ok ? "是" : "否");
+            result = ok ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
         }
         }, target);
 
-    return success ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
+    return result;
 }
 
 /**
@@ -412,17 +434,20 @@ ErrorCode ArmController::parameterize_time(moveit_msgs::RobotTrajectory& traject
  * @brief 笛卡尔轨迹规划
  * @param waypoints 路径点
  * @param eef_step 末端步长
- * @param jump_threshold 跳跃阈值
  * @param time_param_method 时间参数化方法
  * @param vel_scale 速度缩放
  * @param acc_scale 加速度缩放
  * @return 规划结果
  */
-DescartesResult ArmController::plan_decartes(const std::vector<geometry_msgs::Pose>& waypoints, double eef_step, double jump_threshold, TimeParamMethod time_param_method, double vel_scale, double acc_scale) {
+DescartesResult ArmController::plan_decartes(const std::vector<geometry_msgs::Pose>& waypoints, double eef_step, TimeParamMethod time_param_method, double vel_scale, double acc_scale) {
     DescartesResult result;
-    result.error_code = ErrorCode::SUCCESS;
+    result.error_code = ErrorCode::FAILURE;
+    result.success_rate = 0.0;
+    result.message.clear();
+    result.trajectory = moveit_msgs::RobotTrajectory();
 
     if(_is_planning_or_executing_) {
+        result.error_code = ErrorCode::ASYNC_TASK_RUNNING;
         result.message = "当前已有异步任务正在执行，无法进行新的笛卡尔规划";
         return result;
     }
@@ -433,35 +458,58 @@ DescartesResult ArmController::plan_decartes(const std::vector<geometry_msgs::Po
         return result;
     }
 
+    if(eef_step <= 0.0) {
+        result.error_code = ErrorCode::INVALID_PARAMETER;
+        result.message = "eef_step 必须大于 0";
+        return result;
+    }
+
+    if(vel_scale <= 0.0 || vel_scale > 1.0 || acc_scale <= 0.0 || acc_scale > 1.0) {
+        result.error_code = ErrorCode::INVALID_PARAMETER;
+        result.message = "速度/加速度缩放必须在 (0, 1] 范围内";
+        return result;
+    }
+
     moveit_msgs::RobotTrajectory trajectory;
-    double success_rate = _arm_.computeCartesianPath(waypoints, eef_step, trajectory);
+    const double success_rate = _arm_.computeCartesianPath(
+        waypoints,
+        eef_step,
+        trajectory);
+
     result.success_rate = success_rate;
 
     if(success_rate <= 0.0) {
         result.error_code = ErrorCode::DESCARTES_PLANNING_FAILED;
-        result.message = "笛卡尔路径规划失败，无法生成有效的轨迹";
+        result.message = "笛卡尔路径规划失败，无法生成有效轨迹";
         return result;
     }
 
-    if(parameterize_time(trajectory, time_param_method, vel_scale, acc_scale) != ErrorCode::SUCCESS) {
-        result.error_code = ErrorCode::TIME_PARAM_FAILED;
+    if(success_rate < _min_success_rate_) {
+        std::stringstream ss;
+        ss << "笛卡尔路径规划成功率不足："
+            << (success_rate * 100.0)
+            << "%，低于阈值 "
+            << (_min_success_rate_ * 100.0)
+            << "%";
+        result.error_code = ErrorCode::DESCARTES_PLANNING_FAILED;
+        result.message = ss.str();
+        return result;
+    }
+
+    const ErrorCode time_code = parameterize_time(
+        trajectory, time_param_method, vel_scale, acc_scale);
+    if(time_code != ErrorCode::SUCCESS) {
+        result.error_code = time_code;
         result.message = "时间参数化失败";
         return result;
     }
-    result.trajectory = trajectory;
 
-    if(success_rate < _min_success_rate_) {
-        result.error_code = ErrorCode::SUCCESS;
-        std::stringstream ss;
-        ss << "笛卡尔路径规划失败，成功率：" << (success_rate * 100.0) << "%";
-        result.message = ss.str();
-    }
-    else {
-        result.error_code = ErrorCode::SUCCESS;
-        std::stringstream ss;
-        ss << "笛卡尔路径规划成功，成功率：" << (success_rate * 100.0) << "%";
-        result.message = ss.str();
-    }
+    result.trajectory = trajectory;
+    result.error_code = ErrorCode::SUCCESS;
+
+    std::stringstream ss;
+    ss << "笛卡尔路径规划成功，成功率：" << (success_rate * 100.0) << "%";
+    result.message = ss.str();
 
     return result;
 }
@@ -470,46 +518,88 @@ DescartesResult ArmController::plan_decartes(const std::vector<geometry_msgs::Po
  * @brief 规划直线路径
  * @return 规划结果
  */
-DescartesResult ArmController::set_line(const TargetVariant& start, const TargetVariant& end, double eef_step, double jump_threshold, TimeParamMethod time_param_method, double vel_scale, double acc_scale) {
-    geometry_msgs::Pose start_pose;
-    geometry_msgs::Pose end_pose;
+DescartesResult ArmController::set_line(const TargetVariant& start, const TargetVariant& end, double eef_step, TimeParamMethod time_param_method, double vel_scale, double acc_scale) {
+    DescartesResult result;
+    result.error_code = ErrorCode::FAILURE;
+    result.success_rate = 0.0f;
+    result.message.clear();
 
-    start_pose = extract_pose_from_target(start);
-    end_pose = extract_pose_from_target(end);
+    const auto start_pose = extract_pose_from_target(start);
+    const auto end_pose = extract_pose_from_target(end);
+
+    if(!start_pose || !end_pose) {
+        result.error_code = ErrorCode::INVALID_TARGET_TYPE;
+        result.message = "无法从目标中提取位姿";
+        return result;
+    }
 
     std::vector<geometry_msgs::Pose> waypoints;
-    waypoints.push_back(start_pose);
-    waypoints.push_back(end_pose);
+    waypoints.push_back(*start_pose);
+    waypoints.push_back(*end_pose);
 
-    return plan_decartes(waypoints, eef_step, jump_threshold, time_param_method, vel_scale, acc_scale);
+    return plan_decartes(waypoints, eef_step, time_param_method, vel_scale, acc_scale);
 }
 
 /**
  * @brief 规划贝塞尔曲线路径
  * @return 规划结果
  */
-DescartesResult ArmController::set_bezier_curve(const TargetVariant& start, const TargetVariant& via, const TargetVariant& end, int curve_segments, double eef_step, double jump_threshold, TimeParamMethod time_param_method, double vel_scale, double acc_scale) {
-    geometry_msgs::Pose start_pose;
-    geometry_msgs::Pose via_pose;
-    geometry_msgs::Pose end_pose;
+DescartesResult ArmController::set_bezier_curve(const TargetVariant& start, const TargetVariant& via, const TargetVariant& end, int curve_segments, double eef_step, TimeParamMethod time_param_method, double vel_scale, double acc_scale) {
+    DescartesResult result;
+    result.error_code = ErrorCode::FAILURE;
+    result.success_rate = 0.0;
+    result.message.clear();
 
-    start_pose = extract_pose_from_target(start);
-    via_pose = extract_pose_from_target(via);
-    end_pose = extract_pose_from_target(end);
+    if(curve_segments < 1) {
+        result.error_code = ErrorCode::INVALID_PARAMETER;
+        result.message = "curve_segments 必须大于等于 1";
+        return result;
+    }
+
+    const auto start_pose = extract_pose_from_target(start);
+    if(!start_pose) {
+        result.error_code = ErrorCode::INVALID_TARGET_TYPE;
+        result.message = "贝塞尔曲线起点无效";
+        return result;
+    }
+
+    const auto via_pose = extract_pose_from_target(via);
+    if(!via_pose) {
+        result.error_code = ErrorCode::INVALID_TARGET_TYPE;
+        result.message = "贝塞尔曲线控制点无效";
+        return result;
+    }
+
+    const auto end_pose = extract_pose_from_target(end);
+    if(!end_pose) {
+        result.error_code = ErrorCode::INVALID_TARGET_TYPE;
+        result.message = "贝塞尔曲线终点无效";
+        return result;
+    }
 
     std::vector<geometry_msgs::Pose> waypoints;
+    waypoints.reserve(static_cast<std::size_t>(curve_segments + 1));
+
     for(int i = 0; i <= curve_segments; ++i) {
-        double t = static_cast<double>(i) / curve_segments;
+        const double t = static_cast<double>(i) / static_cast<double>(curve_segments);
 
         geometry_msgs::Pose point;
-        point.position.x = (1 - t) * (1 - t) * start_pose.position.x + 2 * (1 - t) * t * via_pose.position.x + t * t * end_pose.position.x;
-        point.position.y = (1 - t) * (1 - t) * start_pose.position.y + 2 * (1 - t) * t * via_pose.position.y + t * t * end_pose.position.y;
-        point.position.z = (1 - t) * (1 - t) * start_pose.position.z + 2 * (1 - t) * t * via_pose.position.z + t * t * end_pose.position.z;
+        point.position.x =
+            (1.0 - t) * (1.0 - t) * start_pose->position.x +
+            2.0 * (1.0 - t) * t * via_pose->position.x +
+            t * t * end_pose->position.x;
+        point.position.y =
+            (1.0 - t) * (1.0 - t) * start_pose->position.y +
+            2.0 * (1.0 - t) * t * via_pose->position.y +
+            t * t * end_pose->position.y;
+        point.position.z =
+            (1.0 - t) * (1.0 - t) * start_pose->position.z +
+            2.0 * (1.0 - t) * t * via_pose->position.z +
+            t * t * end_pose->position.z;
 
-        tf2::Quaternion quat_start, quat_end;
-        tf2::Quaternion quat_interp;
-        tf2::fromMsg(start_pose.orientation, quat_start);
-        tf2::fromMsg(end_pose.orientation, quat_end);
+        tf2::Quaternion quat_start, quat_end, quat_interp;
+        tf2::fromMsg(start_pose->orientation, quat_start);
+        tf2::fromMsg(end_pose->orientation, quat_end);
         quat_interp = quat_start.slerp(quat_end, t);
         quat_interp.normalize();
         point.orientation = tf2::toMsg(quat_interp);
@@ -517,7 +607,7 @@ DescartesResult ArmController::set_bezier_curve(const TargetVariant& start, cons
         waypoints.push_back(point);
     }
 
-    return plan_decartes(waypoints, eef_step, jump_threshold, time_param_method, vel_scale, acc_scale);
+    return plan_decartes(waypoints, eef_step, time_param_method, vel_scale, acc_scale);
 }
 
 /**
@@ -615,24 +705,33 @@ void ArmController::set_position_constraint(const geometry_msgs::Point& target_p
     pcm.header.frame_id = _base_link_;
     pcm.header.stamp = ros::Time::now();
 
-    pcm.target_point_offset.x = target_position.x;
-    pcm.target_point_offset.y = target_position.y;
-    pcm.target_point_offset.z = target_position.z;
+    pcm.target_point_offset.x = 0.0;
+    pcm.target_point_offset.y = 0.0;
+    pcm.target_point_offset.z = 0.0;
 
     shape_msgs::SolidPrimitive bounding_volume;
     bounding_volume.type = shape_msgs::SolidPrimitive::BOX;
     bounding_volume.dimensions.resize(3);
-    bounding_volume.dimensions = { scope_size.x, scope_size.y, scope_size.z };
+    bounding_volume.dimensions[0] = scope_size.x;
+    bounding_volume.dimensions[1] = scope_size.y;
+    bounding_volume.dimensions[2] = scope_size.z;
+
+    geometry_msgs::Pose region_pose;
+    region_pose.position = target_position;
+    region_pose.orientation.w = 1.0;
+
+    pcm.constraint_region.primitives.clear();
+    pcm.constraint_region.primitive_poses.clear();
     pcm.constraint_region.primitives.push_back(bounding_volume);
-    pcm.constraint_region.primitive_poses.push_back(geometry_msgs::Pose());
+    pcm.constraint_region.primitive_poses.push_back(region_pose);
     pcm.weight = weight;
 
     _constraints_.position_constraints.push_back(pcm);
+
     ROS_INFO("已设置末端执行器位置约束，目标位置：(%f, %f, %f)，范围大小：(%f, %f, %f)，权重：%f",
         target_position.x, target_position.y, target_position.z,
         scope_size.x, scope_size.y, scope_size.z, weight);
 }
-
 /**
  * @brief 添加关节约束
  */
@@ -777,10 +876,21 @@ std::vector<std::string> ArmController::get_current_link_names() const {
  */
 ErrorCode ArmController::reset_to_zero() {
     std::vector<double> zeroes = get_current_joints();
+    if(zeroes.empty()) {
+        ROS_WARN("无法获取当前关节，重置到零点失败");
+        return ErrorCode::FAILURE;
+    }
+
     for(auto& value : zeroes) {
         value = 0.0;
     }
-    set_joints(zeroes);
+
+    const ErrorCode set_code = set_joints(zeroes);
+    if(set_code != ErrorCode::SUCCESS) {
+        ROS_WARN("设置零点关节目标失败：%s", err_to_string(set_code).c_str());
+        return set_code;
+    }
+
     return plan_and_execute();
 }
 
@@ -789,40 +899,33 @@ ErrorCode ArmController::reset_to_zero() {
 /**
  * @brief 将 TargetVariant 提取为 Pose
  */
-geometry_msgs::Pose ArmController::extract_pose_from_target(const TargetVariant& target) const {
+tl::optional<geometry_msgs::Pose> ArmController::extract_pose_from_target(const TargetVariant& target) const {
+    const geometry_msgs::Pose current_pose = get_current_pose();
+
     return std::visit(variant_visitor{
-        [](const std::monostate&) {
-            geometry_msgs::Pose default_pose;
-            default_pose.position.x = 0.0;
-            default_pose.position.y = 0.0;
-            default_pose.position.z = 0.0;
-            default_pose.orientation.x = 0.0;
-            default_pose.orientation.y = 0.0;
-            default_pose.orientation.z = 0.0;
-            default_pose.orientation.w = 1.0;
-            return default_pose;
+        [](const std::monostate&) -> tl::optional<geometry_msgs::Pose> {
+            return tl::nullopt;
         },
-        [](const geometry_msgs::Pose& pose) {
+        [](const geometry_msgs::Pose& pose) -> tl::optional<geometry_msgs::Pose> {
             return pose;
         },
-        [this](const geometry_msgs::Point& point) {
+        [&current_pose](const geometry_msgs::Point& point) -> tl::optional<geometry_msgs::Pose> {
             geometry_msgs::Pose pose;
             pose.position = point;
-            pose.orientation = this->get_current_pose().orientation;
+            pose.orientation = current_pose.orientation;
             return pose;
         },
-        [this](const geometry_msgs::Quaternion& quat) {
+        [&current_pose](const geometry_msgs::Quaternion& quat) -> tl::optional<geometry_msgs::Pose> {
             geometry_msgs::Pose pose;
-            pose.position = this->get_current_pose().position;
+            pose.position = current_pose.position;
             pose.orientation = quat;
             return pose;
         },
-        [](const geometry_msgs::PoseStamped& pose_stamped) {
+        [](const geometry_msgs::PoseStamped& pose_stamped) -> tl::optional<geometry_msgs::Pose> {
             return pose_stamped.pose;
         }
         }, target);
 }
-
 /**
  * @brief A* 搜索最近可达目标位姿
  * @param current_pose 当前位姿
@@ -832,12 +935,7 @@ geometry_msgs::Pose ArmController::extract_pose_from_target(const TargetVariant&
  * @param reachable_pose 可达位姿输出
  * @return 搜索结果
  */
-SearchReachablePose_e ArmController::search_reachable_pose(
-    const geometry_msgs::Pose& current_pose,
-    const geometry_msgs::Pose& target_pose,
-    double& score,
-    std::vector<double>& reachable_joints,
-    geometry_msgs::Pose& reachable_pose) {
+SearchReachablePose_e ArmController::search_reachable_pose(const geometry_msgs::Pose& current_pose, const geometry_msgs::Pose& target_pose, double& score, std::vector<double>& reachable_joints, geometry_msgs::Pose& reachable_pose) {
     (void)current_pose;
 
     score = -1.0;
@@ -856,28 +954,39 @@ SearchReachablePose_e ArmController::search_reachable_pose(
         return SearchReachablePose_e::SOLUTION_NOT_FOUND;
     }
 
-    auto try_ik = [&](const geometry_msgs::Pose& pose_base, double candidate_score, SearchReachablePose_e state) {
-        moveit::core::RobotState state_copy(*_current_state_);
-        if(!state_copy.setFromIK(_jmg_, pose_base, 0.0)) {
-            return SearchReachablePose_e::SOLUTION_NOT_FOUND;
-        }
-        state_copy.copyJointGroupPositions(_jmg_, reachable_joints);
-        reachable_pose = pose_base;
-        score = candidate_score;
-        return state;
+    auto try_ik = [&](const geometry_msgs::Pose& pose_base,
+        double candidate_score,
+        SearchReachablePose_e state) {
+            moveit::core::RobotState state_copy(*_current_state_);
+            if(!state_copy.setFromIK(_jmg_, pose_base, 0.0)) {
+                return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+            }
+            state_copy.copyJointGroupPositions(_jmg_, reachable_joints);
+            reachable_pose = pose_base;
+            score = candidate_score;
+            return state;
         };
 
-    auto exact_result = try_ik(target_pose, 0.0, SearchReachablePose_e::SOLUTION_FOUND);
+    const auto exact_result = try_ik(target_pose, 0.0, SearchReachablePose_e::SOLUTION_FOUND);
     if(exact_result == SearchReachablePose_e::SOLUTION_FOUND) {
         ROS_INFO("目标位姿可直接到达，无需 A* 搜索。");
         return exact_result;
     }
 
-    geometry_msgs::TransformStamped tf_stamped = _tf_buffer_.lookupTransform(_eef_link_, _base_link_, ros::Time(0), ros::Duration(1.0));
-    geometry_msgs::TransformStamped tf_stamped_inv = _tf_buffer_.lookupTransform(_base_link_, _eef_link_, ros::Time(0), ros::Duration(1.0));
+    geometry_msgs::TransformStamped tf_stamped;
+    geometry_msgs::TransformStamped tf_stamped_inv;
+    geometry_msgs::Pose target_pose_eef;
 
-    geometry_msgs::Pose target_pose_eef = target_pose;
-    tf2::doTransform(target_pose_eef, target_pose_eef, tf_stamped);
+    try {
+        tf_stamped = _tf_buffer_.lookupTransform(_eef_link_, _base_link_, ros::Time(0), ros::Duration(1.0));
+        tf_stamped_inv = _tf_buffer_.lookupTransform(_base_link_, _eef_link_, ros::Time(0), ros::Duration(1.0));
+        target_pose_eef = target_pose;
+        tf2::doTransform(target_pose_eef, target_pose_eef, tf_stamped);
+    }
+    catch(const tf2::TransformException& e) {
+        ROS_WARN("A* 可达性搜索 TF 变换失败：%s", e.what());
+        return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+    }
 
     ros::NodeHandle pnh("~");
     double step_deg = 5.0;
@@ -898,7 +1007,8 @@ SearchReachablePose_e ArmController::search_reachable_pose(
     tf2::Matrix3x3(q_orig).getRPY(roll_orig, pitch_orig, yaw_orig);
 
     auto encode_key = [](int roll_idx, int pitch_idx) -> std::int64_t {
-        return (static_cast<std::int64_t>(roll_idx) << 32) ^ static_cast<std::uint32_t>(pitch_idx);
+        return (static_cast<std::int64_t>(roll_idx) << 32) ^
+            static_cast<std::uint32_t>(pitch_idx);
         };
 
     auto heuristic = [](double droll, double dpitch) {
@@ -914,6 +1024,7 @@ SearchReachablePose_e ArmController::search_reachable_pose(
 
         tf2::Quaternion q_candidate;
         q_candidate.setRPY(roll_orig + droll, pitch_orig + dpitch, yaw_orig);
+        q_candidate.normalize();
         node.pose.orientation = tf2::toMsg(q_candidate);
         return node;
         };
@@ -950,9 +1061,16 @@ SearchReachablePose_e ArmController::search_reachable_pose(
         if(current_node.depth > 0) {
             geometry_msgs::Pose pose_candidate_base;
             tf2::doTransform(current_node.pose, pose_candidate_base, tf_stamped_inv);
-            auto approx_result = try_ik(pose_candidate_base, current_node.h_cost, SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND);
+
+            const auto approx_result = try_ik(
+                pose_candidate_base,
+                current_node.h_cost,
+                SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND);
+
             if(approx_result == SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND) {
-                ROS_INFO("A* 搜索到近似可达位姿：droll=%.2f°, dpitch=%.2f°", droll * 180.0 / M_PI, dpitch * 180.0 / M_PI);
+                ROS_INFO("A* 搜索到近似可达位姿：droll=%.2f°, dpitch=%.2f°",
+                    droll * 180.0 / M_PI,
+                    dpitch * 180.0 / M_PI);
                 return approx_result;
             }
         }

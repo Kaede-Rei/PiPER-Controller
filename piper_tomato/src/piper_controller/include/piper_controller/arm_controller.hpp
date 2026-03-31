@@ -22,6 +22,7 @@
 
 #include "piper_controller/eef_interface.hpp"
 #include "piper_controller/types.hpp"
+#include "tl_optional/optional.hpp"
 
 namespace piper {
 
@@ -91,8 +92,8 @@ public:
      * @param eef 末端执行器共享指针
      */
     void attach_eef(std::shared_ptr<EndEffector> eef) { _eef_ = std::move(eef); }
-    void home();
 
+    ErrorCode home();
     ErrorCode set_joints(const std::vector<double>& joint_values);
     ErrorCode set_target(const TargetVariant& target);
     ErrorCode set_target_in_eef_frame(const TargetVariant& target);
@@ -108,9 +109,9 @@ public:
     void stop();
 
     ErrorCode parameterize_time(moveit_msgs::RobotTrajectory& trajectory, TimeParamMethod method = TimeParamMethod::TOTG, double vel_scale = 0.1, double acc_scale = 0.1);
-    DescartesResult plan_decartes(const std::vector<geometry_msgs::Pose>& waypoints, double eef_step = 0.01, double jump_threshold = 0.0, TimeParamMethod time_param_method = TimeParamMethod::TOTG, double vel_scale = 0.1, double acc_scale = 0.1);
-    DescartesResult set_line(const TargetVariant& start, const TargetVariant& end, double eef_step = 0.01, double jump_threshold = 0.0, TimeParamMethod time_param_method = TimeParamMethod::TOTG, double vel_scale = 0.1, double acc_scale = 0.1);
-    DescartesResult set_bezier_curve(const TargetVariant& start, const TargetVariant& via, const TargetVariant& end, int curve_segments = 30, double eef_step = 0.01, double jump_threshold = 0.0, TimeParamMethod time_param_method = TimeParamMethod::TOTG, double vel_scale = 0.1, double acc_scale = 0.1);
+    DescartesResult plan_decartes(const std::vector<geometry_msgs::Pose>& waypoints, double eef_step = 0.01, TimeParamMethod time_param_method = TimeParamMethod::TOTG, double vel_scale = 0.1, double acc_scale = 0.1);
+    DescartesResult set_line(const TargetVariant& start, const TargetVariant& end, double eef_step = 0.01, TimeParamMethod time_param_method = TimeParamMethod::TOTG, double vel_scale = 0.1, double acc_scale = 0.1);
+    DescartesResult set_bezier_curve(const TargetVariant& start, const TargetVariant& via, const TargetVariant& end, int curve_segments = 30, double eef_step = 0.01, TimeParamMethod time_param_method = TimeParamMethod::TOTG, double vel_scale = 0.1, double acc_scale = 0.1);
     ErrorCode execute(const moveit_msgs::RobotTrajectory& trajectory);
     ErrorCode async_execute(const moveit_msgs::RobotTrajectory& trajectory, std::function<void(ErrorCode)> callback = nullptr);
 
@@ -139,7 +140,7 @@ public:
     ErrorCode reset_to_zero();
 
 private:
-    geometry_msgs::Pose extract_pose_from_target(const TargetVariant& target) const;
+    tl::optional<geometry_msgs::Pose> extract_pose_from_target(const TargetVariant& target) const;
     SearchReachablePose_e search_reachable_pose(const geometry_msgs::Pose& current_pose, const geometry_msgs::Pose& target_pose, double& score, std::vector<double>& reachable_joints, geometry_msgs::Pose& reachable_pose);
 
 private:
@@ -154,9 +155,9 @@ private:
     tf2_ros::TransformListener _tf_listener_;
 
     /// @brief 机械臂关节模型组指针
-    const robot_state::JointModelGroup* _jmg_;
+    const robot_state::JointModelGroup* _jmg_{ nullptr };
     /// @brief 当前机械臂状态指针
-    robot_state::RobotStatePtr _current_state_;
+    robot_state::RobotStatePtr _current_state_{ nullptr };
 
     /// @brief 规划基坐标系
     const std::string _base_link_;
