@@ -126,6 +126,7 @@ private:
     std::shared_ptr<ArmController> _arm_;
     std::atomic_bool _is_cancelled_{ false };
 
+    void fill_current_state(ArmCmdResult& result) const;
     ArmCmdResult make_ok(const std::string& msg = "命令执行成功");
     ArmCmdResult make_err(ErrorCode code = ErrorCode::FAILURE, const std::string& msg = "命令执行失败");
     ArmCmdResult make_cancelled();

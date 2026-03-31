@@ -99,6 +99,29 @@ bool ArmCmdDispatcher::is_cancelled() const {
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
 
+void ArmCmdDispatcher::fill_current_state(ArmCmdResult& result) const {
+    if(!_arm_) {
+        result.current_pose = geometry_msgs::Pose{};
+        result.current_joints.clear();
+        return;
+    }
+
+    result.current_pose = _arm_->get_current_pose();
+    result.current_joints = _arm_->get_current_joints();
+
+    const auto& q = result.current_pose.orientation;
+    const double q_norm = std::sqrt(
+        q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
+    );
+
+    if(q_norm < 1e-9) {
+        result.current_pose.orientation.x = 0.0;
+        result.current_pose.orientation.y = 0.0;
+        result.current_pose.orientation.z = 0.0;
+        result.current_pose.orientation.w = 1.0;
+    }
+}
+
 /**
  * @brief 构造一个成功的命令结果
  * @param msg 结果消息，默认为 "命令执行成功"
@@ -109,6 +132,7 @@ ArmCmdResult ArmCmdDispatcher::make_ok(const std::string& msg) {
     result.success = true;
     result.message = msg;
     result.error_code = ErrorCode::SUCCESS;
+    fill_current_state(result);
 
     return result;
 }
@@ -124,6 +148,7 @@ ArmCmdResult ArmCmdDispatcher::make_err(ErrorCode code, const std::string& msg) 
     result.success = false;
     result.message = msg;
     result.error_code = code;
+    fill_current_state(result);
 
     return result;
 }
@@ -137,6 +162,7 @@ ArmCmdResult ArmCmdDispatcher::make_cancelled() {
     result.success = false;
     result.message = "命令已取消";
     result.error_code = ErrorCode::CANCELLED;
+    fill_current_state(result);
 
     return result;
 }

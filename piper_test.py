@@ -153,7 +153,7 @@ class Runner:
         )
 
         self.test_joint_name = rospy.get_param(
-            "~test_joint_name", os.environ.get("TEST_JOINT_NAME", "link1")
+            "~test_joint_name", os.environ.get("TEST_JOINT_NAME", "joint1")
         )
 
         self.run_reset_tests = rospy.get_param("~run_reset_tests", True)
@@ -463,7 +463,15 @@ class Runner:
             goal = MoveArmGoal()
             fill_goal_fn(goal)
 
-            self.move_client.send_goal(goal)
+            def feedback_cb(fb):
+                try:
+                    self.info(
+                        f"[{name}] stage={fb.stage} progress={fb.progress:.1f}% message={fb.message}"
+                    )
+                except Exception:
+                    pass
+
+            self.move_client.send_goal(goal, feedback_cb=feedback_cb)
             finished = self.move_client.wait_for_result(rospy.Duration(timeout))
             if not finished:
                 self.move_client.cancel_goal()
@@ -491,7 +499,15 @@ class Runner:
             goal = SimpleMoveArmGoal()
             fill_goal_fn(goal)
 
-            self.simple_client.send_goal(goal)
+            def feedback_cb(fb):
+                try:
+                    self.info(
+                        f"[{name}] stage={fb.stage} progress={fb.progress:.1f}% message={fb.message}"
+                    )
+                except Exception:
+                    pass
+
+            self.simple_client.send_goal(goal, feedback_cb=feedback_cb)
             finished = self.simple_client.wait_for_result(rospy.Duration(timeout))
             if not finished:
                 self.simple_client.cancel_goal()
@@ -517,24 +533,12 @@ class Runner:
 
     # ---------- MoveArm: 可见版 ----------
     def test_move_arm_all_visible(self):
+        self.refresh_current_state()
         self._require_current_state()
 
         def dummy_point(g):
             g.target_type = MoveArmGoal.TARGET_POINT
             g.point = Point(0.0, 0.0, 0.0)
-
-        pose_up = self._pose_offset(self.cur_pose, dz=0.04)
-        pose_down = self._pose_offset(self.cur_pose, dz=-0.02)
-        pose_left = self._pose_offset(self.cur_pose, dy=0.03, dz=0.02)
-        pose_right = self._pose_offset(self.cur_pose, dy=-0.03, dz=0.02)
-        pose_forward = self._pose_offset(self.cur_pose, dx=0.04, dz=0.03)
-
-        joints_a = self._visible_joint_target(
-            self.cur_joints, [0.35, 0.20, 0.00, 0.00, 0.00, 0.00]
-        )
-        joints_b = self._visible_joint_target(
-            self.cur_joints, [-0.25, 0.30, 0.10, 0.00, 0.00, 0.00]
-        )
 
         if self.run_reset_tests:
             self.send_move_arm(
@@ -548,6 +552,16 @@ class Runner:
                     setattr(g, "waypoints", []),
                 ),
             )
+
+        # 现取 joints，再做可见的小偏移
+        self.refresh_current_state()
+        self._require_current_state()
+        joints_a = self._visible_joint_target(
+            self.cur_joints, [0.20, 0.10, 0.00, 0.00, 0.00, 0.00]
+        )
+        joints_b = self._visible_joint_target(
+            self.cur_joints, [-0.15, 0.15, 0.05, 0.00, 0.00, 0.00]
+        )
 
         self.send_move_arm(
             "MOVE_JOINTS_A",
@@ -573,6 +587,8 @@ class Runner:
             ),
         )
 
+        # 普通目标：每次现取当前 pose 再偏移
+        pose_up = self.current_pose_plus(dz=0.02)
         self.send_move_arm(
             "MOVE_TARGET_UP",
             lambda g: (
@@ -586,6 +602,7 @@ class Runner:
             ),
         )
 
+        pose_forward = self.current_pose_plus(dx=0.02)
         self.send_move_arm(
             "MOVE_TARGET_FORWARD",
             lambda g: (
@@ -604,7 +621,7 @@ class Runner:
             lambda g: (
                 setattr(g, "command_type", MoveArmGoal.MOVE_TARGET_IN_EEF_FRAME),
                 setattr(g, "target_type", MoveArmGoal.TARGET_POSE),
-                setattr(g, "pose", self._pose_offset(self._identity_pose(), dz=0.05)),
+                setattr(g, "pose", self._pose_offset(self._identity_pose(), dz=0.01)),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -620,7 +637,7 @@ class Runner:
                     dummy_point(g),
                     setattr(g, "joint_names", []),
                     setattr(g, "joints", []),
-                    setattr(g, "values", [0.02]),
+                    setattr(g, "values", [0.01]),
                     setattr(g, "waypoints", []),
                 ),
             )
@@ -632,11 +649,20 @@ class Runner:
                     dummy_point(g),
                     setattr(g, "joint_names", []),
                     setattr(g, "joints", []),
-                    setattr(g, "values", [0.30]),
+                    setattr(g, "values", [0.05]),
                     setattr(g, "waypoints", []),
                 ),
             )
 
+        # ===== 笛卡尔：参照 test_node，现取当前 pose，路径尽量温和 =====
+
+        # line: 当前 pose -> y + 0.02
+        line_start, line_end = self.current_pose_triplet(
+            [
+                (0.00, 0.00, 0.00),
+                (0.00, 0.02, 0.00),
+            ]
+        )
         self.send_move_arm(
             "MOVE_LINE_VISIBLE",
             lambda g: (
@@ -645,10 +671,18 @@ class Runner:
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
-                setattr(g, "waypoints", [pose_left, pose_right]),
+                setattr(g, "waypoints", [line_start, line_end]),
             ),
         )
 
+        # bezier: 当前 pose 为起点，via/end 参照 test_node
+        bezier_start, bezier_via, bezier_end = self.current_pose_triplet(
+            [
+                (0.00, 0.00, 0.00),
+                (0.02, 0.03, 0.00),
+                (0.04, 0.00, 0.00),
+            ]
+        )
         self.send_move_arm(
             "MOVE_BEZIER_VISIBLE",
             lambda g: (
@@ -657,10 +691,19 @@ class Runner:
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
-                setattr(g, "waypoints", [pose_up, pose_left, pose_down]),
+                setattr(g, "waypoints", [bezier_start, bezier_via, bezier_end]),
             ),
+            timeout=45.0,
         )
 
+        # decartes: 3 个连续小步 waypoint，不要跨太大
+        d1, d2, d3 = self.current_pose_triplet(
+            [
+                (0.00, 0.008, 0.000),
+                (0.005, 0.016, 0.000),
+                (0.010, 0.024, 0.000),
+            ]
+        )
         self.send_move_arm(
             "MOVE_DECARTES_VISIBLE",
             lambda g: (
@@ -669,8 +712,9 @@ class Runner:
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
-                setattr(g, "waypoints", [pose_right, pose_forward, pose_up]),
+                setattr(g, "waypoints", [d1, d2, d3]),
             ),
+            timeout=45.0,
         )
 
         if self.run_reset_tests:
@@ -688,8 +732,8 @@ class Runner:
 
     # ---------- SimpleMoveArm: 可见版 ----------
     def test_simple_move_arm_all_visible(self):
+        self.refresh_current_state()
         self._require_current_state()
-        cur_rpy = self._current_rpy_or_zero()
 
         def fill_dummy_arrays(g):
             g.x = [0.0]
@@ -698,15 +742,6 @@ class Runner:
             g.roll = [0.0]
             g.pitch = [0.0]
             g.yaw = [0.0]
-
-        joints_c = self._visible_joint_target(
-            self.cur_joints, [0.20, -0.20, 0.15, 0.0, 0.0, 0.0]
-        )
-
-        x0 = self.cur_pose.position.x
-        y0 = self.cur_pose.position.y
-        z0 = self.cur_pose.position.z
-        r0, p0, yaw0 = cur_rpy
 
         if self.run_reset_tests:
             self.send_simple_move_arm(
@@ -721,6 +756,12 @@ class Runner:
                 ),
             )
 
+        self.refresh_current_state()
+        self._require_current_state()
+        joints_c = self._visible_joint_target(
+            self.cur_joints, [0.10, 0.10, 0.08, 0.0, 0.0, 0.0]
+        )
+
         self.send_simple_move_arm(
             "MOVE_JOINTS_VISIBLE",
             lambda g: (
@@ -733,17 +774,18 @@ class Runner:
             ),
         )
 
+        x, y, z, r, p, yw = self.current_simple_pose_arrays([(0.02, 0.00, 0.00)])
         self.send_simple_move_arm(
             "MOVE_TARGET_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", SimpleMoveArmGoal.MOVE_TARGET),
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
-                setattr(g, "x", [x0 + 0.03]),
-                setattr(g, "y", [y0 + 0.02]),
-                setattr(g, "z", [z0 + 0.03]),
-                setattr(g, "roll", [r0]),
-                setattr(g, "pitch", [p0]),
-                setattr(g, "yaw", [yaw0]),
+                setattr(g, "x", x),
+                setattr(g, "y", y),
+                setattr(g, "z", z),
+                setattr(g, "roll", r),
+                setattr(g, "pitch", p),
+                setattr(g, "yaw", yw),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -757,7 +799,7 @@ class Runner:
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
                 setattr(g, "x", [0.0]),
                 setattr(g, "y", [0.0]),
-                setattr(g, "z", [0.05]),
+                setattr(g, "z", [0.01]),
                 setattr(g, "roll", [0.0]),
                 setattr(g, "pitch", [0.0]),
                 setattr(g, "yaw", [0.0]),
@@ -776,7 +818,7 @@ class Runner:
                     fill_dummy_arrays(g),
                     setattr(g, "joint_names", []),
                     setattr(g, "joints", []),
-                    setattr(g, "values", [0.02]),
+                    setattr(g, "values", [0.01]),
                 ),
             )
 
@@ -788,59 +830,87 @@ class Runner:
                     fill_dummy_arrays(g),
                     setattr(g, "joint_names", []),
                     setattr(g, "joints", []),
-                    setattr(g, "values", [0.30]),
+                    setattr(g, "values", [0.05]),
                 ),
             )
 
+        # ===== 笛卡尔 =====
+
+        # MOVE_LINE: 必须 2 点
+        x, y, z, r, p, yw = self.current_simple_pose_arrays(
+            [
+                (0.00, 0.00, 0.00),
+                (0.00, 0.02, 0.00),
+            ]
+        )
         self.send_simple_move_arm(
             "MOVE_LINE_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", SimpleMoveArmGoal.MOVE_LINE),
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
-                setattr(g, "x", [x0, x0 + 0.03, x0 + 0.01]),
-                setattr(g, "y", [y0, y0 + 0.02, y0 - 0.02]),
-                setattr(g, "z", [z0 + 0.03, z0 + 0.05, z0 + 0.02]),
-                setattr(g, "roll", [r0, r0, r0]),
-                setattr(g, "pitch", [p0, p0, p0]),
-                setattr(g, "yaw", [yaw0, yaw0, yaw0]),
+                setattr(g, "x", x),
+                setattr(g, "y", y),
+                setattr(g, "z", z),
+                setattr(g, "roll", r),
+                setattr(g, "pitch", p),
+                setattr(g, "yaw", yw),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
             ),
+            timeout=45.0,
         )
 
+        # MOVE_BEZIER: 参照 test_node 的 via/end
+        x, y, z, r, p, yw = self.current_simple_pose_arrays(
+            [
+                (0.00, 0.00, 0.00),
+                (0.02, 0.03, 0.00),
+                (0.04, 0.00, 0.00),
+            ]
+        )
         self.send_simple_move_arm(
             "MOVE_BEZIER_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", SimpleMoveArmGoal.MOVE_BEZIER),
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
-                setattr(g, "x", [x0, x0 + 0.02, x0 + 0.05]),
-                setattr(g, "y", [y0, y0 + 0.03, y0]),
-                setattr(g, "z", [z0 + 0.02, z0 + 0.06, z0 + 0.03]),
-                setattr(g, "roll", [r0, r0, r0]),
-                setattr(g, "pitch", [p0, p0, p0]),
-                setattr(g, "yaw", [yaw0, yaw0, yaw0]),
+                setattr(g, "x", x),
+                setattr(g, "y", y),
+                setattr(g, "z", z),
+                setattr(g, "roll", r),
+                setattr(g, "pitch", p),
+                setattr(g, "yaw", yw),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
             ),
+            timeout=45.0,
         )
 
+        # MOVE_DECARTES: 3 个连续小步
+        x, y, z, r, p, yw = self.current_simple_pose_arrays(
+            [
+                (0.00, 0.008, 0.000),
+                (0.005, 0.016, 0.000),
+                (0.010, 0.024, 0.000),
+            ]
+        )
         self.send_simple_move_arm(
             "MOVE_DECARTES_VISIBLE",
             lambda g: (
                 setattr(g, "command_type", SimpleMoveArmGoal.MOVE_DECARTES),
                 setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
-                setattr(g, "x", [x0 + 0.01, x0 + 0.04, x0 + 0.02]),
-                setattr(g, "y", [y0 - 0.02, y0, y0 + 0.02]),
-                setattr(g, "z", [z0 + 0.03, z0 + 0.04, z0 + 0.02]),
-                setattr(g, "roll", [r0, r0, r0]),
-                setattr(g, "pitch", [p0, p0, p0]),
-                setattr(g, "yaw", [yaw0, yaw0, yaw0]),
+                setattr(g, "x", x),
+                setattr(g, "y", y),
+                setattr(g, "z", z),
+                setattr(g, "roll", r),
+                setattr(g, "pitch", p),
+                setattr(g, "yaw", yw),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
             ),
+            timeout=45.0,
         )
 
         if self.run_reset_tests:
@@ -856,6 +926,75 @@ class Runner:
                 ),
             )
 
+    def refresh_current_state(self):
+        """每次真正发运动命令前，从服务端重新取一次当前 joints / pose。"""
+        try:
+            q_srv = self.query_proxy()
+
+            q_req = QueryArmRequest()
+            q_req.command_type = QueryArmRequest.GET_CURRENT_JOINTS
+            q_req.values = []
+            q_res = q_srv(q_req)
+            if q_res.success and len(q_res.cur_joint) > 0:
+                self.cur_joints = list(q_res.cur_joint)
+            else:
+                self.warn(f"刷新当前关节失败，沿用缓存值: {q_res.message}")
+
+            p_req = QueryArmRequest()
+            p_req.command_type = QueryArmRequest.GET_CURRENT_POSE
+            p_req.values = []
+            p_res = q_srv(p_req)
+            if p_res.success and quat_norm(p_res.cur_pose.orientation) > 1e-6:
+                self.cur_pose = p_res.cur_pose
+            else:
+                self.warn(f"刷新当前位姿失败，沿用缓存值: {p_res.message}")
+        except Exception as e:
+            self.warn(f"刷新当前状态异常，沿用缓存值: {e}")
+
+    def current_pose_plus(self, dx=0.0, dy=0.0, dz=0.0):
+        """现取当前 pose，再做偏移。"""
+        self.refresh_current_state()
+        self._require_current_state()
+        return self._pose_offset(self.cur_pose, dx=dx, dy=dy, dz=dz)
+
+    def current_pose_triplet(self, offsets):
+        """
+        offsets: [(dx,dy,dz), ...]
+        返回基于同一个“当前 pose 基准”的多个 waypoint。
+        """
+        self.refresh_current_state()
+        self._require_current_state()
+        base = self._copy_pose(self.cur_pose)
+        out = []
+        for dx, dy, dz in offsets:
+            out.append(self._pose_offset(base, dx=dx, dy=dy, dz=dz))
+        return out
+
+    def current_simple_pose_arrays(self, offsets):
+        """
+        offsets: [(dx,dy,dz), ...]
+        现取当前 pose + 当前 rpy，生成 SimpleMoveArmGoal 所需数组。
+        """
+        self.refresh_current_state()
+        self._require_current_state()
+
+        base = self._copy_pose(self.cur_pose)
+        r0, p0, y0 = self._current_rpy_or_zero()
+
+        xs, ys, zs = [], [], []
+        rs, ps, ysaw = [], [], []
+
+        for dx, dy, dz in offsets:
+            pose = self._pose_offset(base, dx=dx, dy=dy, dz=dz)
+            xs.append(pose.position.x)
+            ys.append(pose.position.y)
+            zs.append(pose.position.z)
+            rs.append(r0)
+            ps.append(p0)
+            ysaw.append(y0)
+
+        return xs, ys, zs, rs, ps, ysaw
+
     # ---------- 主流程 ----------
     def run(self):
         self.start_launch()
@@ -866,12 +1005,12 @@ class Runner:
         self.check_query_current_joints()
         self.check_query_current_pose()
 
+        self.test_move_arm_all_visible()
+        self.test_simple_move_arm_all_visible()
+
         self.check_config_orientation_constraint()
         self.check_config_position_constraint()
         self.check_config_joint_constraint()
-
-        self.test_move_arm_all_visible()
-        self.test_simple_move_arm_all_visible()
 
         code = self.summary()
 

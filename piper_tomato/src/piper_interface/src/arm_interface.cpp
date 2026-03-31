@@ -223,8 +223,15 @@ void SimpleArmMoveAction::on_goal() {
         piper_msgs2::SimpleMoveArmResult res;
         res.success = false;
         res.message = "空目标";
-        _as_->setAborted(res, res.message);
+        res.error_code = static_cast<int32_t>(ErrorCode::INVALID_PARAMETER);
+        res.cur_x = 0.0;
+        res.cur_y = 0.0;
+        res.cur_z = 0.0;
+        res.cur_roll = 0.0;
+        res.cur_pitch = 0.0;
+        res.cur_yaw = 0.0;
 
+        _as_->setAborted(res, res.message);
         return;
     }
 
