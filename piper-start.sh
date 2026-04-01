@@ -104,7 +104,7 @@ echo "[CAN] 配置完成"
 
 # 启动 ROS
 echo "[2/2] 启动 ROS Launch"
-setsid roslaunch piper_service start.launch &
+setsid roslaunch piper_interface piper_start.launch &
 ROSLAUNCH_PID=$!
 SUCESS=true
 

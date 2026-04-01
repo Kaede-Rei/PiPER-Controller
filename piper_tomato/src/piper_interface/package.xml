@@ -23,6 +23,7 @@
     <depend>piper_controller</depend>
     <depend>piper_commander</depend>
     <depend>piper_msgs2</depend>
+    <depend>serial_driver</depend>
 
     <export>
 

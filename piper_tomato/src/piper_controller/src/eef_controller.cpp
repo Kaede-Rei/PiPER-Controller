@@ -201,7 +201,7 @@ std::vector<std::string> TwoFingerGripper::get_force_names() const {
  */
 ErrorCode TwoFingerGripper::get_force(const std::string& force_name, double& force_value) const {
     ROS_WARN("末端执行器控制器 [%s] 暂时不支持获取力反馈，力反馈名称：%s，力反馈数值：%.3f", get_eef_name().c_str(), force_name.c_str(), force_value);
-    return ErrorCode::SUCCESS;
+    return ErrorCode::FAILURE;
 }
 
 /**
@@ -224,7 +224,7 @@ ServoGripper::ServoGripper(ros::NodeHandle& nh, const geometry_msgs::Pose& tcp_o
  * @brief 停止舵机动作
  */
 void ServoGripper::stop() {
-    // todo: 发送停止命令到舵机
+    // TODO: 发送停止命令到舵机
     ROS_INFO("总线舵机末端执行器控制器 已停止");
 }
 

@@ -119,6 +119,7 @@ ErrorCode TasksManager::add_task(const std::string& group_name, int id, TaskType
     Task new_task;
     new_task.desc = task_description;
     new_task.type = task_type;
+    new_task.id = id;
 
     if(task_group->second.tasks.find(id) != task_group->second.tasks.end()) {
         ROS_WARN("任务组 '%s' 中已存在任务 ID %d，无法添加", group_name.c_str(), id);

@@ -41,6 +41,13 @@
 
 ## 📋 快速开始
 
+> ⚠️ 当前仓库存在两条链路：
+>
+> - 旧链路：`piper_service` + `/piper_server/*` 服务
+> - 新链路（推荐）：`piper_tomato` + `piper_interface`（`/move_arm`、`/simple_move_arm`、`/arm_config`、`/arm_query`）
+>
+> 本 README 下方大部分示例仍是旧链路接口。若你正在开发 `piper_tomato`，请优先使用新链路接口。
+
 ### 1. 环境准备
 
 #### 系统依赖
@@ -169,8 +176,14 @@ ip link show can0
 #### 启动系统
 
 ```bash
-# 完整系统启动（包含硬件接口、服务）
-./piper-start.sh
+# 新链路推荐启动（piper_tomato）
+roslaunch piper_interface piper_start.launch
+
+# 可选：只启动接口层（不自动拉起 MoveIt demo）
+roslaunch piper_interface piper_start.launch start_moveit:=false
+
+# 兼容旧链路启动脚本（仍可用，但接口命名不同）
+# ./piper-start.sh
 
 # 可选参数：
 # ./piper-start.sh --disable  # 中断时失能机械臂
@@ -181,21 +194,46 @@ ip link show can0
 
 ```
 [INFO] [timestamp]: =====================================
-[INFO] [timestamp]:    Piper 控制服务已启动
+[INFO] [timestamp]:    Piper 控制接口已启动
 [INFO] [timestamp]: =====================================
-[INFO] [timestamp]: 可用的服务：
-[INFO] [timestamp]:   * /piper_server/eef_cmd
-[INFO] [timestamp]:     └─ 末端位姿控制服务
-[INFO] [timestamp]:   * /piper_server/task_planner
-[INFO] [timestamp]:     └─ 任务组规划服务
+[INFO] [timestamp]: 可用接口：
+[INFO] [timestamp]:   * /move_arm (action)
+[INFO] [timestamp]:   * /simple_move_arm (action)
+[INFO] [timestamp]:   * /arm_config (service)
+[INFO] [timestamp]:   * /arm_query (service)
 [INFO] [timestamp]: =====================================
 ```
 
 #### 测试服务
 
 ```bash
-# 运行测试脚本
-source test_service.sh
+# 运行新链路测试脚本
+python3 piper_test.py
+```
+
+### 新链路快速验证
+
+#### 查询当前状态（`arm_query`）
+
+```bash
+rosservice call /arm_query "command_type: 13
+values: []"
+```
+
+```bash
+rosservice call /arm_query "command_type: 14
+values: []"
+```
+
+#### 设置约束（`arm_config`）
+
+```bash
+rosservice call /arm_config "command_type: 10
+point: {x: 0.0, y: 0.0, z: 0.0}
+quaternion: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+joint_names: []
+joints: []
+values: []"
 ```
 
 ## 📊 完整使用流程

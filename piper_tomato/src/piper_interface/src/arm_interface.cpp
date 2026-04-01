@@ -245,7 +245,13 @@ void SimpleArmMoveAction::on_goal() {
         return;
     }
 
-    auto result = _dispatcher_->dispatch(req);
+    auto result = _dispatcher_->dispatch(req, [this](const ArmCmdFeedback& fb) {
+        piper_msgs2::SimpleMoveArmFeedback feedback;
+        feedback.stage = fb.stage;
+        feedback.progress = fb.progress;
+        feedback.message = fb.message;
+        this->_as_->publishFeedback(feedback);
+        });
 
     piper_msgs2::SimpleMoveArmResult res;
     res.success = result.success;
