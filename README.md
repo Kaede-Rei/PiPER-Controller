@@ -176,14 +176,11 @@ ip link show can0
 #### 启动系统
 
 ```bash
-# 新链路推荐启动（piper_tomato）
+# 启动硬件接口和 ROS 服务
 roslaunch piper_interface piper_start.launch
 
 # 可选：只启动接口层（不自动拉起 MoveIt demo）
 roslaunch piper_interface piper_start.launch start_moveit:=false
-
-# 兼容旧链路启动脚本（仍可用，但接口命名不同）
-# ./piper-start.sh
 
 # 可选参数：
 # ./piper-start.sh --disable  # 中断时失能机械臂
@@ -208,7 +205,7 @@ roslaunch piper_interface piper_start.launch start_moveit:=false
 
 ```bash
 # 运行新链路测试脚本
-python3 piper_test.py
+python piper_test.py
 ```
 
 ### 新链路快速验证

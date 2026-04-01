@@ -11,7 +11,8 @@ namespace piper {
 // ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
 
 /**
- * @brief 机械臂命令类型枚举（0 ~ MAX-1），每个命令类型对应 ArmCmdDispatcher 中的一个处理函数
+ * @brief 机械臂命令表，基于 X-Macro 定义，方便维护和扩展，只需修改此处即可
+ * @note X(name, handler, has_fb, desc) -> X(命令名称, 处理函数后缀, 是否有反馈, 命令描述)
  * @param HOME 回到初始位置
  * @param MOVE_JOINTS 关节空间运动
  * @param MOVE_TARGET 末端执行器空间运动
@@ -29,25 +30,33 @@ namespace piper {
  * @param MOVE_TO_ZERO 重置到零点
  * @param MAX 枚举值数量，用于验证输入合法性
  */
+#define PIPER_ARM_CMD_TABLE \
+    X(HOME, home, false, "回到初始位置") \
+    X(MOVE_JOINTS, move_joints, true, "关节空间运动") \
+    X(MOVE_TARGET, move_target, true, "末端执行器空间运动") \
+    X(MOVE_TARGET_IN_EEF_FRAME, move_target_in_eef_frame, true, "末端执行器空间运动，目标相对于当前末端执行器位置") \
+    X(TELESCOPIC_END, telescopic_end, true, "伸缩末端") \
+    X(ROTATE_END, rotate_end, true, "旋转末端") \
+    X(MOVE_LINE, move_line, true, "直线运动") \
+    X(MOVE_BEZIER, move_bezier, true, "贝塞尔曲线运动") \
+    X(MOVE_DECARTES, move_decartes, true, "笛卡尔空间运动，路径由多个位姿点组成") \
+    X(SET_ORIENTATION_CONSTRAINT, set_orientation_constraint, false, "设置姿态约束") \
+    X(SET_POSITION_CONSTRAINT, set_position_constraint, false, "设置位置约束") \
+    X(SET_JOINT_CONSTRAINT, set_joint_constraint, false, "设置关节约束") \
+    X(GET_CURRENT_JOINTS, get_current_joints, false, "获取当前关节角") \
+    X(GET_CURRENT_POSE, get_current_pose, false, "获取当前位姿") \
+    X(MOVE_TO_ZERO, move_to_zero, true, "重置到零点")
+
+/**
+ * @brief 机械臂命令类型枚举（0 ~ MAX-1），每个命令类型对应 ArmCmdDispatcher 中的一个处理函数
+ */
+#define X(name, handler, has_fb, desc) name,
 enum class ArmCmdType {
     MIN = 0,
-    HOME,
-    MOVE_JOINTS,
-    MOVE_TARGET,
-    MOVE_TARGET_IN_EEF_FRAME,
-    TELESCOPIC_END,
-    ROTATE_END,
-    MOVE_LINE,
-    MOVE_BEZIER,
-    MOVE_DECARTES,
-    SET_ORIENTATION_CONSTRAINT,
-    SET_POSITION_CONSTRAINT,
-    SET_JOINT_CONSTRAINT,
-    GET_CURRENT_JOINTS,
-    GET_CURRENT_POSE,
-    MOVE_TO_ZERO,
+    PIPER_ARM_CMD_TABLE
     MAX
 };
+#undef X
 
 /**
  * @brief 机械臂命令请求结构体
@@ -105,6 +114,7 @@ struct ArmCmdFeedback {
 /**
  * @brief 机械臂命令分发器类，负责接收命令请求并调用 ArmController 执行相应操作
  */
+#define X(name, handler, has_fb, desc) ArmCmdResult handle_##handler(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
 class ArmCmdDispatcher {
 public:
     explicit ArmCmdDispatcher(std::shared_ptr<ArmController> arm) : _arm_(std::move(arm)) {};
@@ -116,8 +126,8 @@ public:
     ArmCmdDispatcher& operator=(ArmCmdDispatcher&&) = delete;
 
     using FeedbackCb = std::function<void(const ArmCmdFeedback&)>;
-    ArmCmdResult dispatch(const ArmCmdRequest& req);
     ArmCmdResult dispatch(const ArmCmdRequest& req, FeedbackCb cb);
+    std::string type_to_string(ArmCmdType type) const;
 
     void cancel();
     bool is_cancelled() const;
@@ -135,22 +145,9 @@ private:
 
     ArmCmdResult execute_if_not_cancelled(ErrorCode code, FeedbackCb cb = nullptr);
 
-    ArmCmdResult handle_home(const ArmCmdRequest& req);
-    ArmCmdResult handle_move_joints(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
-    ArmCmdResult handle_move_target(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
-    ArmCmdResult handle_move_target_in_eef_frame(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
-    ArmCmdResult handle_telescopic_end(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
-    ArmCmdResult handle_rotate_end(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
-    ArmCmdResult handle_move_line(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
-    ArmCmdResult handle_move_bezier(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
-    ArmCmdResult handle_move_decartes(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
-    ArmCmdResult handle_set_orientation_constraint(const ArmCmdRequest& req);
-    ArmCmdResult handle_set_position_constraint(const ArmCmdRequest& req);
-    ArmCmdResult handle_set_joint_constraint(const ArmCmdRequest& req);
-    ArmCmdResult handle_get_current_joints(const ArmCmdRequest& req);
-    ArmCmdResult handle_get_current_pose(const ArmCmdRequest& req);
-    ArmCmdResult handle_move_to_zero(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
+    PIPER_ARM_CMD_TABLE
 };
+#undef X
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //
 

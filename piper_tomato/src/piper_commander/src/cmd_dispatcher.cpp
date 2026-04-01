@@ -17,20 +17,14 @@ namespace piper {
 // ! ========================= 接 口 类 / 函 数 实 现 ========================= ! //
 
 /**
- * @brief 分发命令请求，调用对应的处理函数执行命令
- * @param req 命令请求
- * @return 命令执行结果
- */
-ArmCmdResult ArmCmdDispatcher::dispatch(const ArmCmdRequest& req) {
-    return dispatch(req, nullptr);
-}
-
-/**
  * @brief 分发命令请求，调用对应的处理函数执行命令，并通过回调函数报告执行进度
  * @param req 命令请求
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return 命令执行结果
  */
+#define X(name, handler, has_fb, desc) \
+    case ArmCmdType::name: \
+        return handle_##handler(req, cb);
 ArmCmdResult ArmCmdDispatcher::dispatch(const ArmCmdRequest& req, FeedbackCb cb) {
     if(!_arm_) {
         return make_err(ErrorCode::FAILURE, "ArmController 未初始化");
@@ -40,42 +34,28 @@ ArmCmdResult ArmCmdDispatcher::dispatch(const ArmCmdRequest& req, FeedbackCb cb)
     switch(req.type) {
         case ArmCmdType::MIN:
             return make_err(ErrorCode::FAILURE, "无效的命令类型：MIN");
-        case ArmCmdType::HOME:
-            return handle_home(req);
-        case ArmCmdType::MOVE_JOINTS:
-            return handle_move_joints(req, cb);
-        case ArmCmdType::MOVE_TARGET:
-            return handle_move_target(req, cb);
-        case ArmCmdType::MOVE_TARGET_IN_EEF_FRAME:
-            return handle_move_target_in_eef_frame(req, cb);
-        case ArmCmdType::TELESCOPIC_END:
-            return handle_telescopic_end(req, cb);
-        case ArmCmdType::ROTATE_END:
-            return handle_rotate_end(req, cb);
-        case ArmCmdType::MOVE_LINE:
-            return handle_move_line(req, cb);
-        case ArmCmdType::MOVE_BEZIER:
-            return handle_move_bezier(req, cb);
-        case ArmCmdType::MOVE_DECARTES:
-            return handle_move_decartes(req, cb);
-        case ArmCmdType::SET_ORIENTATION_CONSTRAINT:
-            return handle_set_orientation_constraint(req);
-        case ArmCmdType::SET_POSITION_CONSTRAINT:
-            return handle_set_position_constraint(req);
-        case ArmCmdType::SET_JOINT_CONSTRAINT:
-            return handle_set_joint_constraint(req);
-        case ArmCmdType::GET_CURRENT_JOINTS:
-            return handle_get_current_joints(req);
-        case ArmCmdType::GET_CURRENT_POSE:
-            return handle_get_current_pose(req);
-        case ArmCmdType::MOVE_TO_ZERO:
-            return handle_move_to_zero(req, cb);
+
+            PIPER_ARM_CMD_TABLE
+
         case ArmCmdType::MAX:
             return make_err(ErrorCode::FAILURE, "无效的命令类型：MAX");
     }
 
     return make_err(ErrorCode::FAILURE, "未知的命令类型");
 }
+#undef X
+
+#define X(name, handler, has_fb, desc) \
+    case ArmCmdType::name: \
+        return #name;
+std::string ArmCmdDispatcher::type_to_string(ArmCmdType type) const {
+    switch(type) {
+        PIPER_ARM_CMD_TABLE
+        default:
+            return "UNKNOWN";
+    }
+}
+#undef X
 
 /**
  * @brief 取消当前正在执行的命令
@@ -214,8 +194,9 @@ ArmCmdResult ArmCmdDispatcher::execute_if_not_cancelled(ErrorCode code, Feedback
  * @param req 命令请求，HOME 命令不需要额外参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_home(const ArmCmdRequest& req) {
+ArmCmdResult ArmCmdDispatcher::handle_home(const ArmCmdRequest& req, FeedbackCb cb) {
     (void)req;
+    (void)cb;
 
     if(is_cancelled()) {
         return make_cancelled();
@@ -424,7 +405,9 @@ ArmCmdResult ArmCmdDispatcher::handle_move_decartes(const ArmCmdRequest& req, Fe
  * @param req 命令请求，要求 req.target 包含一个 geometry_msgs::Quaternion 作为目标姿态
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_set_orientation_constraint(const ArmCmdRequest& req) {
+ArmCmdResult ArmCmdDispatcher::handle_set_orientation_constraint(const ArmCmdRequest& req, FeedbackCb cb) {
+    (void)cb;
+
     if(is_cancelled()) {
         return make_cancelled();
     }
@@ -448,7 +431,9 @@ ArmCmdResult ArmCmdDispatcher::handle_set_orientation_constraint(const ArmCmdReq
  * @param req 命令请求，要求 req.target 包含一个 geometry_msgs::Point 作为目标位置，req.values 包含一个三维向量参数，表示约束范围大小
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_set_position_constraint(const ArmCmdRequest& req) {
+ArmCmdResult ArmCmdDispatcher::handle_set_position_constraint(const ArmCmdRequest& req, FeedbackCb cb) {
+    (void)cb;
+
     if(is_cancelled()) {
         return make_cancelled();
     }
@@ -479,7 +464,8 @@ ArmCmdResult ArmCmdDispatcher::handle_set_position_constraint(const ArmCmdReques
  * @param req 命令请求，要求 req.joint_names 包含一个或多个关节名称，req.values 包含三个参数，分别表示约束范围的最小值、最大值和权重
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_set_joint_constraint(const ArmCmdRequest& req) {
+ArmCmdResult ArmCmdDispatcher::handle_set_joint_constraint(const ArmCmdRequest& req, FeedbackCb cb) {
+    (void)cb;
     if(is_cancelled()) {
         return make_cancelled();
     }
@@ -516,7 +502,8 @@ ArmCmdResult ArmCmdDispatcher::handle_set_joint_constraint(const ArmCmdRequest& 
  * @param req 命令请求，GET_CURRENT_JOINTS 命令不需要额外参数
  * @return ArmCmdResult 结构体，表示命令执行结果，current_joints 字段包含当前关节角列表
  */
-ArmCmdResult ArmCmdDispatcher::handle_get_current_joints(const ArmCmdRequest& req) {
+ArmCmdResult ArmCmdDispatcher::handle_get_current_joints(const ArmCmdRequest& req, FeedbackCb cb) {
+    (void)cb;
     if(is_cancelled()) {
         return make_cancelled();
     }
@@ -536,7 +523,8 @@ ArmCmdResult ArmCmdDispatcher::handle_get_current_joints(const ArmCmdRequest& re
  * @param req 命令请求，GET_CURRENT_POSE 命令不需要额外参数
  * @return ArmCmdResult 结构体，表示命令执行结果，current_pose 字段包含当前位姿
  */
-ArmCmdResult ArmCmdDispatcher::handle_get_current_pose(const ArmCmdRequest& req) {
+ArmCmdResult ArmCmdDispatcher::handle_get_current_pose(const ArmCmdRequest& req, FeedbackCb cb) {
+    (void)cb;
     if(is_cancelled()) {
         return make_cancelled();
     }
