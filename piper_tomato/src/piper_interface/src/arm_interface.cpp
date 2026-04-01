@@ -110,6 +110,14 @@ bool ArmMoveAction::convert_goal_to_request(const piper_msgs2::MoveArmGoal& goal
  * @brief MoveArmAction 的 Goal 回调函数
  */
 void ArmMoveAction::on_goal() {
+    if(!_arm_ || !_dispatcher_) {
+        piper_msgs2::MoveArmResult res;
+        res.success = false;
+        res.message = "控制器未初始化";
+        _as_->setAborted(res, res.message);
+        return;
+    }
+
     auto goal = _as_->acceptNewGoal();
     if(!goal) {
         piper_msgs2::MoveArmResult res;
@@ -218,6 +226,14 @@ bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveA
  * @brief SimpleMoveArmAction 的 Goal 回调函数
  */
 void SimpleArmMoveAction::on_goal() {
+    if(!_arm_ || !_dispatcher_) {
+        piper_msgs2::SimpleMoveArmResult res;
+        res.success = false;
+        res.message = "控制器未初始化";
+        _as_->setAborted(res, res.message);
+        return;
+    }
+
     auto goal = _as_->acceptNewGoal();
     if(!goal) {
         piper_msgs2::SimpleMoveArmResult res;
