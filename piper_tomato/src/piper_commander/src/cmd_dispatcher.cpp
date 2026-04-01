@@ -34,7 +34,6 @@ struct ArmCmdDispatcher::Impl {
     std::atomic_bool _is_cancelled_{ false };
     bool is_cancelled() const { return _is_cancelled_.load(); }
 
-    void fill_current_state(ArmCmdResult& result) const;
     ArmCmdResult make_ok(const std::string& msg = "命令执行成功");
     ArmCmdResult make_err(ErrorCode code = ErrorCode::FAILURE, const std::string& msg = "命令执行失败");
     ArmCmdResult make_cancelled();
@@ -130,33 +129,6 @@ bool ArmCmdDispatcher::is_cancelled() const {
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
 
 /**
- * @brief 填充命令结果中的当前状态信息，包括当前位姿和关节角
- * @param result 需要填充的命令结果结构体
- */
-void ArmCmdDispatcher::Impl::fill_current_state(ArmCmdResult& result) const {
-    if(!_arm_) {
-        result.current_pose = geometry_msgs::Pose{};
-        result.current_joints.clear();
-        return;
-    }
-
-    result.current_pose = _arm_->get_current_pose();
-    result.current_joints = _arm_->get_current_joints();
-
-    const auto& q = result.current_pose.orientation;
-    const double q_norm = std::sqrt(
-        q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
-    );
-
-    if(q_norm < 1e-9) {
-        result.current_pose.orientation.x = 0.0;
-        result.current_pose.orientation.y = 0.0;
-        result.current_pose.orientation.z = 0.0;
-        result.current_pose.orientation.w = 1.0;
-    }
-}
-
-/**
  * @brief 构造一个成功的命令结果
  * @param msg 结果消息，默认为 "命令执行成功"
  * @return ArmCmdResult 结构体，表示命令执行成功
@@ -166,7 +138,6 @@ ArmCmdResult ArmCmdDispatcher::Impl::make_ok(const std::string& msg) {
     result.success = true;
     result.message = msg;
     result.error_code = ErrorCode::SUCCESS;
-    fill_current_state(result);
 
     return result;
 }
@@ -182,7 +153,6 @@ ArmCmdResult ArmCmdDispatcher::Impl::make_err(ErrorCode code, const std::string&
     result.success = false;
     result.message = msg;
     result.error_code = code;
-    fill_current_state(result);
 
     return result;
 }
@@ -196,7 +166,6 @@ ArmCmdResult ArmCmdDispatcher::Impl::make_cancelled() {
     result.success = false;
     result.message = "命令已取消";
     result.error_code = ErrorCode::CANCELLED;
-    fill_current_state(result);
 
     return result;
 }

@@ -3,6 +3,8 @@
 
 #include <actionlib/server/simple_action_server.h>
 
+#include "tl_optional/optional.hpp"
+
 #include "piper_interface/interface_module.hpp"
 #include "piper_controller/arm_controller.hpp"
 #include "piper_commander/cmd_dispatcher.hpp"
@@ -36,7 +38,7 @@ public:
 private:
     void on_goal();
     void on_preempt();
-    bool convert_goal_to_request(const piper_msgs2::MoveArmGoal& goal, ArmCmdRequest& req);
+    tl::optional<ArmCmdRequest> convert_goal_to_request(const piper_msgs2::MoveArmGoal& goal);
 
 private:
     std::unique_ptr<MoveArmAS> _as_;
@@ -61,7 +63,7 @@ public:
 private:
     void on_goal();
     void on_preempt();
-    bool convert_goal_to_request(const piper_msgs2::SimpleMoveArmGoal& goal, ArmCmdRequest& req);
+    tl::optional<ArmCmdRequest> convert_goal_to_request(const piper_msgs2::SimpleMoveArmGoal& goal);
 
 private:
     std::unique_ptr<MoveArmAS> _as_;
@@ -84,7 +86,7 @@ public:
 
 private:
     bool on_request(piper_msgs2::ConfigArm::Request& req, piper_msgs2::ConfigArm::Response& res);
-    bool convert_srvreq_to_armreq(const piper_msgs2::ConfigArm::Request& srv_req, ArmCmdRequest& arm_req);
+    tl::optional<ArmCmdRequest> convert_srvreq_to_armreq(const piper_msgs2::ConfigArm::Request& srv_req);
 
 private:
     std::unique_ptr<ros::ServiceServer> _srv_;
@@ -107,7 +109,7 @@ public:
 
 private:
     bool on_request(piper_msgs2::QueryArm::Request& req, piper_msgs2::QueryArm::Response& res);
-    bool convert_srvreq_to_armreq(const piper_msgs2::QueryArm::Request& srv_req, ArmCmdRequest& arm_req);
+    tl::optional<ArmCmdRequest> convert_srvreq_to_armreq(const piper_msgs2::QueryArm::Request& srv_req);
 
 private:
     std::unique_ptr<ros::ServiceServer> _srv_;

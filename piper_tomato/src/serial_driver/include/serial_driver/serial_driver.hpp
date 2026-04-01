@@ -9,9 +9,9 @@
 
 // ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
 
-typedef struct can_frame CanFrame_t;
-typedef struct sockaddr_can CanAddr_t;
-typedef struct ifreq CanIfReq_t;
+using CanFrame = struct can_frame;
+using CanAddr = struct sockaddr_can;
+using CanIfReq = struct ifreq;
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
 

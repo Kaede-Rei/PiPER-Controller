@@ -34,10 +34,17 @@ namespace piper {
  * @param APPROXIMATE_SOLUTION_FOUND 找到近似可达解
  * @param SOLUTION_NOT_FOUND 未找到可达解
  */
-enum class SearchReachablePose_e {
+enum class SearchReachablePose {
     SOLUTION_FOUND = 0,
     APPROXIMATE_SOLUTION_FOUND,
     SOLUTION_NOT_FOUND
+};
+
+struct ReachablePoseResult {
+    SearchReachablePose state{ SearchReachablePose::SOLUTION_NOT_FOUND };
+    double score{ -1.0 };
+    std::vector<double> reachable_joints;
+    geometry_msgs::Pose reachable_pose;
 };
 
 /**
@@ -48,13 +55,13 @@ enum class SearchReachablePose_e {
  * @param joint_positions 当前节点对应的关节角解
  * @param depth 当前搜索深度
  */
-typedef struct {
+struct AStarNode {
     double g_cost;
     double h_cost;
     geometry_msgs::Pose pose;
     std::vector<double> joint_positions;
     int depth;
-} AStarNode_t;
+};
 
 /**
  * @brief A* 优先队列比较器（总代价小者优先）
@@ -63,7 +70,7 @@ typedef struct {
  * @return 若 a 的总代价大于 b 则返回 true
  */
 struct CompareAStarNode {
-    bool operator()(const AStarNode_t& a, const AStarNode_t& b) {
+    bool operator()(const AStarNode& a, const AStarNode& b) {
         return (a.g_cost + a.h_cost) > (b.g_cost + b.h_cost);
     }
 };
@@ -141,7 +148,7 @@ public:
 
 private:
     tl::optional<geometry_msgs::Pose> extract_pose_from_target(const TargetVariant& target) const;
-    SearchReachablePose_e search_reachable_pose(const geometry_msgs::Pose& current_pose, const geometry_msgs::Pose& target_pose, double& score, std::vector<double>& reachable_joints, geometry_msgs::Pose& reachable_pose);
+    tl::optional<ReachablePoseResult> search_reachable_pose(const geometry_msgs::Pose& current_pose, const geometry_msgs::Pose& target_pose);
 
 private:
     /// @brief MoveGroupInterface 对象

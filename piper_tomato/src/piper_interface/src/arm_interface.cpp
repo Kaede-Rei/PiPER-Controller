@@ -81,12 +81,12 @@ ArmQueryService::ArmQueryService(ros::NodeHandle& nh, std::shared_ptr<ArmControl
  * @param req 转换后的 ArmCmdRequest
  * @return 转换是否成功
  */
-bool ArmMoveAction::convert_goal_to_request(const piper_msgs2::MoveArmGoal& goal, ArmCmdRequest& req) {
-    req = ArmCmdRequest{};
+tl::optional<ArmCmdRequest> ArmMoveAction::convert_goal_to_request(const piper_msgs2::MoveArmGoal& goal) {
+    ArmCmdRequest req{};
     req.type = static_cast<ArmCmdType>(goal.command_type);
     if(!(ArmCmdType::MIN < req.type && req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
-        return false;
+        return tl::nullopt;
     }
 
     req.joint_names = goal.joint_names;
@@ -97,13 +97,13 @@ bool ArmMoveAction::convert_goal_to_request(const piper_msgs2::MoveArmGoal& goal
     else if(goal.target_type == goal.TARGET_QUATERNION) req.target = goal.quaternion;
     else {
         ROS_WARN("接收到无效的目标类型: %d", goal.target_type);
-        return false;
+        return tl::nullopt;
     }
 
     req.values = goal.values;
     req.waypoints = goal.waypoints;
 
-    return true;
+    return req;
 }
 
 /**
@@ -128,8 +128,8 @@ void ArmMoveAction::on_goal() {
         return;
     }
 
-    ArmCmdRequest req;
-    if(!convert_goal_to_request(*goal, req)) {
+    auto req_opt = convert_goal_to_request(*goal);
+    if(!req_opt) {
         piper_msgs2::MoveArmResult res;
         res.success = false;
         res.message = "无效的目标";
@@ -138,7 +138,7 @@ void ArmMoveAction::on_goal() {
         return;
     }
 
-    auto result = _dispatcher_->dispatch(req, [this](const ArmCmdFeedback& fb) {
+    auto result = _dispatcher_->dispatch(*req_opt, [this](const ArmCmdFeedback& fb) {
         piper_msgs2::MoveArmFeedback feedback;
         feedback.stage = fb.stage;
         feedback.progress = fb.progress;
@@ -150,8 +150,19 @@ void ArmMoveAction::on_goal() {
     res.success = result.success;
     res.message = result.message;
     res.error_code = static_cast<uint8_t>(result.error_code);
-    res.cur_joint = result.current_joints;
-    res.cur_pose = result.current_pose;
+    if(result.current_joints) {
+        res.cur_joint = *result.current_joints;
+    }
+    else {
+        res.cur_joint = _arm_ ? _arm_->get_current_joints() : std::vector<double>{};
+    }
+
+    if(result.current_pose) {
+        res.cur_pose = *result.current_pose;
+    }
+    else {
+        res.cur_pose = _arm_ ? _arm_->get_current_pose() : geometry_msgs::Pose{};
+    }
     res.values = result.values;
 
     if(result.success) _as_->setSucceeded(res);
@@ -175,12 +186,12 @@ void ArmMoveAction::on_preempt() {
  * @param req 转换后的 ArmCmdRequest
  * @return 转换是否成功
  */
-bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveArmGoal& goal, ArmCmdRequest& req) {
-    req = ArmCmdRequest{};
+tl::optional<ArmCmdRequest> SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveArmGoal& goal) {
+    ArmCmdRequest req{};
     req.type = static_cast<ArmCmdType>(goal.command_type);
     if(!(ArmCmdType::MIN < req.type && req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
-        return false;
+        return tl::nullopt;
     }
 
     req.joint_names = goal.joint_names;
@@ -189,14 +200,14 @@ bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveA
     if(goal.target_type == goal.TARGET_POSE) {
         if(!xyz_sizes_match(goal) || !rpy_sizes_match(goal) || goal.x.empty()) {
             ROS_WARN("接收到的目标位姿数据长度不匹配");
-            return false;
+            return tl::nullopt;
         }
         req.target = pose_from_goal(goal, 0);
     }
     else if(goal.target_type == goal.TARGET_POINT) {
         if(!xyz_sizes_match(goal) || goal.x.empty()) {
             ROS_WARN("接收到的目标点数据长度不匹配");
-            return false;
+            return tl::nullopt;
         }
         geometry_msgs::Point point;
         point.x = goal.x[0];
@@ -207,19 +218,19 @@ bool SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveA
     else if(goal.target_type == goal.TARGET_ORIENTATION) {
         if(!rpy_sizes_match(goal) || goal.roll.empty()) {
             ROS_WARN("接收到的目标姿态数据长度不匹配");
-            return false;
+            return tl::nullopt;
         }
         req.target = quat_from_rpy(goal.roll[0], goal.pitch[0], goal.yaw[0]);
     }
     else {
         ROS_WARN("接收到无效的目标类型: %d", goal.target_type);
-        return false;
+        return tl::nullopt;
     }
 
     req.values = goal.values;
     for(size_t i = 0; i < goal.x.size(); ++i) req.waypoints.push_back(pose_from_goal(goal, i));
 
-    return true;
+    return req;
 }
 
 /**
@@ -251,8 +262,8 @@ void SimpleArmMoveAction::on_goal() {
         return;
     }
 
-    ArmCmdRequest req;
-    if(!convert_goal_to_request(*goal, req)) {
+    auto req_opt = convert_goal_to_request(*goal);
+    if(!req_opt) {
         piper_msgs2::SimpleMoveArmResult res;
         res.success = false;
         res.message = "无效的目标";
@@ -261,7 +272,7 @@ void SimpleArmMoveAction::on_goal() {
         return;
     }
 
-    auto result = _dispatcher_->dispatch(req, [this](const ArmCmdFeedback& fb) {
+    auto result = _dispatcher_->dispatch(*req_opt, [this](const ArmCmdFeedback& fb) {
         piper_msgs2::SimpleMoveArmFeedback feedback;
         feedback.stage = fb.stage;
         feedback.progress = fb.progress;
@@ -273,12 +284,18 @@ void SimpleArmMoveAction::on_goal() {
     res.success = result.success;
     res.message = result.message;
     res.error_code = static_cast<uint8_t>(result.error_code);
-    res.cur_joint = result.current_joints;
+    if(result.current_joints) {
+        res.cur_joint = *result.current_joints;
+    }
+    else {
+        res.cur_joint = _arm_ ? _arm_->get_current_joints() : std::vector<double>{};
+    }
 
-    res.cur_x = result.current_pose.position.x;
-    res.cur_y = result.current_pose.position.y;
-    res.cur_z = result.current_pose.position.z;
-    tf2::Quaternion quat(result.current_pose.orientation.x, result.current_pose.orientation.y, result.current_pose.orientation.z, result.current_pose.orientation.w);
+    const geometry_msgs::Pose cur_pose = result.current_pose.value_or(_arm_ ? _arm_->get_current_pose() : geometry_msgs::Pose{});
+    res.cur_x = cur_pose.position.x;
+    res.cur_y = cur_pose.position.y;
+    res.cur_z = cur_pose.position.z;
+    tf2::Quaternion quat(cur_pose.orientation.x, cur_pose.orientation.y, cur_pose.orientation.z, cur_pose.orientation.w);
     double roll, pitch, yaw;
     tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);
     res.cur_roll = roll;
@@ -308,11 +325,12 @@ void SimpleArmMoveAction::on_preempt() {
  * @param arm_req 转换后的 ArmCmdRequest
  * @return 转换是否成功
  */
-bool ArmConfigService::convert_srvreq_to_armreq(const piper_msgs2::ConfigArm::Request& srv_req, ArmCmdRequest& arm_req) {
+tl::optional<ArmCmdRequest> ArmConfigService::convert_srvreq_to_armreq(const piper_msgs2::ConfigArm::Request& srv_req) {
+    ArmCmdRequest arm_req{};
     arm_req.type = static_cast<ArmCmdType>(srv_req.command_type);
     if(!(ArmCmdType::MIN < arm_req.type && arm_req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", srv_req.command_type);
-        return false;
+        return tl::nullopt;
     }
 
     if(srv_req.command_type == srv_req.SET_ORIENTATION_CONSTRAINT) arm_req.target = srv_req.quaternion;
@@ -323,11 +341,11 @@ bool ArmConfigService::convert_srvreq_to_armreq(const piper_msgs2::ConfigArm::Re
     }
     else {
         ROS_WARN("接收到无效的命令类型: %d", srv_req.command_type);
-        return false;
+        return tl::nullopt;
     }
     arm_req.values = srv_req.values;
 
-    return true;
+    return arm_req;
 }
 
 /**
@@ -343,14 +361,14 @@ bool ArmConfigService::on_request(piper_msgs2::ConfigArm::Request& req, piper_ms
         return true;
     }
 
-    ArmCmdRequest arm_req;
-    if(!convert_srvreq_to_armreq(req, arm_req)) {
+    auto arm_req_opt = convert_srvreq_to_armreq(req);
+    if(!arm_req_opt) {
         res.success = false;
         res.message = "无效的请求";
         return true;
     }
 
-    auto result = _dispatcher_->dispatch(arm_req);
+    auto result = _dispatcher_->dispatch(*arm_req_opt);
     res.success = result.success;
     res.message = result.message;
     res.error_code = static_cast<uint8_t>(result.error_code);
@@ -364,16 +382,17 @@ bool ArmConfigService::on_request(piper_msgs2::ConfigArm::Request& req, piper_ms
  * @param arm_req 转换后的 ArmCmdRequest
  * @return 转换是否成功
  */
-bool ArmQueryService::convert_srvreq_to_armreq(const piper_msgs2::QueryArm::Request& srv_req, ArmCmdRequest& arm_req) {
+tl::optional<ArmCmdRequest> ArmQueryService::convert_srvreq_to_armreq(const piper_msgs2::QueryArm::Request& srv_req) {
+    ArmCmdRequest arm_req{};
     arm_req.type = static_cast<ArmCmdType>(srv_req.command_type);
     if(!(ArmCmdType::MIN < arm_req.type && arm_req.type < ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", srv_req.command_type);
-        return false;
+        return tl::nullopt;
     }
 
     arm_req.values = srv_req.values;
 
-    return true;
+    return arm_req;
 }
 
 /**
@@ -389,19 +408,19 @@ bool ArmQueryService::on_request(piper_msgs2::QueryArm::Request& req, piper_msgs
         return true;
     }
 
-    ArmCmdRequest arm_req;
-    if(!convert_srvreq_to_armreq(req, arm_req)) {
+    auto arm_req_opt = convert_srvreq_to_armreq(req);
+    if(!arm_req_opt) {
         res.success = false;
         res.message = "无效的请求";
         return true;
     }
 
-    auto result = _dispatcher_->dispatch(arm_req);
+    auto result = _dispatcher_->dispatch(*arm_req_opt);
     res.success = result.success;
     res.message = result.message;
     res.error_code = static_cast<uint8_t>(result.error_code);
-    res.cur_pose = result.current_pose;
-    res.cur_joint = result.current_joints;
+    res.cur_pose = result.current_pose.value_or(_arm_ ? _arm_->get_current_pose() : geometry_msgs::Pose{});
+    res.cur_joint = result.current_joints.value_or(_arm_ ? _arm_->get_current_joints() : std::vector<double>{});
 
     return true;
 }

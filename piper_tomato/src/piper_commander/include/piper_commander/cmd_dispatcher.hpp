@@ -3,6 +3,8 @@
 
 #include <functional>
 
+#include "tl_optional/optional.hpp"
+
 #include "piper_controller/arm_controller.hpp"
 
 namespace piper {
@@ -92,8 +94,8 @@ struct ArmCmdResult {
     std::vector<double> values;
     ErrorCode error_code{ ErrorCode::SUCCESS };
 
-    geometry_msgs::Pose current_pose;
-    std::vector<double> current_joints;
+    tl::optional<geometry_msgs::Pose> current_pose;
+    tl::optional<std::vector<double>> current_joints;
 };
 
 /**

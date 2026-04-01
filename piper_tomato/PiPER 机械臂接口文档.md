@@ -26,6 +26,20 @@ roslaunch piper_interface piper_start.launch
 - `arm_config`
 - `arm_query`
 
+实现约定（关键）：
+
+- 接口层转换函数统一采用 `tl::optional` 返回语义：转换失败返回 `nullopt`，并中止请求处理。
+- `ArmCmdResult.current_pose` 与 `ArmCmdResult.current_joints` 在命令分发层为 optional 字段，仅在需要时填充。
+- ROS 响应阶段会做兜底填充，保证对外消息字段始终可读。
+- 内部核心类型采用无后缀命名，例如：`SearchReachablePose`、`ReachablePoseResult`、`AStarNode`。
+
+代码层设计约定：
+
+- 命名：类型名使用 PascalCase，无 `_t/_e` 后缀。
+- 可空语义：除 `target` 以外优先使用 `tl::optional`。
+- 目标语义：`target` 保持 `variant + monostate`，用于多目标类型分派。
+- 错误语义：优先透传真实错误码，不在中间层无差别折叠。
+
 ---
 
 ## 🔌 2. 接口总览
@@ -180,6 +194,11 @@ Response：
 - `GET_CURRENT_JOINTS(13)`：返回 `cur_joint[]`。
 - `GET_CURRENT_POSE(14)`：返回 `cur_pose`。
 
+返回语义说明：
+
+- 查询命令会优先返回分发层的状态值。
+- 若分发层状态为空（optional 未赋值），接口层会回退读取控制器当前状态填入响应。
+
 ---
 
 ## 🧪 6. 调用示例
@@ -277,6 +296,11 @@ print(client.get_result())
 - `PLANNING_FAILED` / `EXECUTION_FAILED`：MoveIt 规划/执行失败
 - `DESCARTES_PLANNING_FAILED` / `EMPTY_WAYPOINTS`：笛卡尔路径失败
 - `ASYNC_TASK_RUNNING` / `CANCELLED`：异步任务冲突或已取消
+
+错误透传说明：
+
+- 末端坐标系目标设置路径中，`set_target_in_eef_frame` 会保留并返回真实错误码。
+- 例如 TF 变换失败时直接返回 `TF_TRANSFORM_FAILED`，便于定位问题来源。
 
 建议排查流程：
 

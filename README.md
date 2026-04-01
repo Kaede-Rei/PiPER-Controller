@@ -147,6 +147,20 @@ roslaunch piper_interface piper_start.launch
 
 - `piper_tomato/PiPER 机械臂接口文档.md`
 
+### 接口语义（当前实现）
+
+- 接口层请求转换（Action Goal / Service Request -> `ArmCmdRequest`）使用 `tl::optional`，转换失败会直接返回无效请求。
+- 命令执行结果中的当前状态（`current_pose` / `current_joints`）在分发层使用 `tl::optional`。
+- `arm_interface` 会在返回 ROS 消息时做兜底：若结果中状态为空，则读取控制器当前状态并填充响应。
+- `set_target_in_eef_frame` 会透传真实错误码（如 TF 变换失败），不再统一折叠为同一种失败原因。
+
+### 代码层设计约定
+
+- 类型命名采用无后缀风格（例如 `SearchReachablePose`、`ReachablePoseResult`、`AStarNode`），不再使用历史 `_t/_e`。
+- `ArmCmdRequest.target` 继续使用 `variant + monostate` 表达目标类型分支。
+- 除 `target` 外，输入转换与状态返回优先使用 `tl::optional` 表达“有值/无值”语义。
+- 对外错误码优先保留真实来源，避免在接口层过度折叠错误原因。
+
 ---
 
 ## 🧪 快速验证
@@ -279,6 +293,7 @@ rostopic list | grep move_arm
 - 检查目标位姿是否超出工作空间。
 - 检查当前约束参数是否过严。
 - 降低速度/加速度缩放参数后重试。
+- 若返回 `TF_TRANSFORM_FAILED`，优先检查 TF 树与 EEF/TCP 偏移配置。
 
 ---
 

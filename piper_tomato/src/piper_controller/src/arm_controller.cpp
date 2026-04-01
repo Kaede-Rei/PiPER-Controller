@@ -145,17 +145,13 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
         },
         [this, &result](const geometry_msgs::Pose& pose) {
             geometry_msgs::Pose current_pose = this->_arm_.getCurrentPose().pose;
-            double score = -1.0;
-            std::vector<double> joint_positions;
-            geometry_msgs::Pose reachable_pose;
+            const auto reachable_result = search_reachable_pose(current_pose, pose);
 
-            const auto search_result = search_reachable_pose(
-                current_pose, pose, score, joint_positions, reachable_pose);
-
-            if((search_result == SearchReachablePose_e::SOLUTION_FOUND ||
-                search_result == SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND) &&
-               !joint_positions.empty()) {
-                const bool ok = this->_arm_.setJointValueTarget(joint_positions);
+                if(reachable_result &&
+                    (reachable_result->state == SearchReachablePose::SOLUTION_FOUND ||
+                     reachable_result->state == SearchReachablePose::APPROXIMATE_SOLUTION_FOUND) &&
+               !reachable_result->reachable_joints.empty()) {
+                const bool ok = this->_arm_.setJointValueTarget(reachable_result->reachable_joints);
                 ROS_INFO("设置目标位姿（IK/A*关节解）是否成功：%s", ok ? "是" : "否");
                 result = ok ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
                 return;
@@ -197,34 +193,42 @@ ErrorCode ArmController::set_target_in_eef_frame(const TargetVariant& target) {
         return ErrorCode::ASYNC_TASK_RUNNING;
     }
 
-    bool success = std::visit(variant_visitor{
-        [this](const std::monostate&) {
+    auto code_opt = std::visit(variant_visitor{
+        [this](const std::monostate&) -> tl::optional<ErrorCode> {
             ROS_WARN("目标未设置");
-            return false;
+            return tl::nullopt;
         },
-        [this](const geometry_msgs::Pose& pose) {
+        [this](const geometry_msgs::Pose& pose) -> tl::optional<ErrorCode> {
             geometry_msgs::Pose transformed_pose;
-            if(end_to_base_tf(pose, transformed_pose) != ErrorCode::SUCCESS) return false;
-            return this->set_target(transformed_pose) == ErrorCode::SUCCESS;
+            const ErrorCode tf_code = end_to_base_tf(pose, transformed_pose);
+            if(tf_code != ErrorCode::SUCCESS) return tf_code;
+            return this->set_target(transformed_pose);
         },
-        [this](const geometry_msgs::Point& point) {
+        [this](const geometry_msgs::Point& point) -> tl::optional<ErrorCode> {
             geometry_msgs::Point transformed_point;
-            if(end_to_base_tf(point, transformed_point) != ErrorCode::SUCCESS) return false;
-            return this->set_target(transformed_point) == ErrorCode::SUCCESS;
+            const ErrorCode tf_code = end_to_base_tf(point, transformed_point);
+            if(tf_code != ErrorCode::SUCCESS) return tf_code;
+            return this->set_target(transformed_point);
         },
-        [this](const geometry_msgs::Quaternion& quat) {
+        [this](const geometry_msgs::Quaternion& quat) -> tl::optional<ErrorCode> {
             geometry_msgs::Quaternion transformed_quat;
-            if(end_to_base_tf(quat, transformed_quat) != ErrorCode::SUCCESS) return false;
-            return this->set_target(transformed_quat) == ErrorCode::SUCCESS;
+            const ErrorCode tf_code = end_to_base_tf(quat, transformed_quat);
+            if(tf_code != ErrorCode::SUCCESS) return tf_code;
+            return this->set_target(transformed_quat);
         },
-        [this](const geometry_msgs::PoseStamped& pose_stamped) {
+        [this](const geometry_msgs::PoseStamped& pose_stamped) -> tl::optional<ErrorCode> {
             geometry_msgs::PoseStamped transformed_pose_stamped;
-            if(end_to_base_tf(pose_stamped, transformed_pose_stamped) != ErrorCode::SUCCESS) return false;
-            return this->set_target(transformed_pose_stamped.pose) == ErrorCode::SUCCESS;
+            const ErrorCode tf_code = end_to_base_tf(pose_stamped, transformed_pose_stamped);
+            if(tf_code != ErrorCode::SUCCESS) return tf_code;
+            return this->set_target(transformed_pose_stamped.pose);
         }
         }, target);
 
-    return success ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
+    if(!code_opt) {
+        return ErrorCode::INVALID_TARGET_TYPE;
+    }
+
+    return *code_opt;
 }
 
 /**
@@ -931,47 +935,46 @@ tl::optional<geometry_msgs::Pose> ArmController::extract_pose_from_target(const 
  * @brief A* 搜索最近可达目标位姿
  * @param current_pose 当前位姿
  * @param target_pose 目标位姿
- * @param score 搜索评分输出
- * @param reachable_joints 可达关节解输出
- * @param reachable_pose 可达位姿输出
  * @return 搜索结果
  */
-SearchReachablePose_e ArmController::search_reachable_pose(const geometry_msgs::Pose& current_pose, const geometry_msgs::Pose& target_pose, double& score, std::vector<double>& reachable_joints, geometry_msgs::Pose& reachable_pose) {
+tl::optional<ReachablePoseResult> ArmController::search_reachable_pose(const geometry_msgs::Pose& current_pose, const geometry_msgs::Pose& target_pose) {
     (void)current_pose;
 
-    score = -1.0;
-    reachable_joints.clear();
-    reachable_pose = target_pose;
+    ReachablePoseResult result;
+    result.score = -1.0;
+    result.reachable_joints.clear();
+    result.reachable_pose = target_pose;
 
     _current_state_ = _arm_.getCurrentState(1.0);
     if(!_current_state_) {
         ROS_ERROR("无法获取当前机械臂状态，A* 可达性搜索终止。");
-        return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+        return tl::nullopt;
     }
 
     _jmg_ = _current_state_->getJointModelGroup(_arm_.getName());
     if(!_jmg_) {
         ROS_ERROR("无法获取关节模型组 '%s'，A* 可达性搜索终止。", _arm_.getName().c_str());
-        return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+        return tl::nullopt;
     }
 
     auto try_ik = [&](const geometry_msgs::Pose& pose_base,
         double candidate_score,
-        SearchReachablePose_e state) {
+        SearchReachablePose state) {
             moveit::core::RobotState state_copy(*_current_state_);
             if(!state_copy.setFromIK(_jmg_, pose_base, 0.0)) {
-                return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+                return SearchReachablePose::SOLUTION_NOT_FOUND;
             }
-            state_copy.copyJointGroupPositions(_jmg_, reachable_joints);
-            reachable_pose = pose_base;
-            score = candidate_score;
+            state_copy.copyJointGroupPositions(_jmg_, result.reachable_joints);
+            result.reachable_pose = pose_base;
+            result.score = candidate_score;
+            result.state = state;
             return state;
         };
 
-    const auto exact_result = try_ik(target_pose, 0.0, SearchReachablePose_e::SOLUTION_FOUND);
-    if(exact_result == SearchReachablePose_e::SOLUTION_FOUND) {
+    const auto exact_result = try_ik(target_pose, 0.0, SearchReachablePose::SOLUTION_FOUND);
+    if(exact_result == SearchReachablePose::SOLUTION_FOUND) {
         ROS_INFO("目标位姿可直接到达，无需 A* 搜索。");
-        return exact_result;
+        return result;
     }
 
     geometry_msgs::TransformStamped tf_stamped;
@@ -986,7 +989,7 @@ SearchReachablePose_e ArmController::search_reachable_pose(const geometry_msgs::
     }
     catch(const tf2::TransformException& e) {
         ROS_WARN("A* 可达性搜索 TF 变换失败：%s", e.what());
-        return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+        return tl::nullopt;
     }
 
     ros::NodeHandle pnh("~");
@@ -1017,7 +1020,7 @@ SearchReachablePose_e ArmController::search_reachable_pose(const geometry_msgs::
         };
 
     auto build_node = [&](double droll, double dpitch, double g_cost, int depth) {
-        AStarNode_t node;
+        AStarNode node;
         node.g_cost = g_cost;
         node.h_cost = heuristic(droll, dpitch);
         node.depth = depth;
@@ -1030,7 +1033,7 @@ SearchReachablePose_e ArmController::search_reachable_pose(const geometry_msgs::
         return node;
         };
 
-    std::priority_queue<AStarNode_t, std::vector<AStarNode_t>, CompareAStarNode> open_set;
+    std::priority_queue<AStarNode, std::vector<AStarNode>, CompareAStarNode> open_set;
     std::unordered_map<std::int64_t, double> best_g_by_idx;
 
     open_set.push(build_node(0.0, 0.0, 0.0, 0));
@@ -1045,7 +1048,7 @@ SearchReachablePose_e ArmController::search_reachable_pose(const geometry_msgs::
 
     int expand_count = 0;
     while(!open_set.empty() && expand_count < max_expand) {
-        AStarNode_t current_node = open_set.top();
+        AStarNode current_node = open_set.top();
         open_set.pop();
         ++expand_count;
 
@@ -1066,13 +1069,13 @@ SearchReachablePose_e ArmController::search_reachable_pose(const geometry_msgs::
             const auto approx_result = try_ik(
                 pose_candidate_base,
                 current_node.h_cost,
-                SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND);
+                SearchReachablePose::APPROXIMATE_SOLUTION_FOUND);
 
-            if(approx_result == SearchReachablePose_e::APPROXIMATE_SOLUTION_FOUND) {
+            if(approx_result == SearchReachablePose::APPROXIMATE_SOLUTION_FOUND) {
                 ROS_INFO("A* 搜索到近似可达位姿：droll=%.2f°, dpitch=%.2f°",
                     droll * 180.0 / M_PI,
                     dpitch * 180.0 / M_PI);
-                return approx_result;
+                return result;
             }
         }
 
@@ -1104,7 +1107,7 @@ SearchReachablePose_e ArmController::search_reachable_pose(const geometry_msgs::
     }
 
     ROS_WARN("A* 搜索未找到可达位姿（最大扩展=%d）。", max_expand);
-    return SearchReachablePose_e::SOLUTION_NOT_FOUND;
+    return tl::nullopt;
 }
 
 } /* namespace piper */
