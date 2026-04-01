@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "piper_controller/arm_controller.hpp"
+#include "piper_controller/eef_controller.hpp"
 
 namespace piper {
 

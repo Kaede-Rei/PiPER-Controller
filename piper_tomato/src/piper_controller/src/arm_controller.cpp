@@ -131,11 +131,6 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
         return ErrorCode::ASYNC_TASK_RUNNING;
     }
 
-    const TargetVariant target_for_planning = _eef_ ? _eef_->retarget_tcp_to_flange(target) : target;
-    if(_eef_) {
-        ROS_INFO("检测到已挂载 EEF，目标将按 tcp_offset 从 TCP 转换到 flange");
-    }
-
     ErrorCode result = ErrorCode::INVALID_TARGET_TYPE;
 
     std::visit(variant_visitor{
@@ -177,7 +172,7 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
             ROS_INFO("设置目标位姿（带时间戳）是否成功：%s", ok ? "是" : "否");
             result = ok ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
         }
-        }, target_for_planning);
+        }, target);
 
     return result;
 }

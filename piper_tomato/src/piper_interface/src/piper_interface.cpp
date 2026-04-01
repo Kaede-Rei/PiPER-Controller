@@ -29,31 +29,31 @@ ROSInterface::ROSInterface(ros::NodeHandle& nh, const ROSInterfaceConfig& config
 
 void ROSInterface::init_eef(ros::NodeHandle& nh, const ROSInterfaceConfig& config) {
     if(!config.eef_enabled) {
-        ROS_INFO("EEF 未启用，跳过 attach_eef");
+        ROS_INFO("EEF 未启用，跳过初始化");
         return;
     }
 
     try {
         if(config.eef_type == "two_finger_gripper") {
             auto eef = std::make_shared<TwoFingerGripper>(config.eef_name);
-            eef->set_tcp_offset(config.eef_tcp_offset);
             _eef_ = eef;
         }
         else if(config.eef_type == "servo_gripper") {
+            geometry_msgs::Pose identity_tcp;
+            identity_tcp.orientation.w = 1.0;
             auto eef = std::make_shared<ServoGripper>(
                 nh,
-                config.eef_tcp_offset,
+                identity_tcp,
                 config.eef_serial_port,
                 config.eef_baud_rate);
             _eef_ = eef;
         }
         else {
-            ROS_WARN("未知 EEF 类型: %s，跳过 attach_eef", config.eef_type.c_str());
+            ROS_WARN("未知 EEF 类型: %s，跳过初始化", config.eef_type.c_str());
             return;
         }
 
-        _arm_->attach_eef(_eef_);
-        ROS_INFO("EEF 已挂载: type=%s, name=%s", config.eef_type.c_str(), _eef_->get_eef_name().c_str());
+        ROS_INFO("EEF 已初始化: type=%s, name=%s", config.eef_type.c_str(), _eef_->get_eef_name().c_str());
     }
     catch(const std::exception& e) {
         ROS_ERROR("EEF 初始化失败: %s", e.what());

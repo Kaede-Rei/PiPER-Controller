@@ -6,14 +6,6 @@ start:
     name: "gripper"
     serial_port: "/dev/ttyACM0"
     baud_rate: 115200
-    tcp_offset: # 单位 m 和 四元数
-      x: 0.0
-      y: 0.018
-      z: 0.13181
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
 
   arm_move_action:
     enabled: true

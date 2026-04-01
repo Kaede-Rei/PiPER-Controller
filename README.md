@@ -18,7 +18,7 @@
 | 项目 | 规格 | 说明 |
 |---|---|---|
 | 机械臂 | PiPER 6-DOF | 6 关节 + 可挂载末端执行器 |
-| 主机 | Ubuntu 20.04 | 建议 >= 4 核 CPU, >= 8GB RAM |
+| 主机 | Ubuntu 20.04 / 22.04 | 建议 >= 4 核 CPU, >= 8GB RAM |
 | 通信 | USB-CAN | 推荐 `can0`，波特率 1000000 |
 
 硬件连接示意：
@@ -31,7 +31,7 @@
 
 ### 软件栈
 
-- 操作系统：Ubuntu 20.04 LTS
+- 操作系统：Ubuntu 20.04 LTS / Ubuntu 22.04 LTS
 - ROS 版本：ROS Noetic
 - 规划执行：MoveIt
 - 控制核心：`piper_tomato/src/piper_controller`
@@ -45,7 +45,7 @@
 
 ### 1. 环境准备
 
-#### 1.1 系统依赖
+#### 1.1 Ubuntu 20.04（原生 ROS Noetic）
 
 ```bash
 sudo apt update
@@ -71,13 +71,30 @@ sudo apt install -y can-utils ethtool
 
 # 串口权限
 sudo usermod -aG dialout $USER
-```
 
-#### 1.2 ROS 环境
+# Python SDK
+pip3 install piper_sdk
+```
 
 ```bash
 echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
 source ~/.bashrc
+```
+
+#### 1.2 Ubuntu 22.04（通过 ros_env 在虚拟环境使用 ROS Noetic）
+
+```bash
+micromamba create -n ros_env -c conda-forge -c robostack-noetic \
+  ros-noetic-desktop-full \
+  ros-dev-tools \
+  ros-noetic-moveit \
+  ros-noetic-trac-ik-kinematics-plugin \
+  ros-noetic-rosserial \
+  ros-noetic-rosserial-python \
+  compilers cxx-compiler c-compiler binutils sysroot_linux-64
+
+micromamba activate ros_env
+pip install python-can piper_sdk
 ```
 
 ---
@@ -85,6 +102,25 @@ source ~/.bashrc
 ### 2. 源码编译
 
 仓库包含两个 catkin 工作区：`piper_ros` 与 `piper_tomato`。
+
+#### 2.1 Ubuntu 20.04
+
+```bash
+cd /path/to/piper-ws
+
+cd piper_ros
+catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+source devel/setup.bash
+
+cd ../piper_tomato
+catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+source devel/setup.bash
+
+cd ..
+ln -sf ../piper_tomato/build/compile_commands.json ./build/compile_commands.json
+```
+
+#### 2.2 Ubuntu 22.04
 
 ```bash
 cd /path/to/piper-ws
@@ -198,7 +234,7 @@ python piper_test.py
 
 ---
 
-## ⚙️ EEF 与 TCP 偏移配置
+## ⚙️ EEF 配置与 TCP 定义
 
 配置文件：`piper_tomato/src/piper_interface/config/config.yaml`
 
@@ -210,14 +246,6 @@ start:
     name: "gripper"
     serial_port: "/dev/ttyACM0"
     baud_rate: 115200
-    tcp_offset:
-      x: 0.0
-      y: 0.0
-      z: 0.1
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
 ```
 
 说明：
@@ -225,7 +253,9 @@ start:
 - `enabled=false`：不挂载 EEF。
 - `type=two_finger_gripper`：MoveIt 夹爪组方式。
 - `type=servo_gripper`：串口舵机夹爪方式。
-- `tcp_offset`：`flange -> tcp` 变换。
+- TCP 统一以 URDF 为准，不再通过 `config.yaml` 配置 `tcp_offset`。
+- 当前 `link_tcp` 固定在 `link6`，偏移为 `xyz=(0, 0.018, 0.13181)`、`rpy=(0, 0, 0)`。
+- 对应文件：`piper_ros/src/piper_description/urdf/piper_description.urdf` 与 `piper_ros/src/piper_moveit/piper_with_gripper_moveit/config/gazebo_piper_description.urdf`。
 
 ---
 
@@ -293,7 +323,7 @@ rostopic list | grep move_arm
 - 检查目标位姿是否超出工作空间。
 - 检查当前约束参数是否过严。
 - 降低速度/加速度缩放参数后重试。
-- 若返回 `TF_TRANSFORM_FAILED`，优先检查 TF 树与 EEF/TCP 偏移配置。
+- 若返回 `TF_TRANSFORM_FAILED`，优先检查 TF 树与 URDF 中 `link_tcp` 定义。
 
 ---
 

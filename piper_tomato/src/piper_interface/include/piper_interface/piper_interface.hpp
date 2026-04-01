@@ -1,8 +1,6 @@
 #ifndef _piper_interface_hpp_
 #define _piper_interface_hpp_
 
-#include <geometry_msgs/Pose.h>
-
 #include "piper_interface/arm_interface.hpp" // IWYU pragma: keep
 
 namespace piper {
@@ -22,7 +20,6 @@ struct ROSInterfaceConfig {
     bool eef_enabled{ false };
     std::string eef_type{ "" };
     std::string eef_name{ "gripper" };
-    geometry_msgs::Pose eef_tcp_offset;
     std::string eef_serial_port{ "/dev/ttyACM0" };
     int eef_baud_rate{ 115200 };
 

@@ -116,7 +116,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES piper_controller
-  CATKIN_DEPENDS actionlib geometry_msgs moveit_core moveit_ros_planning_interface roscpp rospy std_msgs std_srvs tf2_geometry_msgs tf2_ros tl_optional
+  CATKIN_DEPENDS actionlib geometry_msgs moveit_core moveit_ros_planning_interface roscpp rospy serial_driver std_msgs std_srvs tf2_geometry_msgs tf2_ros tl_optional
 #  DEPENDS system_lib
 )
 

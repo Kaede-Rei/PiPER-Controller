@@ -3,7 +3,6 @@
 
 #include <atomic>
 #include <functional>
-#include <memory>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -20,7 +19,6 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_listener.h>
 
-#include "piper_controller/eef_interface.hpp"
 #include "piper_controller/types.hpp"
 #include "tl_optional/optional.hpp"
 
@@ -94,12 +92,6 @@ public:
     ArmController(ArmController&&) = delete;
     ArmController& operator=(ArmController&&) = delete;
 
-    /**
-     * @brief 获取末端执行器共享指针
-     * @param eef 末端执行器共享指针
-     */
-    void attach_eef(std::shared_ptr<EndEffector> eef) { _eef_ = std::move(eef); }
-
     ErrorCode home();
     ErrorCode set_joints(const std::vector<double>& joint_values);
     ErrorCode set_target(const TargetVariant& target);
@@ -153,8 +145,6 @@ private:
 private:
     /// @brief MoveGroupInterface 对象
     moveit::planning_interface::MoveGroupInterface _arm_;
-    /// @brief 末端执行器对象
-    std::shared_ptr<EndEffector> _eef_;
 
     /// @brief TF 缓冲区
     tf2_ros::Buffer _tf_buffer_;
