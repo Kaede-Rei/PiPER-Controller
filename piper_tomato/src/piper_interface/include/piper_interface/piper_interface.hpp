@@ -18,6 +18,7 @@ struct ROSInterfaceSwitch {
 
 struct ROSInterfaceConfig {
     std::string arm_group_name{ "arm" };
+
     bool eef_enabled{ false };
     std::string eef_type{ "" };
     std::string eef_name{ "gripper" };

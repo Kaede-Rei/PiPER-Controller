@@ -131,7 +131,7 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
         return ErrorCode::ASYNC_TASK_RUNNING;
     }
 
-    const TargetVariant target_for_planning = _eef_ ? _eef_->tcp_to_flange(target) : target;
+    const TargetVariant target_for_planning = _eef_ ? _eef_->retarget_tcp_to_flange(target) : target;
     if(_eef_) {
         ROS_INFO("检测到已挂载 EEF，目标将按 tcp_offset 从 TCP 转换到 flange");
     }
@@ -197,11 +197,6 @@ ErrorCode ArmController::set_target_in_eef_frame(const TargetVariant& target) {
         return ErrorCode::ASYNC_TASK_RUNNING;
     }
 
-    const TargetVariant target_for_planning = _eef_ ? _eef_->tcp_to_flange(target) : target;
-    if(_eef_) {
-        ROS_INFO("检测到已挂载 EEF，EEF 坐标系目标将按 tcp_offset 从 TCP 转换到 flange");
-    }
-
     bool success = std::visit(variant_visitor{
         [this](const std::monostate&) {
             ROS_WARN("目标未设置");
@@ -215,23 +210,19 @@ ErrorCode ArmController::set_target_in_eef_frame(const TargetVariant& target) {
         [this](const geometry_msgs::Point& point) {
             geometry_msgs::Point transformed_point;
             if(end_to_base_tf(point, transformed_point) != ErrorCode::SUCCESS) return false;
-            bool res = this->_arm_.setPositionTarget(transformed_point.x, transformed_point.y, transformed_point.z);
-            ROS_INFO("设置末端坐标系目标位置是否成功：%s", res ? "是" : "否");
-            return res;
+            return this->set_target(transformed_point) == ErrorCode::SUCCESS;
         },
         [this](const geometry_msgs::Quaternion& quat) {
             geometry_msgs::Quaternion transformed_quat;
             if(end_to_base_tf(quat, transformed_quat) != ErrorCode::SUCCESS) return false;
-            bool res = this->_arm_.setOrientationTarget(transformed_quat.x, transformed_quat.y, transformed_quat.z, transformed_quat.w);
-            ROS_INFO("设置末端坐标系目标姿态是否成功：%s", res ? "是" : "否");
-            return res;
+            return this->set_target(transformed_quat) == ErrorCode::SUCCESS;
         },
         [this](const geometry_msgs::PoseStamped& pose_stamped) {
             geometry_msgs::PoseStamped transformed_pose_stamped;
             if(end_to_base_tf(pose_stamped, transformed_pose_stamped) != ErrorCode::SUCCESS) return false;
             return this->set_target(transformed_pose_stamped.pose) == ErrorCode::SUCCESS;
         }
-        }, target_for_planning);
+        }, target);
 
     return success ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
 }

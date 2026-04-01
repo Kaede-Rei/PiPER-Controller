@@ -18,7 +18,7 @@
 
 ---
 
-## 2. 命令编号（`command_type`）
+## 2. 命令编号（command_type）
 
 通用运动命令（Action）：
 

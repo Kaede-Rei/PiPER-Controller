@@ -207,14 +207,24 @@ public:
     const geometry_msgs::Pose& get_tcp_offset() const { return _tf_flange_tcp_; }
 
     /**
-     * @brief 对 tcp_target 进行 T_TF 矩阵乘法做目标偏移
-     * @param tcp_target 想让 tcp 到达的目标位姿
-     * @return flange_target -> 得到让 flange 到达的目标位姿
-     * @note e.g. tcp_target = T_base_tcp -> return = T_base_tcp * T_tcp_flange = T_base_flange
-     * @note 参考系仍然是 base 且任务目标不变，变化的是去对齐该任务目标的末端参考点（从 tcp 改为 flange）
-     * @note 末端参考系同理：tcp_target = T_flange_tcp -> return = T_flange_tcp * T_tcp_flange = T_flange_flange
+     * @brief 将“TCP 对齐任务点”的目标，改写为“flange 对齐任务点”的等价目标
+     * @param tcp_goal 任务目标：表示希望 TCP 到达的目标位姿
+     * @return flange_goal 等价目标：该目标用于驱动 flange 运动，
+     *         使最终 TCP 仍到达与 tcp_goal 相同的任务点
+     * @note 这不是坐标系之间的变换，而是任务目标参考点的改写：
+     *       输入与输出仍表达在同一参考系下（如 base 或当前末端局部系）
+     * @note 若 _tf_flange_tcp = T_flange_tcp，
+     *       则返回：
+     *           flange_goal = tcp_goal * T_tcp_flange
+     *                       = tcp_goal * inverse(T_flange_tcp)
+     * @note 例1（base 系下）：
+     *       tcp_goal = T_base_tcp
+     *       flange_goal = T_base_tcp * T_tcp_flange = T_base_flange
+     * @note 例2（末端局部系下）：
+     *       tcp_goal = T_flange_tcp
+     *       flange_goal = T_flange_tcp * T_tcp_flange = T_flange_flange
      */
-    TargetVariant tcp_to_flange(const TargetVariant& tcp_target) const {
+    TargetVariant retarget_tcp_to_flange(const TargetVariant& tcp_target) const {
         return std::visit(variant_visitor{
             [this](std::monostate) -> TargetVariant {
                 ROS_WARN("目标未设置");
@@ -244,14 +254,22 @@ public:
     }
 
     /**
-     * @brief 对 flange_target 进行 T_TF 矩阵乘法做目标偏移
-     * @param flange_target 想让 flange 到达的目标位姿
-     * @return tcp_target -> 得到让 tcp 到达的目标位姿
-     * @note e.g. flange_target = T_base_flange -> return = T_base_flange * T_flange_tcp = T_base_tcp
-     * @note 参考系仍然是 base 且任务目标不变，变化的是去对齐该任务目标的末端参考点（从 flange 改为 tcp）
-     * @note 末端参考系同理：flange_target = T_flange_flange -> return = T_flange_flange * T_flange_tcp = T_flange_tcp
+     * @brief 将“flange 对齐任务点”的目标，改写为“TCP 对齐任务点”的等价目标
+     * @param flange_goal 任务目标：表示希望 flange 到达的目标位姿
+     * @return tcp_goal 等价目标：该目标用于描述 TCP 实际将到达的位置
+     * @note 这不是坐标系之间的变换，而是任务目标参考点的改写：
+     *       输入与输出仍表达在同一参考系下（如 base 或当前末端局部系）
+     * @note 若 _tf_flange_tcp = T_flange_tcp，
+     *       则返回：
+     *           tcp_goal = flange_goal * T_flange_tcp
+     * @note 例1（base 系下）：
+     *       flange_goal = T_base_flange
+     *       tcp_goal = T_base_flange * T_flange_tcp = T_base_tcp
+     * @note 例2（末端局部系下）：
+     *       flange_goal = T_flange_flange
+     *       tcp_goal = T_flange_flange * T_flange_tcp = T_flange_tcp
      */
-    TargetVariant flange_to_tcp(const TargetVariant& flange_target) const {
+    TargetVariant retarget_flange_to_tcp(const TargetVariant& flange_target) const {
         return std::visit(variant_visitor{
             [this](std::monostate) -> TargetVariant {
                 ROS_WARN("目标未设置");
