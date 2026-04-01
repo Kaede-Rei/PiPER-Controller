@@ -61,7 +61,7 @@ def start_roscore_if_needed():
         preexec_fn=os.setsid,
     )
 
-    if not wait_master_online(timeout=10.0):
+    if not wait_master_online(timeout=20.0):
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGINT)
         except Exception:
@@ -466,7 +466,7 @@ class Runner:
             def feedback_cb(fb):
                 try:
                     self.info(
-                        f"[{name}] stage={fb.stage} progress={fb.progress:.1f}% message={fb.message}"
+                        f"[{name}] stage={fb.stage} progress={fb.progress * 100:.1f}% message={fb.message}"
                     )
                 except Exception:
                     pass
@@ -502,7 +502,7 @@ class Runner:
             def feedback_cb(fb):
                 try:
                     self.info(
-                        f"[{name}] stage={fb.stage} progress={fb.progress:.1f}% message={fb.message}"
+                        f"[{name}] stage={fb.stage} progress={fb.progress * 100:.1f}% message={fb.message}"
                     )
                 except Exception:
                     pass
