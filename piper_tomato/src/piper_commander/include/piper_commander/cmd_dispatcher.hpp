@@ -2,7 +2,6 @@
 #define _cmd_dispatcher_hpp_
 
 #include <functional>
-#include <atomic>
 
 #include "piper_controller/arm_controller.hpp"
 
@@ -114,11 +113,10 @@ struct ArmCmdFeedback {
 /**
  * @brief 机械臂命令分发器类，负责接收命令请求并调用 ArmController 执行相应操作
  */
-#define X(name, handler, has_fb, desc) ArmCmdResult handle_##handler(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
 class ArmCmdDispatcher {
 public:
-    explicit ArmCmdDispatcher(std::shared_ptr<ArmController> arm) : _arm_(std::move(arm)) {};
-    ~ArmCmdDispatcher() = default;
+    explicit ArmCmdDispatcher(std::shared_ptr<ArmController> arm);
+    ~ArmCmdDispatcher();
 
     ArmCmdDispatcher(const ArmCmdDispatcher&) = delete;
     ArmCmdDispatcher& operator=(const ArmCmdDispatcher&) = delete;
@@ -126,28 +124,16 @@ public:
     ArmCmdDispatcher& operator=(ArmCmdDispatcher&&) = delete;
 
     using FeedbackCb = std::function<void(const ArmCmdFeedback&)>;
-    ArmCmdResult dispatch(const ArmCmdRequest& req, FeedbackCb cb);
+    ArmCmdResult dispatch(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
     std::string type_to_string(ArmCmdType type) const;
 
     void cancel();
     bool is_cancelled() const;
 
 private:
-    std::shared_ptr<ArmController> _arm_;
-    std::atomic_bool _is_cancelled_{ false };
-
-    void fill_current_state(ArmCmdResult& result) const;
-    ArmCmdResult make_ok(const std::string& msg = "命令执行成功");
-    ArmCmdResult make_err(ErrorCode code = ErrorCode::FAILURE, const std::string& msg = "命令执行失败");
-    ArmCmdResult make_cancelled();
-
-    void report(FeedbackCb cb, const std::string& stage, double progress, const std::string& message);
-
-    ArmCmdResult execute_if_not_cancelled(ErrorCode code, FeedbackCb cb = nullptr);
-
-    PIPER_ARM_CMD_TABLE
+    struct Impl;
+    std::unique_ptr<Impl> _impl_;
 };
-#undef X
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //
 

@@ -12,9 +12,50 @@ namespace piper {
 
 // ! ========================= 私 有 量 / 函 数 声 明 ========================= ! //
 
+/**
+ * @brief ArmCmdDispatcher 的 Pimpl 实现类，隐藏具体实现细节，减少头文件依赖，提高编译效率
+ * @param _arm_ ArmController 的共享指针，用于执行机械臂操作
+ * @param _is_cancelled_ 原子布尔变量，表示当前命令是否已被取消，支持线程安全的取消操作
+ * @param fill_current_state 填充命令结果中的当前状态信息，包括当前位姿和关节角
+ * @param make_ok 构造一个成功的命令结果
+ * @param make_err 构造一个失败的命令结果
+ * @param make_cancelled 构造一个被取消的命令结果
+ * @param report 通过回调函数报告命令执行进度
+ * @param execute_if_not_cancelled 如果命令未被取消，则继续执行后续操作
+ * @param handle_xxx 处理对应命令
+ */
+#define X(name, handler, has_fb, desc) ArmCmdResult handle_##handler(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
+struct ArmCmdDispatcher::Impl {
+    using FeedbackCb = ArmCmdDispatcher::FeedbackCb;
 
+    explicit Impl(std::shared_ptr<ArmController> arm) : _arm_(std::move(arm)) {}
+
+    std::shared_ptr<ArmController> _arm_;
+    std::atomic_bool _is_cancelled_{ false };
+    bool is_cancelled() const { return _is_cancelled_.load(); }
+
+    void fill_current_state(ArmCmdResult& result) const;
+    ArmCmdResult make_ok(const std::string& msg = "命令执行成功");
+    ArmCmdResult make_err(ErrorCode code = ErrorCode::FAILURE, const std::string& msg = "命令执行失败");
+    ArmCmdResult make_cancelled();
+
+    void report(FeedbackCb cb, const std::string& stage, double progress, const std::string& message);
+    ArmCmdResult execute_if_not_cancelled(ErrorCode code, FeedbackCb cb = nullptr);
+
+    PIPER_ARM_CMD_TABLE
+};
+#undef X
 
 // ! ========================= 接 口 类 / 函 数 实 现 ========================= ! //
+
+/**
+ * @brief 构造函数，接受一个 ArmController 的共享指针用于执行机械臂操作
+ * @param arm ArmController 的共享指针，不能为空
+ */
+ArmCmdDispatcher::ArmCmdDispatcher(std::shared_ptr<ArmController> arm)
+    : _impl_(std::make_unique<Impl>(std::move(arm))) {}
+
+ArmCmdDispatcher::~ArmCmdDispatcher() = default;
 
 /**
  * @brief 分发命令请求，调用对应的处理函数执行命令，并通过回调函数报告执行进度
@@ -24,27 +65,32 @@ namespace piper {
  */
 #define X(name, handler, has_fb, desc) \
     case ArmCmdType::name: \
-        return handle_##handler(req, cb);
+        return _impl_->handle_##handler(req, cb);
 ArmCmdResult ArmCmdDispatcher::dispatch(const ArmCmdRequest& req, FeedbackCb cb) {
-    if(!_arm_) {
-        return make_err(ErrorCode::FAILURE, "ArmController 未初始化");
+    if(!_impl_->_arm_) {
+        return _impl_->make_err(ErrorCode::FAILURE, "ArmController 未初始化");
     }
-    _is_cancelled_.store(false);
+    _impl_->_is_cancelled_.store(false);
 
     switch(req.type) {
         case ArmCmdType::MIN:
-            return make_err(ErrorCode::FAILURE, "无效的命令类型：MIN");
+            return _impl_->make_err(ErrorCode::FAILURE, "无效的命令类型：MIN");
 
             PIPER_ARM_CMD_TABLE
 
         case ArmCmdType::MAX:
-            return make_err(ErrorCode::FAILURE, "无效的命令类型：MAX");
+            return _impl_->make_err(ErrorCode::FAILURE, "无效的命令类型：MAX");
     }
 
-    return make_err(ErrorCode::FAILURE, "未知的命令类型");
+    return _impl_->make_err(ErrorCode::FAILURE, "未知的命令类型");
 }
 #undef X
 
+/**
+ * @brief 将命令类型枚举转换为字符串，便于日志记录和调试
+ * @param type 命令类型枚举值
+ * @return 对应的字符串表示，如果枚举值未知则返回 "UNKNOWN"
+ */
 #define X(name, handler, has_fb, desc) \
     case ArmCmdType::name: \
         return #name;
@@ -61,11 +107,13 @@ std::string ArmCmdDispatcher::type_to_string(ArmCmdType type) const {
  * @brief 取消当前正在执行的命令
  */
 void ArmCmdDispatcher::cancel() {
-    _is_cancelled_.store(true);
+    if(!_impl_) return;
 
-    if(_arm_) {
-        _arm_->cancel_async();
-        _arm_->stop();
+    _impl_->_is_cancelled_.store(true);
+
+    if(_impl_->_arm_) {
+        _impl_->_arm_->cancel_async();
+        _impl_->_arm_->stop();
     }
 }
 
@@ -74,12 +122,18 @@ void ArmCmdDispatcher::cancel() {
  * @return 如果命令已取消则返回 true，否则返回 false
  */
 bool ArmCmdDispatcher::is_cancelled() const {
-    return _is_cancelled_.load();
+    if(!_impl_) return false;
+
+    return _impl_->_is_cancelled_.load();
 }
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
 
-void ArmCmdDispatcher::fill_current_state(ArmCmdResult& result) const {
+/**
+ * @brief 填充命令结果中的当前状态信息，包括当前位姿和关节角
+ * @param result 需要填充的命令结果结构体
+ */
+void ArmCmdDispatcher::Impl::fill_current_state(ArmCmdResult& result) const {
     if(!_arm_) {
         result.current_pose = geometry_msgs::Pose{};
         result.current_joints.clear();
@@ -107,7 +161,7 @@ void ArmCmdDispatcher::fill_current_state(ArmCmdResult& result) const {
  * @param msg 结果消息，默认为 "命令执行成功"
  * @return ArmCmdResult 结构体，表示命令执行成功
  */
-ArmCmdResult ArmCmdDispatcher::make_ok(const std::string& msg) {
+ArmCmdResult ArmCmdDispatcher::Impl::make_ok(const std::string& msg) {
     ArmCmdResult result;
     result.success = true;
     result.message = msg;
@@ -123,7 +177,7 @@ ArmCmdResult ArmCmdDispatcher::make_ok(const std::string& msg) {
  * @param msg 结果消息，默认为 "命令执行失败"
  * @return ArmCmdResult 结构体，表示命令执行失败
  */
-ArmCmdResult ArmCmdDispatcher::make_err(ErrorCode code, const std::string& msg) {
+ArmCmdResult ArmCmdDispatcher::Impl::make_err(ErrorCode code, const std::string& msg) {
     ArmCmdResult result;
     result.success = false;
     result.message = msg;
@@ -137,7 +191,7 @@ ArmCmdResult ArmCmdDispatcher::make_err(ErrorCode code, const std::string& msg) 
  * @brief 构造一个被取消的命令结果
  * @return ArmCmdResult 结构体，表示命令已取消
  */
-ArmCmdResult ArmCmdDispatcher::make_cancelled() {
+ArmCmdResult ArmCmdDispatcher::Impl::make_cancelled() {
     ArmCmdResult result;
     result.success = false;
     result.message = "命令已取消";
@@ -154,7 +208,7 @@ ArmCmdResult ArmCmdDispatcher::make_cancelled() {
  * @param progress 当前阶段的进度，范围 [0.0, 1.0]
  * @param message 当前阶段的提示信息
  */
-void ArmCmdDispatcher::report(FeedbackCb cb, const std::string& stage, double progress, const std::string& message) {
+void ArmCmdDispatcher::Impl::report(FeedbackCb cb, const std::string& stage, double progress, const std::string& message) {
     if(!cb) return;
 
     cb(ArmCmdFeedback{ stage, progress, message });
@@ -166,7 +220,7 @@ void ArmCmdDispatcher::report(FeedbackCb cb, const std::string& stage, double pr
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::execute_if_not_cancelled(ErrorCode code, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::execute_if_not_cancelled(ErrorCode code, FeedbackCb cb) {
     if(is_cancelled()) {
         return make_cancelled();
     }
@@ -194,7 +248,7 @@ ArmCmdResult ArmCmdDispatcher::execute_if_not_cancelled(ErrorCode code, Feedback
  * @param req 命令请求，HOME 命令不需要额外参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_home(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_home(const ArmCmdRequest& req, FeedbackCb cb) {
     (void)req;
     (void)cb;
 
@@ -216,7 +270,7 @@ ArmCmdResult ArmCmdDispatcher::handle_home(const ArmCmdRequest& req, FeedbackCb 
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_move_joints(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_move_joints(const ArmCmdRequest& req, FeedbackCb cb) {
     report(cb, "start", 0.0, "开始执行 MOVE_JOINTS 命令");
     if(req.joints.empty()) {
         return make_err(ErrorCode::FAILURE, "关节角列表不能为空");
@@ -233,7 +287,7 @@ ArmCmdResult ArmCmdDispatcher::handle_move_joints(const ArmCmdRequest& req, Feed
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_move_target(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_move_target(const ArmCmdRequest& req, FeedbackCb cb) {
     report(cb, "start", 0.0, "开始执行 MOVE_TARGET 命令");
     if(std::holds_alternative<std::monostate>(req.target)) {
         return make_err(ErrorCode::FAILURE, "目标不能为空");
@@ -250,7 +304,7 @@ ArmCmdResult ArmCmdDispatcher::handle_move_target(const ArmCmdRequest& req, Feed
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_move_target_in_eef_frame(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_move_target_in_eef_frame(const ArmCmdRequest& req, FeedbackCb cb) {
     report(cb, "start", 0.0, "开始执行 MOVE_TARGET_IN_EEF_FRAME 命令");
     if(std::holds_alternative<std::monostate>(req.target)) {
         return make_err(ErrorCode::FAILURE, "目标不能为空");
@@ -267,7 +321,7 @@ ArmCmdResult ArmCmdDispatcher::handle_move_target_in_eef_frame(const ArmCmdReque
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_telescopic_end(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_telescopic_end(const ArmCmdRequest& req, FeedbackCb cb) {
     report(cb, "start", 0.0, "开始执行 TELESCOPIC_END 命令");
     if(req.values.size() != 1) {
         return make_err(ErrorCode::FAILURE, "伸缩末端命令需要一个参数：伸缩长度");
@@ -284,7 +338,7 @@ ArmCmdResult ArmCmdDispatcher::handle_telescopic_end(const ArmCmdRequest& req, F
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_rotate_end(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_rotate_end(const ArmCmdRequest& req, FeedbackCb cb) {
     report(cb, "start", 0.0, "开始执行 ROTATE_END 命令");
     if(req.values.size() != 1) {
         return make_err(ErrorCode::FAILURE, "旋转末端命令需要一个参数：旋转角度（弧度）");
@@ -301,7 +355,7 @@ ArmCmdResult ArmCmdDispatcher::handle_rotate_end(const ArmCmdRequest& req, Feedb
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_move_line(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_move_line(const ArmCmdRequest& req, FeedbackCb cb) {
     report(cb, "start", 0.0, "开始执行 MOVE_LINE 命令");
     if(req.waypoints.size() != 2) {
         return make_err(ErrorCode::FAILURE, "MOVE_LINE 命令需要两个路径点");
@@ -336,7 +390,7 @@ ArmCmdResult ArmCmdDispatcher::handle_move_line(const ArmCmdRequest& req, Feedba
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_move_bezier(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_move_bezier(const ArmCmdRequest& req, FeedbackCb cb) {
     report(cb, "start", 0.0, "开始执行 MOVE_BEZIER 命令");
     if(req.waypoints.size() != 3) {
         return make_err(ErrorCode::FAILURE, "MOVE_BEZIER 命令需要三个路径点");
@@ -371,7 +425,7 @@ ArmCmdResult ArmCmdDispatcher::handle_move_bezier(const ArmCmdRequest& req, Feed
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_move_decartes(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_move_decartes(const ArmCmdRequest& req, FeedbackCb cb) {
     report(cb, "start", 0.0, "开始执行 MOVE_DECARTES 命令");
     if(req.waypoints.empty()) {
         return make_err(ErrorCode::FAILURE, "路径点列表不能为空");
@@ -405,7 +459,7 @@ ArmCmdResult ArmCmdDispatcher::handle_move_decartes(const ArmCmdRequest& req, Fe
  * @param req 命令请求，要求 req.target 包含一个 geometry_msgs::Quaternion 作为目标姿态
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_set_orientation_constraint(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_set_orientation_constraint(const ArmCmdRequest& req, FeedbackCb cb) {
     (void)cb;
 
     if(is_cancelled()) {
@@ -431,7 +485,7 @@ ArmCmdResult ArmCmdDispatcher::handle_set_orientation_constraint(const ArmCmdReq
  * @param req 命令请求，要求 req.target 包含一个 geometry_msgs::Point 作为目标位置，req.values 包含一个三维向量参数，表示约束范围大小
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_set_position_constraint(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_set_position_constraint(const ArmCmdRequest& req, FeedbackCb cb) {
     (void)cb;
 
     if(is_cancelled()) {
@@ -464,7 +518,7 @@ ArmCmdResult ArmCmdDispatcher::handle_set_position_constraint(const ArmCmdReques
  * @param req 命令请求，要求 req.joint_names 包含一个或多个关节名称，req.values 包含三个参数，分别表示约束范围的最小值、最大值和权重
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_set_joint_constraint(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_set_joint_constraint(const ArmCmdRequest& req, FeedbackCb cb) {
     (void)cb;
     if(is_cancelled()) {
         return make_cancelled();
@@ -502,7 +556,7 @@ ArmCmdResult ArmCmdDispatcher::handle_set_joint_constraint(const ArmCmdRequest& 
  * @param req 命令请求，GET_CURRENT_JOINTS 命令不需要额外参数
  * @return ArmCmdResult 结构体，表示命令执行结果，current_joints 字段包含当前关节角列表
  */
-ArmCmdResult ArmCmdDispatcher::handle_get_current_joints(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_get_current_joints(const ArmCmdRequest& req, FeedbackCb cb) {
     (void)cb;
     if(is_cancelled()) {
         return make_cancelled();
@@ -523,7 +577,7 @@ ArmCmdResult ArmCmdDispatcher::handle_get_current_joints(const ArmCmdRequest& re
  * @param req 命令请求，GET_CURRENT_POSE 命令不需要额外参数
  * @return ArmCmdResult 结构体，表示命令执行结果，current_pose 字段包含当前位姿
  */
-ArmCmdResult ArmCmdDispatcher::handle_get_current_pose(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_get_current_pose(const ArmCmdRequest& req, FeedbackCb cb) {
     (void)cb;
     if(is_cancelled()) {
         return make_cancelled();
@@ -540,7 +594,7 @@ ArmCmdResult ArmCmdDispatcher::handle_get_current_pose(const ArmCmdRequest& req,
  * @param cb 反馈回调函数，接受 ArmCmdFeedback 结构体参数
  * @return ArmCmdResult 结构体，表示命令执行结果
  */
-ArmCmdResult ArmCmdDispatcher::handle_move_to_zero(const ArmCmdRequest& req, FeedbackCb cb) {
+ArmCmdResult ArmCmdDispatcher::Impl::handle_move_to_zero(const ArmCmdRequest& req, FeedbackCb cb) {
     report(cb, "start", 0.0, "开始执行 MOVE_TO_ZERO 命令");
 
     ErrorCode code = _arm_->reset_to_zero();
