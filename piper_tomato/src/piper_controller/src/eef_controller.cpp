@@ -200,6 +200,8 @@ std::vector<std::string> TwoFingerGripper::get_force_names() const {
  * @param force_value 力反馈值输出
  */
 ErrorCode TwoFingerGripper::get_force(const std::string& force_name, double& force_value) const {
+    // TODO: 实现实际的力反馈获取逻辑，目前为占位实现
+
     ROS_WARN("末端执行器控制器 [%s] 暂时不支持获取力反馈，力反馈名称：%s，力反馈数值：%.3f", get_eef_name().c_str(), force_name.c_str(), force_value);
     return ErrorCode::FAILURE;
 }
