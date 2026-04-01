@@ -2,9 +2,10 @@ cmake_minimum_required(VERSION 3.0.2)
 project(piper_gui)
 
 find_package(catkin REQUIRED COMPONENTS
+  actionlib_msgs
+  piper_msgs2
   rospy
   std_msgs
-  piper_msgs_srvs
 )
 
 catkin_package()

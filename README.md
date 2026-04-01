@@ -236,6 +236,37 @@ joints: []
 values: []"
 ```
 
+### 新链路 EEF 挂载与 TCP 偏移配置
+
+`piper_tomato` 已支持在启动时自动挂载 EEF（`attach_eef`）并读取 TCP 偏移：
+
+文件位置：`piper_tomato/src/piper_interface/config/config.yaml`
+
+```yaml
+start:
+    eef:
+        enabled: true
+        type: "two_finger_gripper" # two_finger_gripper | servo_gripper
+        name: "gripper"
+        serial_port: "/dev/ttyACM0"  # servo_gripper 使用
+        baud_rate: 115200             # servo_gripper 使用
+        tcp_offset:
+            x: 0.0
+            y: 0.0
+            z: 0.0
+            qx: 0.0
+            qy: 0.0
+            qz: 0.0
+            qw: 1.0
+```
+
+说明：
+
+- `enabled=false` 时不挂载 EEF。
+- `type=two_finger_gripper` 使用 MoveIt 夹爪组。
+- `type=servo_gripper` 使用串口舵机夹爪。
+- `tcp_offset` 表示 `flange -> tcp` 变换，用于末端目标偏移换算。
+
 ## 📊 完整使用流程
 
 ### 阶段 1: 命令行快速控制

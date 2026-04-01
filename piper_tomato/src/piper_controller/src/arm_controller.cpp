@@ -131,6 +131,11 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
         return ErrorCode::ASYNC_TASK_RUNNING;
     }
 
+    const TargetVariant target_for_planning = _eef_ ? _eef_->tcp_to_flange(target) : target;
+    if(_eef_) {
+        ROS_INFO("检测到已挂载 EEF，目标将按 tcp_offset 从 TCP 转换到 flange");
+    }
+
     ErrorCode result = ErrorCode::INVALID_TARGET_TYPE;
 
     std::visit(variant_visitor{
@@ -176,7 +181,7 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
             ROS_INFO("设置目标位姿（带时间戳）是否成功：%s", ok ? "是" : "否");
             result = ok ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
         }
-        }, target);
+        }, target_for_planning);
 
     return result;
 }
@@ -190,6 +195,11 @@ ErrorCode ArmController::set_target_in_eef_frame(const TargetVariant& target) {
     if(_is_planning_or_executing_) {
         ROS_WARN("当前已有异步任务正在执行，无法设置新目标");
         return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    const TargetVariant target_for_planning = _eef_ ? _eef_->tcp_to_flange(target) : target;
+    if(_eef_) {
+        ROS_INFO("检测到已挂载 EEF，EEF 坐标系目标将按 tcp_offset 从 TCP 转换到 flange");
     }
 
     bool success = std::visit(variant_visitor{
@@ -221,7 +231,7 @@ ErrorCode ArmController::set_target_in_eef_frame(const TargetVariant& target) {
             if(end_to_base_tf(pose_stamped, transformed_pose_stamped) != ErrorCode::SUCCESS) return false;
             return this->set_target(transformed_pose_stamped.pose) == ErrorCode::SUCCESS;
         }
-        }, target);
+        }, target_for_planning);
 
     return success ? ErrorCode::SUCCESS : ErrorCode::TARGET_OUT_OF_BOUNDS;
 }

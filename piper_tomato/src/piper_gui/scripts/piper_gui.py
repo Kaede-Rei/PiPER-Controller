@@ -6,7 +6,8 @@ from typing import Union, Any, Optional
 
 # ================= 新增 ROS 相关导入 =================
 import rospy
-from piper_msgs_srvs.srv import piper_cmd, piper_cmdRequest  # 请确保ROS服务消息包名正确
+import actionlib
+from piper_msgs2.msg import SimpleMoveArmAction, SimpleMoveArmGoal
 
 # 添加sdk路径
 # sys.path.append("/home/hxloong/.local/lib/python3.8/site-packages")
@@ -426,7 +427,7 @@ class MainWindow(QMainWindow):
 
         # ================= ROS 相关初始化 =================
         self.ros_available = False
-        self.cmd_service_client = None  # ROS服务客户端
+        self.simple_move_client = None  # ROS Action 客户端
         self.init_ros()
 
         self.depth_intrinsics = np.array(
@@ -438,7 +439,7 @@ class MainWindow(QMainWindow):
         self.init_thread()
 
     def init_ros(self):
-        """初始化ROS节点和服务客户端"""
+        """初始化ROS节点和 Action 客户端"""
         try:
             # 检查ROS Master是否运行
             if not rospy.is_shutdown():
@@ -447,15 +448,15 @@ class MainWindow(QMainWindow):
                     "tomato_picking_gui", anonymous=True, disable_signals=True
                 )
 
-                # 等待服务可用（超时5秒）
-                rospy.wait_for_service("/piper_server/eef_cmd", timeout=5.0)
-
-                # 创建服务代理
-                self.cmd_service_client = rospy.ServiceProxy(
-                    "/piper_server/eef_cmd", piper_cmd
+                # 等待 simple_move_arm action 可用（超时5秒）
+                self.simple_move_client = actionlib.SimpleActionClient(
+                    "/simple_move_arm", SimpleMoveArmAction
                 )
+                if not self.simple_move_client.wait_for_server(rospy.Duration(5.0)):
+                    raise rospy.ROSException("/simple_move_arm action 不可用")
+
                 self.ros_available = True
-                print("[ROS] 初始化成功，已连接到 /piper_server/eef_cmd 服务")
+                print("[ROS] 初始化成功，已连接到 /simple_move_arm action")
 
         except rospy.ROSException as e:
             print(f"[ROS] 初始化失败: {e}")
@@ -470,28 +471,40 @@ class MainWindow(QMainWindow):
             return False
 
         try:
-            req = piper_cmdRequest()
-            req.command = "goal_eef"
-            req.x = x
-            req.y = y
-            req.z = z
-            req.roll = 0.0
-            req.pitch = 0.0
-            if hasattr(req, "yaw"):
-                req.yaw = 0.0
+            goal = SimpleMoveArmGoal()
+            goal.command_type = SimpleMoveArmGoal.MOVE_TARGET_IN_EEF_FRAME
+            goal.target_type = SimpleMoveArmGoal.TARGET_POSE
+
+            goal.x = [x]
+            goal.y = [y]
+            goal.z = [z]
+            goal.roll = [0.0]
+            goal.pitch = [0.0]
+            goal.yaw = [0.0]
+
+            goal.joint_names = []
+            goal.joints = []
+            goal.values = []
 
             print(f"[ROS] 发送机械臂指令: x={x:.4f}, y={y:.4f}, z={z:.4f}")
-            resp = self.cmd_service_client(req)
-            print(f"[ROS] 服务返回: {resp!r}")
+            self.simple_move_client.send_goal(goal)
+            finished = self.simple_move_client.wait_for_result(rospy.Duration(10.0))
+            if not finished:
+                self.simple_move_client.cancel_goal()
+                print("[ROS] action 超时，已取消")
+                return False
 
-            if hasattr(resp, "success"):
-                print(f"[ROS] 业务成功标志: {resp.success}")
-                return bool(resp.success)
+            result = self.simple_move_client.get_result()
+            print(f"[ROS] action 返回: {result!r}")
 
-            return True
+            if result is not None and hasattr(result, "success"):
+                print(f"[ROS] 业务成功标志: {result.success}")
+                return bool(result.success)
 
-        except rospy.ServiceException as e:
-            print(f"[ROS] 服务调用失败: {e}")
+            return False
+
+        except Exception as e:
+            print(f"[ROS] action 调用失败: {e}")
             return False
 
     def init_ui(self):

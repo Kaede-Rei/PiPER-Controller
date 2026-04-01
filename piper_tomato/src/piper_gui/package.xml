@@ -12,8 +12,9 @@
 
     <depend>rospy</depend>
     <depend>std_msgs</depend>
+    <depend>actionlib_msgs</depend>
 
-    <depend>piper_msgs_srvs</depend>
+    <depend>piper_msgs2</depend>
 
     <export>
 
