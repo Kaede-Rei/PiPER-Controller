@@ -15,11 +15,13 @@ namespace piper {
  */
 TasksManager::TasksManager(std::shared_ptr<ArmController> arm, std::shared_ptr<EndEffector> eef)
     : _arm_(std::move(arm)), _eef_(std::move(eef)) {
-    _arm_name_ = _arm_->get_arm_name();
-    if(_eef_ != nullptr) {
-        _has_eef_ = true;
-        _eef_name_ = _eef_->get_eef_name();
+    if(!_arm_) {
+        ROS_ERROR("机械臂控制器不能为空，TasksManager 初始化失败");
+        throw std::invalid_argument("ArmController pointer cannot be null");
     }
+
+    _arm_name_ = _arm_->get_arm_name();
+    if(_eef_) _eef_name_ = _eef_->get_eef_name();
 }
 
 /**
