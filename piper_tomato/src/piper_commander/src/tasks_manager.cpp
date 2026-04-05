@@ -16,7 +16,10 @@ namespace piper {
 TasksManager::TasksManager(std::shared_ptr<ArmController> arm, std::shared_ptr<EndEffector> eef)
     : _arm_(std::move(arm)), _eef_(std::move(eef)) {
     _arm_name_ = _arm_->get_arm_name();
-    _eef_name_ = _eef_->get_eef_name();
+    if(_eef_ != nullptr) {
+        _has_eef_ = true;
+        _eef_name_ = _eef_->get_eef_name();
+    }
 }
 
 /**

@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "piper_controller/arm_controller.hpp"
-#include "piper_controller/eef_controller.hpp"
+#include "piper_controller/eef_controller.hpp"  // IWYU pragma: keep
 
 namespace piper {
 
@@ -101,6 +101,8 @@ private:
     std::string _arm_name_;
     /// @brief 末端执行器名称
     std::string _eef_name_;
+    /// @brief 是否有末端执行器
+    bool _has_eef_{ false };
 
     /// @brief 任务组集合
     std::map<std::string, TaskGroup> _task_groups_;
