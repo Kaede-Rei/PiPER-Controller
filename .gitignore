@@ -1,6 +1,8 @@
 .vscode
-build
 .VSCodeCounter
+build
 Log
+
+plan.md
 
 piper_tomato/src/CMakeLists.txt
