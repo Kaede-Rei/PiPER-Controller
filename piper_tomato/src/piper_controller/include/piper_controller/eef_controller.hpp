@@ -3,6 +3,7 @@
 
 #include "piper_controller/eef_interface.hpp"
 #include "serial_driver/serial_driver.hpp"
+#include "tl_optional/optional.hpp"
 
 namespace piper {
 
@@ -17,6 +18,7 @@ namespace piper {
  * @brief 双指夹爪末端执行器类，支持关节控制和力反馈
  */
 class TwoFingerGripper : public EndEffector,
+    public GripperEefInterface,
     public JointEefInterface,
     public ForceFeedbackEefInterface {
 public:
@@ -30,13 +32,12 @@ public:
 
     void stop() override;
 
-    bool supports_joint_control() const override { return true; }
-    bool supports_force_feedback() const override { return true; }
-
     const std::string& get_group_name() const override;
     moveit::planning_interface::MoveGroupInterface& get_move_group() override;
     ErrorCode open() override;
     ErrorCode close() override;
+    ErrorCode set_angle(double angle) override;
+    ErrorCode get_angle(double& angle) const override;
     ErrorCode execute_preset_pose(const std::string& pose_name) override;
     ErrorCode set_joint_value(const std::string& joint_name, double value) override;
     ErrorCode set_joint_values(const std::vector<double>& joint_values) override;
@@ -57,7 +58,8 @@ private:
 /**
  * @brief 总线舵机末端执行器类
  */
-class ServoGripper : public EndEffector {
+class ServoGripper : public EndEffector,
+    public GripperEefInterface {
 public:
     ServoGripper(ros::NodeHandle& nh, const geometry_msgs::Pose& tcp_offset, const std::string& serial_port = "/dev/ttyACM0", int baud_rate = 115200);
     ~ServoGripper() override = default;
@@ -69,14 +71,14 @@ public:
 
     void stop() override;
 
-    bool supports_joint_control() const override { return true; }
-
-    ErrorCode open();
-    ErrorCode close();
-    ErrorCode set_angle(double angle);
+    ErrorCode open() override;
+    ErrorCode close() override;
+    ErrorCode set_angle(double angle) override;
+    ErrorCode get_angle(double& angle) const override;
 
 private:
     STM32Serial _serialer_;
+    tl::optional<double> _current_angle_;
 };
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //

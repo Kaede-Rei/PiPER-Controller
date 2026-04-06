@@ -16,6 +16,25 @@ namespace piper {
 // ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
 
 /**
+ * @brief 夹爪类末端执行器接口
+ */
+class GripperEefInterface {
+public:
+    GripperEefInterface() = default;
+    virtual ~GripperEefInterface() = default;
+
+    GripperEefInterface(const GripperEefInterface&) = delete;
+    GripperEefInterface& operator=(const GripperEefInterface&) = delete;
+    GripperEefInterface(GripperEefInterface&&) = delete;
+    GripperEefInterface& operator=(GripperEefInterface&&) = delete;
+
+    virtual ErrorCode open() = 0;
+    virtual ErrorCode close() = 0;
+    virtual ErrorCode set_angle(double angle) = 0;
+    virtual ErrorCode get_angle(double& angle) const = 0;
+};
+
+/**
  * @brief 关节类末端执行器接口
  */
 class JointEefInterface {
@@ -39,18 +58,6 @@ public:
      * @return MoveGroupInterface 引用
      */
     virtual moveit::planning_interface::MoveGroupInterface& get_move_group() = 0;
-
-    /**
-     * @brief 打开末端执行器
-     * @return 错误码
-     */
-    virtual ErrorCode open() = 0;
-
-    /**
-     * @brief 关闭末端执行器
-     * @return 错误码
-     */
-    virtual ErrorCode close() = 0;
 
     /**
      * @brief 执行末端预设位姿
@@ -184,15 +191,6 @@ public:
      * @brief 立即停止末端执行器动作
      */
     virtual void stop() = 0;
-
-    /**
-     * @brief 查询末端执行器支持能力
-     */
-    virtual bool supports_joint_control() const { return false; }
-    virtual bool supports_io_control() const { return false; }
-    virtual bool supports_fluid_control() const { return false; }
-    virtual bool supports_force_feedback() const { return false; }
-    virtual bool supports_grasp_planning() const { return false; }
 
     /**
      * @brief 设置 TCP 偏移（相对于 flange）

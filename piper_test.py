@@ -1,6 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+PiPER 全接口测试脚本（增强版）
+
+覆盖：
+- roscore / roslaunch 自动管理
+- Action / Service 上线检查
+- Query / Config / MoveArm / SimpleMoveArm 正向测试
+- 无效输入负例测试
+- EEF Service 测试（可选）
+- cancel / preempt 测试（可选，默认关闭）
+
+设计原则：
+- 先尽量做 smoke test，减少误报
+- 对环境依赖强、容易因具体机械配置差异而失败的项目，用 WARN 而不是直接 FAIL
+- 对明显的协议/接口错误，保持 FAIL
+"""
+
 import os
 import sys
 import time
@@ -17,11 +34,24 @@ import actionlib
 
 from geometry_msgs.msg import Pose, Point, Quaternion
 from sensor_msgs.msg import JointState
+from actionlib_msgs.msg import GoalStatus
 
 from piper_msgs2.srv import QueryArm, QueryArmRequest
 from piper_msgs2.srv import ConfigArm, ConfigArmRequest
 from piper_msgs2.msg import MoveArmAction, MoveArmGoal
 from piper_msgs2.msg import SimpleMoveArmAction, SimpleMoveArmGoal
+
+try:
+    from piper_msgs2.srv import CommandEef, CommandEefRequest
+
+    HAS_EEF_SERVICE = True
+except Exception:
+    CommandEef = None
+    CommandEefRequest = None
+    HAS_EEF_SERVICE = False
+
+INVALID_INTERFACE = 17
+
 
 # =========================
 # roscore / 进程管理
@@ -126,11 +156,6 @@ def quaternion_to_rpy(q):
     return roll, pitch, yaw
 
 
-# =========================
-# Runner
-# =========================
-
-
 class Runner:
     def __init__(self):
         self.pass_items = []
@@ -140,6 +165,7 @@ class Runner:
         self.launch_proc = None
         self.move_client = None
         self.simple_client = None
+        self.eef_srv_name = None
 
         self.launch_cmd = os.environ.get(
             "TEST_LAUNCH_CMD", "roslaunch --wait piper_interface piper_start.launch"
@@ -152,17 +178,27 @@ class Runner:
             "~simple_move_arm_action", "/simple_move_arm"
         )
 
+        # eef service 常见命名有两套：/eef_cmd 和 /eef_command
+        self.eef_service_candidates = rospy.get_param(
+            "~eef_cmd_service_candidates", ["/eef_cmd", "/eef_command"]
+        )
+        if isinstance(self.eef_service_candidates, str):
+            self.eef_service_candidates = [self.eef_service_candidates]
+
         self.test_joint_name = rospy.get_param(
             "~test_joint_name", os.environ.get("TEST_JOINT_NAME", "joint1")
         )
 
-        self.run_reset_tests = rospy.get_param("~run_reset_tests", True)
-        self.run_end_tests = rospy.get_param("~run_end_tests", True)
-
-        # 关键：为了“看全程”，每一步后停一下
-        self.step_pause_sec = float(rospy.get_param("~step_pause_sec", 2.0))
-        self.final_hold_forever = bool(rospy.get_param("~final_hold_forever", True))
-        self.final_hold_sec = float(rospy.get_param("~final_hold_sec", 20.0))
+        self.run_reset_tests = bool(rospy.get_param("~run_reset_tests", True))
+        self.run_end_tests = bool(rospy.get_param("~run_end_tests", True))
+        self.run_eef_tests = bool(rospy.get_param("~run_eef_tests", True))
+        self.run_negative_tests = bool(rospy.get_param("~run_negative_tests", True))
+        self.run_cancel_tests = bool(rospy.get_param("~run_cancel_tests", False))
+        self.interactive_pause = bool(rospy.get_param("~interactive_pause", True))
+        self.step_pause_sec = float(rospy.get_param("~step_pause_sec", 1.0))
+        self.final_hold_forever = bool(rospy.get_param("~final_hold_forever", False))
+        self.final_hold_sec = float(rospy.get_param("~final_hold_sec", 10.0))
+        self.cancel_after_sec = float(rospy.get_param("~cancel_after_sec", 0.5))
 
         self.cur_pose = None
         self.cur_joints = []
@@ -211,16 +247,24 @@ class Runner:
     def start_launch(self):
         self.info(f"启动系统: {self.launch_cmd}")
         cmd = shlex.split(self.launch_cmd)
-        self.launch_proc = subprocess.Popen(
-            cmd,
-            preexec_fn=os.setsid,
-        )
+        self.launch_proc = subprocess.Popen(cmd, preexec_fn=os.setsid)
         self.info(f"roslaunch 已启动，PID={self.launch_proc.pid}")
 
     def stop_launch(self):
         stop_process_group(self.launch_proc, name="roslaunch", timeout=10)
 
     # ---------- 等待系统 ----------
+    def _discover_eef_service(self):
+        if not HAS_EEF_SERVICE:
+            return None
+        for name in self.eef_service_candidates:
+            try:
+                rospy.wait_for_service(name, timeout=3.0)
+                return name
+            except Exception:
+                continue
+        return None
+
     def wait_for_system(self):
         try:
             rospy.wait_for_service(self.query_srv_name, timeout=90.0)
@@ -228,6 +272,16 @@ class Runner:
             self.ok("QueryArm / ConfigArm 服务已上线")
         except Exception as e:
             self.fail(f"服务未正常上线: {e}")
+
+        self.eef_srv_name = self._discover_eef_service()
+        if self.run_eef_tests:
+            if self.eef_srv_name:
+                self.ok(f"EEF 服务已上线: {self.eef_srv_name}")
+            else:
+                self.warn(
+                    "未发现 EEF service（已尝试 /eef_cmd 与 /eef_command）。"
+                    "如果你期望它存在，请重点检查 piper_start.cpp 与 config.yaml 的参数键名是否一致。"
+                )
 
         self.move_client = actionlib.SimpleActionClient(self.move_arm_ns, MoveArmAction)
         self.simple_client = actionlib.SimpleActionClient(
@@ -250,27 +304,142 @@ class Runner:
         except Exception as e:
             self.fail(f"/joint_states 未正常收到消息: {e}")
 
-        try:
-            hz_text = subprocess.check_output(
-                [
-                    "bash",
-                    "-lc",
-                    "timeout 3 rostopic hz /joint_states 2>/dev/null || true",
-                ],
-                text=True,
-            ).strip()
-            if hz_text:
-                self.info("/joint_states hz 输出：")
-                print(hz_text)
-        except Exception:
-            pass
-
-    # ---------- service ----------
+    # ---------- proxies ----------
     def query_proxy(self):
         return rospy.ServiceProxy(self.query_srv_name, QueryArm)
 
     def config_proxy(self):
         return rospy.ServiceProxy(self.config_srv_name, ConfigArm)
+
+    def eef_proxy(self):
+        if not (HAS_EEF_SERVICE and self.eef_srv_name):
+            raise RuntimeError("EEF 服务不可用")
+        return rospy.ServiceProxy(self.eef_srv_name, CommandEef)
+
+    # ---------- 辅助 ----------
+    def _identity_pose(self):
+        p = Pose()
+        p.position.x = 0.0
+        p.position.y = 0.0
+        p.position.z = 0.0
+        p.orientation.x = 0.0
+        p.orientation.y = 0.0
+        p.orientation.z = 0.0
+        p.orientation.w = 1.0
+        return p
+
+    def _copy_pose(self, pose):
+        return copy.deepcopy(pose)
+
+    def _pose_offset(self, base_pose, dx=0.0, dy=0.0, dz=0.0):
+        p = self._copy_pose(base_pose)
+        p.position.x += dx
+        p.position.y += dy
+        p.position.z += dz
+        return p
+
+    def _require_current_state(self):
+        if self.cur_pose is None:
+            self.warn("当前 pose 不可用，使用单位姿态兜底")
+            self.cur_pose = self._identity_pose()
+
+        if not self.cur_joints:
+            self.warn("当前 joints 不可用，使用全零兜底")
+            self.cur_joints = [0.0] * 6
+
+    def _current_rpy_or_zero(self):
+        if self.cur_pose is None:
+            return (0.0, 0.0, 0.0)
+
+        q = self.cur_pose.orientation
+        if quat_norm(q) < 1e-6:
+            self.warn("当前 pose 四元数无效，SimpleMoveArm 将使用 0/0/0 RPY 兜底")
+            return (0.0, 0.0, 0.0)
+
+        try:
+            return quaternion_to_rpy(q)
+        except Exception as e:
+            self.warn(f"四元数转 RPY 失败，使用 0/0/0 兜底: {e}")
+            return (0.0, 0.0, 0.0)
+
+    def _visible_joint_target(self, base_joints, offsets):
+        out = list(base_joints)
+        for i, off in enumerate(offsets):
+            if i < len(out):
+                out[i] += off
+        return out
+
+    def _pause_watch(self, label):
+        if self.interactive_pause and sys.stdin and sys.stdin.isatty():
+            try:
+                input(f"[INFO] {label} 完成，按 Enter 继续下一步...")
+                return
+            except EOFError:
+                pass
+            except KeyboardInterrupt:
+                raise
+
+        if self.step_pause_sec > 0.0:
+            time.sleep(self.step_pause_sec)
+
+    def refresh_current_state(self):
+        try:
+            q_srv = self.query_proxy()
+
+            q_req = QueryArmRequest()
+            q_req.command_type = QueryArmRequest.GET_CURRENT_JOINTS
+            q_req.values = []
+            q_res = q_srv(q_req)
+            if q_res.success and len(q_res.cur_joint) > 0:
+                self.cur_joints = list(q_res.cur_joint)
+            else:
+                self.warn(f"刷新当前关节失败，沿用缓存值: {q_res.message}")
+
+            p_req = QueryArmRequest()
+            p_req.command_type = QueryArmRequest.GET_CURRENT_POSE
+            p_req.values = []
+            p_res = q_srv(p_req)
+            if p_res.success and quat_norm(p_res.cur_pose.orientation) > 1e-6:
+                self.cur_pose = p_res.cur_pose
+            else:
+                self.warn(f"刷新当前位姿失败，沿用缓存值: {p_res.message}")
+        except Exception as e:
+            self.warn(f"刷新当前状态异常，沿用缓存值: {e}")
+
+    def current_pose_plus(self, dx=0.0, dy=0.0, dz=0.0):
+        self.refresh_current_state()
+        self._require_current_state()
+        return self._pose_offset(self.cur_pose, dx=dx, dy=dy, dz=dz)
+
+    def current_pose_triplet(self, offsets):
+        self.refresh_current_state()
+        self._require_current_state()
+        base = self._copy_pose(self.cur_pose)
+        out = []
+        for dx, dy, dz in offsets:
+            out.append(self._pose_offset(base, dx=dx, dy=dy, dz=dz))
+        return out
+
+    def current_simple_pose_arrays(self, offsets):
+        self.refresh_current_state()
+        self._require_current_state()
+
+        base = self._copy_pose(self.cur_pose)
+        r0, p0, y0 = self._current_rpy_or_zero()
+
+        xs, ys, zs = [], [], []
+        rs, ps, ysaw = [], [], []
+
+        for dx, dy, dz in offsets:
+            pose = self._pose_offset(base, dx=dx, dy=dy, dz=dz)
+            xs.append(pose.position.x)
+            ys.append(pose.position.y)
+            zs.append(pose.position.z)
+            rs.append(r0)
+            ps.append(p0)
+            ysaw.append(y0)
+
+        return xs, ys, zs, rs, ps, ysaw
 
     # ---------- 查询 ----------
     def check_query_current_joints(self):
@@ -389,75 +558,48 @@ class Runner:
         except Exception as e:
             self.fail(f"SET_JOINT_CONSTRAINT 调用异常: {e}")
 
-    # ---------- 辅助 ----------
-    def _identity_pose(self):
-        p = Pose()
-        p.position.x = 0.0
-        p.position.y = 0.0
-        p.position.z = 0.0
-        p.orientation.x = 0.0
-        p.orientation.y = 0.0
-        p.orientation.z = 0.0
-        p.orientation.w = 1.0
-        return p
-
-    def _copy_pose(self, pose):
-        return copy.deepcopy(pose)
-
-    def _pose_offset(self, base_pose, dx=0.0, dy=0.0, dz=0.0):
-        p = self._copy_pose(base_pose)
-        p.position.x += dx
-        p.position.y += dy
-        p.position.z += dz
-        return p
-
-    def _require_current_state(self):
-        if self.cur_pose is None:
-            self.warn("当前 pose 不可用，使用单位姿态兜底")
-            self.cur_pose = self._identity_pose()
-
-        if not self.cur_joints:
-            self.warn("当前 joints 不可用，使用全零兜底")
-            self.cur_joints = [0.0] * 6
-
-    def _current_rpy_or_zero(self):
-        if self.cur_pose is None:
-            return (0.0, 0.0, 0.0)
-
-        q = self.cur_pose.orientation
-        if quat_norm(q) < 1e-6:
-            self.warn("当前 pose 四元数无效，SimpleMoveArm 将使用 0/0/0 RPY 兜底")
-            return (0.0, 0.0, 0.0)
+    # ---------- EEF ----------
+    def check_eef_service(self):
+        if not (self.run_eef_tests and HAS_EEF_SERVICE and self.eef_srv_name):
+            return
 
         try:
-            return quaternion_to_rpy(q)
+            srv = self.eef_proxy()
+            for cmd_name, cmd_type in [
+                ("STOP_GRIPPER", CommandEefRequest.STOP_GRIPPER),
+                ("OPEN_GRIPPER", CommandEefRequest.OPEN_GRIPPER),
+                ("CLOSE_GRIPPER", CommandEefRequest.CLOSE_GRIPPER),
+            ]:
+                self.info(f"测试 EEF service: {cmd_name}")
+                req = CommandEefRequest()
+                req.command_type = cmd_type
+                req.values = []
+                res = srv(req)
+                print(res)
+
+                if res.success:
+                    self.ok(f"EEF::{cmd_name} 成功")
+                elif int(res.error_code) == INVALID_INTERFACE:
+                    self.warn(
+                        f"EEF::{cmd_name} 返回 INVALID_INTERFACE。"
+                        "这通常说明当前末端对象存在，但 dispatcher 取到的能力接口与实际末端实现不一致。"
+                    )
+                else:
+                    self.fail(
+                        f"EEF::{cmd_name} 失败: {res.message} (error_code={res.error_code})"
+                    )
+
+                self._pause_watch(cmd_name)
         except Exception as e:
-            self.warn(f"四元数转 RPY 失败，使用 0/0/0 兜底: {e}")
-            return (0.0, 0.0, 0.0)
+            self.fail(f"EEF service 调用异常: {e}")
 
-    def _visible_joint_target(self, base_joints, offsets):
-        out = list(base_joints)
-        for i, off in enumerate(offsets):
-            if i < len(out):
-                out[i] += off
-        return out
+    # ---------- Action helpers ----------
+    def _result_success(self, result):
+        return bool(result and getattr(result, "success", False))
 
-    def _pause_watch(self, label):
-        prompt = f"[INFO] {label} 完成，按 Enter 继续下一步..."
-        try:
-            # 交互终端下：等待用户回车
-            if sys.stdin and sys.stdin.isatty():
-                input(prompt)
-            else:
-                # 非交互环境下避免卡死
-                self.warn(f"{label} 完成，但当前不是交互终端，自动继续")
-        except EOFError:
-            self.warn(f"{label} 完成，但 stdin 已关闭，自动继续")
-        except KeyboardInterrupt:
-            raise
-
-    # ---------- action send ----------
-    def send_move_arm(self, name, fill_goal_fn, timeout=30.0):
+    def send_move_arm(
+        self, name, fill_goal_fn, timeout=30.0, expect_success=True, cancel_after=None
+    ):
         self.info(f"测试 ArmMoveAction: {name}")
         try:
             goal = MoveArmGoal()
@@ -472,6 +614,11 @@ class Runner:
                     pass
 
             self.move_client.send_goal(goal, feedback_cb=feedback_cb)
+
+            if cancel_after is not None:
+                rospy.sleep(cancel_after)
+                self.move_client.cancel_goal()
+
             finished = self.move_client.wait_for_result(rospy.Duration(timeout))
             if not finished:
                 self.move_client.cancel_goal()
@@ -482,18 +629,36 @@ class Runner:
             result = self.move_client.get_result()
             print(result)
 
-            if result and result.success:
-                self.ok(f"ArmMoveAction::{name} 成功")
-                self._pause_watch(name)
+            if cancel_after is not None:
+                if state == GoalStatus.PREEMPTED:
+                    self.ok(f"ArmMoveAction::{name} 成功触发取消")
+                    return True
+                if self._result_success(result):
+                    self.warn(f"ArmMoveAction::{name} 在发送取消前已经执行完成")
+                    return True
+                self.warn(f"ArmMoveAction::{name} 取消后状态={state}, result={result}")
                 return True
-            else:
+
+            if expect_success:
+                if self._result_success(result):
+                    self.ok(f"ArmMoveAction::{name} 成功")
+                    self._pause_watch(name)
+                    return True
                 self.fail(f"ArmMoveAction::{name} 失败, state={state}, result={result}")
                 return False
+
+            if self._result_success(result):
+                self.fail(f"ArmMoveAction::{name} 本应失败，但实际成功")
+                return False
+            self.ok(f"ArmMoveAction::{name} 负例符合预期")
+            return True
         except Exception as e:
             self.fail(f"ArmMoveAction::{name} 异常: {e}")
             return False
 
-    def send_simple_move_arm(self, name, fill_goal_fn, timeout=30.0):
+    def send_simple_move_arm(
+        self, name, fill_goal_fn, timeout=30.0, expect_success=True, cancel_after=None
+    ):
         self.info(f"测试 SimpleMoveArmAction: {name}")
         try:
             goal = SimpleMoveArmGoal()
@@ -508,6 +673,11 @@ class Runner:
                     pass
 
             self.simple_client.send_goal(goal, feedback_cb=feedback_cb)
+
+            if cancel_after is not None:
+                rospy.sleep(cancel_after)
+                self.simple_client.cancel_goal()
+
             finished = self.simple_client.wait_for_result(rospy.Duration(timeout))
             if not finished:
                 self.simple_client.cancel_goal()
@@ -518,20 +688,38 @@ class Runner:
             result = self.simple_client.get_result()
             print(result)
 
-            if result and result.success:
-                self.ok(f"SimpleMoveArmAction::{name} 成功")
-                self._pause_watch(name)
+            if cancel_after is not None:
+                if state == GoalStatus.PREEMPTED:
+                    self.ok(f"SimpleMoveArmAction::{name} 成功触发取消")
+                    return True
+                if self._result_success(result):
+                    self.warn(f"SimpleMoveArmAction::{name} 在发送取消前已经执行完成")
+                    return True
+                self.warn(
+                    f"SimpleMoveArmAction::{name} 取消后状态={state}, result={result}"
+                )
                 return True
-            else:
+
+            if expect_success:
+                if self._result_success(result):
+                    self.ok(f"SimpleMoveArmAction::{name} 成功")
+                    self._pause_watch(name)
+                    return True
                 self.fail(
                     f"SimpleMoveArmAction::{name} 失败, state={state}, result={result}"
                 )
                 return False
+
+            if self._result_success(result):
+                self.fail(f"SimpleMoveArmAction::{name} 本应失败，但实际成功")
+                return False
+            self.ok(f"SimpleMoveArmAction::{name} 负例符合预期")
+            return True
         except Exception as e:
             self.fail(f"SimpleMoveArmAction::{name} 异常: {e}")
             return False
 
-    # ---------- MoveArm: 可见版 ----------
+    # ---------- 正向 Action 测试 ----------
     def test_move_arm_all_visible(self):
         self.refresh_current_state()
         self._require_current_state()
@@ -539,6 +727,8 @@ class Runner:
         def dummy_point(g):
             g.target_type = MoveArmGoal.TARGET_POINT
             g.point = Point(0.0, 0.0, 0.0)
+            g.pose = Pose()
+            g.quaternion = Quaternion(0.0, 0.0, 0.0, 1.0)
 
         if self.run_reset_tests:
             self.send_move_arm(
@@ -553,7 +743,6 @@ class Runner:
                 ),
             )
 
-        # 现取 joints，再做可见的小偏移
         self.refresh_current_state()
         self._require_current_state()
         joints_a = self._visible_joint_target(
@@ -587,7 +776,6 @@ class Runner:
             ),
         )
 
-        # 普通目标：每次现取当前 pose 再偏移
         pose_up = self.current_pose_plus(dz=0.02)
         self.send_move_arm(
             "MOVE_TARGET_UP",
@@ -595,6 +783,8 @@ class Runner:
                 setattr(g, "command_type", MoveArmGoal.MOVE_TARGET),
                 setattr(g, "target_type", MoveArmGoal.TARGET_POSE),
                 setattr(g, "pose", pose_up),
+                setattr(g, "point", Point(0.0, 0.0, 0.0)),
+                setattr(g, "quaternion", Quaternion(0.0, 0.0, 0.0, 1.0)),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -609,6 +799,8 @@ class Runner:
                 setattr(g, "command_type", MoveArmGoal.MOVE_TARGET),
                 setattr(g, "target_type", MoveArmGoal.TARGET_POSE),
                 setattr(g, "pose", pose_forward),
+                setattr(g, "point", Point(0.0, 0.0, 0.0)),
+                setattr(g, "quaternion", Quaternion(0.0, 0.0, 0.0, 1.0)),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -622,6 +814,8 @@ class Runner:
                 setattr(g, "command_type", MoveArmGoal.MOVE_TARGET_IN_EEF_FRAME),
                 setattr(g, "target_type", MoveArmGoal.TARGET_POSE),
                 setattr(g, "pose", self._pose_offset(self._identity_pose(), dz=0.01)),
+                setattr(g, "point", Point(0.0, 0.0, 0.0)),
+                setattr(g, "quaternion", Quaternion(0.0, 0.0, 0.0, 1.0)),
                 setattr(g, "joint_names", []),
                 setattr(g, "joints", []),
                 setattr(g, "values", []),
@@ -654,14 +848,8 @@ class Runner:
                 ),
             )
 
-        # ===== 笛卡尔：参照 test_node，现取当前 pose，路径尽量温和 =====
-
-        # line: 当前 pose -> y + 0.02
         line_start, line_end = self.current_pose_triplet(
-            [
-                (0.00, 0.00, 0.00),
-                (0.00, 0.02, 0.00),
-            ]
+            [(0.00, 0.00, 0.00), (0.00, 0.02, 0.00)]
         )
         self.send_move_arm(
             "MOVE_LINE_VISIBLE",
@@ -673,9 +861,9 @@ class Runner:
                 setattr(g, "values", []),
                 setattr(g, "waypoints", [line_start, line_end]),
             ),
+            timeout=45.0,
         )
 
-        # bezier: 当前 pose 为起点，via/end 参照 test_node
         bezier_start, bezier_via, bezier_end = self.current_pose_triplet(
             [
                 (0.00, 0.00, 0.00),
@@ -696,7 +884,6 @@ class Runner:
             timeout=45.0,
         )
 
-        # decartes: 3 个连续小步 waypoint，不要跨太大
         d1, d2, d3 = self.current_pose_triplet(
             [
                 (0.00, 0.008, 0.000),
@@ -730,7 +917,6 @@ class Runner:
                 ),
             )
 
-    # ---------- SimpleMoveArm: 可见版 ----------
     def test_simple_move_arm_all_visible(self):
         self.refresh_current_state()
         self._require_current_state()
@@ -834,9 +1020,6 @@ class Runner:
                 ),
             )
 
-        # ===== 笛卡尔 =====
-
-        # MOVE_LINE: 必须 2 点
         x, y, z, r, p, yw = self.current_simple_pose_arrays(
             [
                 (0.00, 0.00, 0.00),
@@ -861,7 +1044,6 @@ class Runner:
             timeout=45.0,
         )
 
-        # MOVE_BEZIER: 参照 test_node 的 via/end
         x, y, z, r, p, yw = self.current_simple_pose_arrays(
             [
                 (0.00, 0.00, 0.00),
@@ -887,7 +1069,6 @@ class Runner:
             timeout=45.0,
         )
 
-        # MOVE_DECARTES: 3 个连续小步
         x, y, z, r, p, yw = self.current_simple_pose_arrays(
             [
                 (0.00, 0.008, 0.000),
@@ -926,74 +1107,139 @@ class Runner:
                 ),
             )
 
-    def refresh_current_state(self):
-        """每次真正发运动命令前，从服务端重新取一次当前 joints / pose。"""
+    # ---------- 负例 ----------
+    def test_negative_cases(self):
+        if not self.run_negative_tests:
+            return
+
+        def dummy_point(g):
+            g.target_type = MoveArmGoal.TARGET_POINT
+            g.point = Point(0.0, 0.0, 0.0)
+            g.pose = Pose()
+            g.quaternion = Quaternion(0.0, 0.0, 0.0, 1.0)
+
+        self.send_move_arm(
+            "NEG_EMPTY_JOINTS",
+            lambda g: (
+                setattr(g, "command_type", MoveArmGoal.MOVE_JOINTS),
+                dummy_point(g),
+                setattr(g, "joint_names", []),
+                setattr(g, "joints", []),
+                setattr(g, "values", []),
+                setattr(g, "waypoints", []),
+            ),
+            expect_success=False,
+        )
+
+        pose_a, pose_b, pose_c = self.current_pose_triplet(
+            [
+                (0.0, 0.0, 0.0),
+                (0.01, 0.0, 0.0),
+                (0.02, 0.0, 0.0),
+            ]
+        )
+        self.send_move_arm(
+            "NEG_LINE_WITH_3_POINTS",
+            lambda g: (
+                setattr(g, "command_type", MoveArmGoal.MOVE_LINE),
+                dummy_point(g),
+                setattr(g, "joint_names", []),
+                setattr(g, "joints", []),
+                setattr(g, "values", []),
+                setattr(g, "waypoints", [pose_a, pose_b, pose_c]),
+            ),
+            expect_success=False,
+        )
+
         try:
-            q_srv = self.query_proxy()
-
-            q_req = QueryArmRequest()
-            q_req.command_type = QueryArmRequest.GET_CURRENT_JOINTS
-            q_req.values = []
-            q_res = q_srv(q_req)
-            if q_res.success and len(q_res.cur_joint) > 0:
-                self.cur_joints = list(q_res.cur_joint)
+            srv = self.query_proxy()
+            req = QueryArmRequest()
+            req.command_type = 255
+            req.values = []
+            res = srv(req)
+            print(res)
+            if res.success:
+                self.fail("NEG_INVALID_QUERY_CMD 本应失败，但成功")
             else:
-                self.warn(f"刷新当前关节失败，沿用缓存值: {q_res.message}")
-
-            p_req = QueryArmRequest()
-            p_req.command_type = QueryArmRequest.GET_CURRENT_POSE
-            p_req.values = []
-            p_res = q_srv(p_req)
-            if p_res.success and quat_norm(p_res.cur_pose.orientation) > 1e-6:
-                self.cur_pose = p_res.cur_pose
-            else:
-                self.warn(f"刷新当前位姿失败，沿用缓存值: {p_res.message}")
+                self.ok("NEG_INVALID_QUERY_CMD 负例符合预期")
         except Exception as e:
-            self.warn(f"刷新当前状态异常，沿用缓存值: {e}")
+            self.fail(f"NEG_INVALID_QUERY_CMD 调用异常: {e}")
 
-    def current_pose_plus(self, dx=0.0, dy=0.0, dz=0.0):
-        """现取当前 pose，再做偏移。"""
-        self.refresh_current_state()
-        self._require_current_state()
-        return self._pose_offset(self.cur_pose, dx=dx, dy=dy, dz=dz)
+        try:
+            srv = self.config_proxy()
+            req = ConfigArmRequest()
+            req.command_type = ConfigArmRequest.SET_POSITION_CONSTRAINT
+            req.point = Point(0.3, 0.0, 0.2)
+            req.quaternion = Quaternion(0.0, 0.0, 0.0, 1.0)
+            req.joint_names = []
+            req.joints = []
+            req.values = [0.1, 0.1]  # 故意少一个
+            res = srv(req)
+            print(res)
+            if res.success:
+                self.fail("NEG_BAD_POSITION_CONSTRAINT 本应失败，但成功")
+            else:
+                self.ok("NEG_BAD_POSITION_CONSTRAINT 负例符合预期")
+        except Exception as e:
+            self.fail(f"NEG_BAD_POSITION_CONSTRAINT 调用异常: {e}")
 
-    def current_pose_triplet(self, offsets):
-        """
-        offsets: [(dx,dy,dz), ...]
-        返回基于同一个“当前 pose 基准”的多个 waypoint。
-        """
-        self.refresh_current_state()
-        self._require_current_state()
-        base = self._copy_pose(self.cur_pose)
-        out = []
-        for dx, dy, dz in offsets:
-            out.append(self._pose_offset(base, dx=dx, dy=dy, dz=dz))
-        return out
+    # ---------- cancel ----------
+    def test_cancel_cases(self):
+        if not self.run_cancel_tests:
+            return
 
-    def current_simple_pose_arrays(self, offsets):
-        """
-        offsets: [(dx,dy,dz), ...]
-        现取当前 pose + 当前 rpy，生成 SimpleMoveArmGoal 所需数组。
-        """
-        self.refresh_current_state()
-        self._require_current_state()
+        def dummy_point(g):
+            g.target_type = MoveArmGoal.TARGET_POINT
+            g.point = Point(0.0, 0.0, 0.0)
+            g.pose = Pose()
+            g.quaternion = Quaternion(0.0, 0.0, 0.0, 1.0)
 
-        base = self._copy_pose(self.cur_pose)
-        r0, p0, y0 = self._current_rpy_or_zero()
+        d1, d2, d3 = self.current_pose_triplet(
+            [
+                (0.00, 0.010, 0.000),
+                (0.010, 0.020, 0.000),
+                (0.020, 0.030, 0.000),
+            ]
+        )
+        self.send_move_arm(
+            "CANCEL_MOVE_DECARTES",
+            lambda g: (
+                setattr(g, "command_type", MoveArmGoal.MOVE_DECARTES),
+                dummy_point(g),
+                setattr(g, "joint_names", []),
+                setattr(g, "joints", []),
+                setattr(g, "values", []),
+                setattr(g, "waypoints", [d1, d2, d3]),
+            ),
+            timeout=45.0,
+            cancel_after=self.cancel_after_sec,
+        )
 
-        xs, ys, zs = [], [], []
-        rs, ps, ysaw = [], [], []
-
-        for dx, dy, dz in offsets:
-            pose = self._pose_offset(base, dx=dx, dy=dy, dz=dz)
-            xs.append(pose.position.x)
-            ys.append(pose.position.y)
-            zs.append(pose.position.z)
-            rs.append(r0)
-            ps.append(p0)
-            ysaw.append(y0)
-
-        return xs, ys, zs, rs, ps, ysaw
+        x, y, z, r, p, yw = self.current_simple_pose_arrays(
+            [
+                (0.00, 0.010, 0.000),
+                (0.010, 0.020, 0.000),
+                (0.020, 0.030, 0.000),
+            ]
+        )
+        self.send_simple_move_arm(
+            "CANCEL_SIMPLE_MOVE_DECARTES",
+            lambda g: (
+                setattr(g, "command_type", SimpleMoveArmGoal.MOVE_DECARTES),
+                setattr(g, "target_type", SimpleMoveArmGoal.TARGET_POSE),
+                setattr(g, "x", x),
+                setattr(g, "y", y),
+                setattr(g, "z", z),
+                setattr(g, "roll", r),
+                setattr(g, "pitch", p),
+                setattr(g, "yaw", yw),
+                setattr(g, "joint_names", []),
+                setattr(g, "joints", []),
+                setattr(g, "values", []),
+            ),
+            timeout=45.0,
+            cancel_after=self.cancel_after_sec,
+        )
 
     # ---------- 主流程 ----------
     def run(self):
@@ -1012,19 +1258,21 @@ class Runner:
         self.check_config_position_constraint()
         self.check_config_joint_constraint()
 
+        self.check_eef_service()
+        self.test_negative_cases()
+        self.test_cancel_cases()
+
         code = self.summary()
 
-        self.info("所有测试已结束。按 Enter 退出并关闭 roslaunch / roscore ...")
-        try:
-            if sys.stdin and sys.stdin.isatty():
+        if self.final_hold_forever and sys.stdin and sys.stdin.isatty():
+            self.info("所有测试已结束。按 Enter 退出并关闭 roslaunch / roscore ...")
+            try:
                 input()
-            else:
-                self.warn("当前不是交互终端，3 秒后自动退出")
-                time.sleep(3.0)
-        except EOFError:
-            self.warn("stdin 已关闭，自动退出")
-        except KeyboardInterrupt:
-            pass
+            except Exception:
+                pass
+        elif self.final_hold_sec > 0.0:
+            self.info(f"所有测试已结束，{self.final_hold_sec:.1f} 秒后退出 ...")
+            time.sleep(self.final_hold_sec)
 
         return code
 

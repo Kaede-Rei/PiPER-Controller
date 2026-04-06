@@ -62,6 +62,32 @@ ErrorCode TwoFingerGripper::close() {
 }
 
 /**
+ * @brief 设置夹爪角度
+ * @param angle 目标角度，单位为度
+ */
+ErrorCode TwoFingerGripper::set_angle(double angle) {
+    // 将角度转换为关节值，假设夹爪的开合范围为 0-90 度，对应关节值 0-1
+    double joint_value = angle / 90.0;
+    return set_joint_value("gripper_joint", joint_value);
+}
+
+/**
+ * @brief 获取夹爪当前角度
+ * @param angle 输出参数，返回当前夹爪角度，单位为度
+ */
+ErrorCode TwoFingerGripper::get_angle(double& angle) const {
+    std::vector<double> joint_values = _gripper_.getCurrentJointValues();
+    if(joint_values.empty()) {
+        ROS_WARN("末端执行器控制器 [%s] 获取当前关节值失败", get_eef_name().c_str());
+        return ErrorCode::FAILURE;
+    }
+
+    double joint_value = joint_values[0];
+    angle = joint_value * 90.0;
+    return ErrorCode::SUCCESS;
+}
+
+/**
  * @brief 执行夹爪预设位姿
  * @param pose_name 预设位姿名称
  */
@@ -269,6 +295,21 @@ ErrorCode ServoGripper::set_angle(double angle) {
         return ErrorCode::FAILURE;
     }
 
+    _current_angle_.emplace(angle);
+
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 获取舵机夹爪当前角度
+ * @param angle 输出参数，返回当前夹爪角度（0-270度）
+ * @return 错误码
+ */
+ErrorCode ServoGripper::get_angle(double& angle) const {
+    if(!_current_angle_) {
+        return ErrorCode::FAILURE;
+    }
+    angle = *_current_angle_;
     return ErrorCode::SUCCESS;
 }
 
