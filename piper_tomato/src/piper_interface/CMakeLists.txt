@@ -128,6 +128,7 @@ include_directories(
 ## Declare a C++ library
 add_library(${PROJECT_NAME}
   src/arm_interface.cpp
+  src/eef_interface.cpp
   src/piper_interface.cpp
 )
 

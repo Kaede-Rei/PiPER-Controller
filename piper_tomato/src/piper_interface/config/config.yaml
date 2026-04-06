@@ -20,6 +20,10 @@ start:
     enabled: true
     name: "arm_query"
 
+  eef_cmd_service:
+    enabled: true
+    name: "eef_cmd"
+
 decartes:
   vel_scale: 0.1
   acc_scale: 0.1

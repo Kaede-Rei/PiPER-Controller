@@ -84,7 +84,7 @@ ArmQueryService::ArmQueryService(ros::NodeHandle& nh, std::shared_ptr<ArmControl
 tl::optional<ArmCmdRequest> ArmMoveAction::convert_goal_to_request(const piper_msgs2::MoveArmGoal& goal) {
     ArmCmdRequest req{};
     req.type = static_cast<ArmCmdType>(goal.command_type);
-    if(!(ArmCmdType::MIN < req.type && req.type < ArmCmdType::MAX)) {
+    if(static_cast<std::size_t>(goal.command_type) >= static_cast<std::size_t>(ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
         return tl::nullopt;
     }
@@ -189,7 +189,7 @@ void ArmMoveAction::on_preempt() {
 tl::optional<ArmCmdRequest> SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveArmGoal& goal) {
     ArmCmdRequest req{};
     req.type = static_cast<ArmCmdType>(goal.command_type);
-    if(!(ArmCmdType::MIN < req.type && req.type < ArmCmdType::MAX)) {
+    if(static_cast<std::size_t>(goal.command_type) >= static_cast<std::size_t>(ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
         return tl::nullopt;
     }
@@ -328,7 +328,7 @@ void SimpleArmMoveAction::on_preempt() {
 tl::optional<ArmCmdRequest> ArmConfigService::convert_srvreq_to_armreq(const piper_msgs2::ConfigArm::Request& srv_req) {
     ArmCmdRequest arm_req{};
     arm_req.type = static_cast<ArmCmdType>(srv_req.command_type);
-    if(!(ArmCmdType::MIN < arm_req.type && arm_req.type < ArmCmdType::MAX)) {
+    if(static_cast<std::size_t>(srv_req.command_type) >= static_cast<std::size_t>(ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", srv_req.command_type);
         return tl::nullopt;
     }
@@ -385,7 +385,7 @@ bool ArmConfigService::on_request(piper_msgs2::ConfigArm::Request& req, piper_ms
 tl::optional<ArmCmdRequest> ArmQueryService::convert_srvreq_to_armreq(const piper_msgs2::QueryArm::Request& srv_req) {
     ArmCmdRequest arm_req{};
     arm_req.type = static_cast<ArmCmdType>(srv_req.command_type);
-    if(!(ArmCmdType::MIN < arm_req.type && arm_req.type < ArmCmdType::MAX)) {
+    if(static_cast<std::size_t>(srv_req.command_type) >= static_cast<std::size_t>(ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", srv_req.command_type);
         return tl::nullopt;
     }

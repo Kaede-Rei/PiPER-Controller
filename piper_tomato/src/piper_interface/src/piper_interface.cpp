@@ -21,7 +21,10 @@ namespace piper {
 ROSInterface::ROSInterface(ros::NodeHandle& nh, const ROSInterfaceConfig& config) {
     _arm_ = std::make_shared<ArmController>(config.arm_group_name);
     init_eef(nh, config);
-    _dispatcher_ = std::make_shared<ArmCmdDispatcher>(_arm_);
+    _arm_dispatcher_ = std::make_shared<ArmCmdDispatcher>(_arm_);
+    if(_eef_) {
+        _eef_dispatcher_ = std::make_shared<EefCmdDispatcher>(_eef_);
+    }
     init_interfaces(nh, config);
 }
 
@@ -62,10 +65,12 @@ void ROSInterface::init_eef(ros::NodeHandle& nh, const ROSInterfaceConfig& confi
 }
 
 void ROSInterface::init_interfaces(ros::NodeHandle& nh, const ROSInterfaceConfig& config) {
-    add_interface<ArmMoveAction>(config.arm_move_action, nh, _arm_, _dispatcher_);
-    add_interface<SimpleArmMoveAction>(config.simple_arm_move_action, nh, _arm_, _dispatcher_);
-    add_interface<ArmConfigService>(config.arm_config_service, nh, _arm_, _dispatcher_);
-    add_interface<ArmQueryService>(config.arm_query_service, nh, _arm_, _dispatcher_);
+    add_interface<ArmMoveAction>(config.arm_move_action, nh, _arm_, _arm_dispatcher_);
+    add_interface<SimpleArmMoveAction>(config.simple_arm_move_action, nh, _arm_, _arm_dispatcher_);
+    add_interface<ArmConfigService>(config.arm_config_service, nh, _arm_, _arm_dispatcher_);
+    add_interface<ArmQueryService>(config.arm_query_service, nh, _arm_, _arm_dispatcher_);
+
+    add_interface<EefCmdService>(config.eef_cmd_service, nh, _eef_, _eef_dispatcher_);
 }
 
 }

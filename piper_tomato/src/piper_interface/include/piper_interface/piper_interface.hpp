@@ -2,6 +2,7 @@
 #define _piper_interface_hpp_
 
 #include "piper_interface/arm_interface.hpp" // IWYU pragma: keep
+#include "piper_interface/eef_interface.hpp" // IWYU pragma: keep
 
 namespace piper {
 
@@ -27,6 +28,8 @@ struct ROSInterfaceConfig {
     ROSInterfaceSwitch simple_arm_move_action{ false, "simple_arm_move_action" };
     ROSInterfaceSwitch arm_config_service{ false, "arm_config_service" };
     ROSInterfaceSwitch arm_query_service{ false, "arm_query_service" };
+
+    ROSInterfaceSwitch eef_cmd_service{ false, "eef_cmd_service" };
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
@@ -50,7 +53,8 @@ private:
 private:
     std::shared_ptr<ArmController> _arm_;
     std::shared_ptr<EndEffector> _eef_;
-    std::shared_ptr<ArmCmdDispatcher> _dispatcher_;
+    std::shared_ptr<ArmCmdDispatcher> _arm_dispatcher_;
+    std::shared_ptr<EefCmdDispatcher> _eef_dispatcher_;
     std::vector<std::unique_ptr<ROSModuleInterface>> _modules_;
 };
 

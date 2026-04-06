@@ -1,5 +1,5 @@
-#ifndef _eef_interface_hpp_
-#define _eef_interface_hpp_
+#ifndef _piper_controller_eef_interface_hpp_
+#define _piper_controller_eef_interface_hpp_
 
 #include <map>
 #include <string>
