@@ -254,7 +254,6 @@ const InterfaceT* get_eef_interface(const EndEffector* eef) {
     return eef ? dynamic_cast<const InterfaceT*>(eef) : nullptr;
 }
 
-
 } /* namespace piper */
 
 #endif

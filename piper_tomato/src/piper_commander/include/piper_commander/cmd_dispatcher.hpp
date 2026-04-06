@@ -6,6 +6,7 @@
 #include "tl_optional/optional.hpp"
 
 #include "piper_controller/arm_controller.hpp"
+#include "piper_controller/eef_interface.hpp"
 
 namespace piper {
 
@@ -14,22 +15,21 @@ namespace piper {
 /**
  * @brief 机械臂命令表，基于 X-Macro 定义，方便维护和扩展，只需修改此处即可
  * @note X(name, handler, has_fb, desc) -> X(命令名称, 处理函数后缀, 是否有反馈, 命令描述)
- * @param HOME 回到初始位置
- * @param MOVE_JOINTS 关节空间运动
- * @param MOVE_TARGET 末端执行器空间运动
- * @param MOVE_TARGET_IN_EEF_FRAME 末端执行器空间运动，目标相对于当前末端执行器位置
- * @param TELESCOPIC_END 伸缩末端
- * @param ROTATE_END 旋转末端
- * @param MOVE_LINE 直线运动
- * @param MOVE_BEZIER 贝塞尔曲线运动
- * @param MOVE_DECARTES 笛卡尔空间运动，路径由多个位姿点组成
- * @param SET_ORIENTATION_CONSTRAINT 设置姿态约束
- * @param SET_POSITION_CONSTRAINT 设置位置约束
- * @param SET_JOINT_CONSTRAINT 设置关节约束
- * @param GET_CURRENT_JOINTS 获取当前关节角
- * @param GET_CURRENT_POSE 获取当前位姿
- * @param MOVE_TO_ZERO 重置到零点
- * @param MAX 枚举值数量，用于验证输入合法性
+ * @param HOME 0: 回到初始位置
+ * @param MOVE_JOINTS 1: 关节空间运动
+ * @param MOVE_TARGET 2: 末端执行器空间运动
+ * @param MOVE_TARGET_IN_EEF_FRAME 3: 末端执行器空间运动，目标相对于当前末端执行器位置
+ * @param TELESCOPIC_END 4: 伸缩末端
+ * @param ROTATE_END 5: 旋转末端
+ * @param MOVE_LINE 6: 直线运动
+ * @param MOVE_BEZIER 7: 贝塞尔曲线运动
+ * @param MOVE_DECARTES 8: 笛卡尔空间运动，路径由多个位姿点组成
+ * @param SET_ORIENTATION_CONSTRAINT 9: 设置姿态约束
+ * @param SET_POSITION_CONSTRAINT 10: 设置位置约束
+ * @param SET_JOINT_CONSTRAINT 11: 设置关节约束
+ * @param GET_CURRENT_JOINTS 12: 获取当前关节角
+ * @param GET_CURRENT_POSE 13: 获取当前位姿
+ * @param MOVE_TO_ZERO 14: 重置到零点
  */
 #define PIPER_ARM_CMD_TABLE \
     X(HOME, home, false, "回到初始位置") \
@@ -46,15 +46,36 @@ namespace piper {
     X(SET_JOINT_CONSTRAINT, set_joint_constraint, false, "设置关节约束") \
     X(GET_CURRENT_JOINTS, get_current_joints, false, "获取当前关节角") \
     X(GET_CURRENT_POSE, get_current_pose, false, "获取当前位姿") \
-    X(MOVE_TO_ZERO, move_to_zero, true, "重置到零点")
+    X(MOVE_TO_ZERO, move_to_zero, true, "重置到零点") \
+
+/**
+ * @brief 末端命令表，基于 X-Macro 定义，方便维护和扩展，只需修改此处即可
+ * @note X(name, handler, has_fb, desc) -> X(命令名称, 处理函数后缀, 是否有反馈, 命令描述)
+ * @param OPEN_GRIPPER 0: 打开夹爪
+ * @param CLOSE_GRIPPER 1: 关闭夹爪
+ * @param STOP_GRIPPER 2: 停止夹爪
+ */
+#define PIPER_EEF_CMD_TABLE \
+    X(OPEN_GRIPPER, open_gripper, false, "打开夹爪") \
+    X(CLOSE_GRIPPER, close_gripper, false, "关闭夹爪") \
+    X(STOP_GRIPPER, stop_gripper, false, "停止夹爪")
 
 /**
  * @brief 机械臂命令类型枚举（0 ~ MAX-1），每个命令类型对应 ArmCmdDispatcher 中的一个处理函数
  */
 #define X(name, handler, has_fb, desc) name,
 enum class ArmCmdType {
-    MIN = 0,
     PIPER_ARM_CMD_TABLE
+    MAX
+};
+#undef X
+
+/**
+ * @brief 末端命令类型枚举（0 ~ MAX-1），每个命令类型对应 ArmCmdDispatcher 中的一个处理函数
+ */
+#define X(name, handler, has_fb, desc) name,
+enum class EefCmdType {
+    PIPER_EEF_CMD_TABLE
     MAX
 };
 #undef X
@@ -110,6 +131,41 @@ struct ArmCmdFeedback {
     std::string message;
 };
 
+/**
+ * @brief 末端命令请求结构体
+ * @param type 命令类型
+ * @param values 数值参数列表，具体含义根据命令类型而定
+ */
+struct EefCmdRequest {
+    EefCmdType type;
+    std::vector<double> values;
+};
+
+/**
+ * @brief 末端命令结果结构体
+ * @param success 命令是否成功执行
+ * @param message 结果消息，成功时为提示信息，失败时为错误描述
+ * @param error_code 错误码，成功时为 ErrorCode::SUCCESS，失败时为具体错误码
+ */
+struct EefCmdResult {
+    bool success{ false };
+    std::string message;
+
+    ErrorCode error_code{ ErrorCode::SUCCESS };
+};
+
+/**
+ * @brief 末端命令反馈结构体
+ * @param stage 当前执行阶段，例如 "start"、"setting"、"planning"、"done" 等
+ * @param progress 当前阶段的进度，范围 [0.0, 1.0]
+ * @param message 当前阶段的提示信息
+ */
+struct EefCmdFeedback {
+    std::string stage;
+    double progress{ 0.0 };
+    std::string message;
+};
+
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
 
 /**
@@ -128,6 +184,31 @@ public:
     using FeedbackCb = std::function<void(const ArmCmdFeedback&)>;
     ArmCmdResult dispatch(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
     std::string type_to_string(ArmCmdType type) const;
+
+    void cancel();
+    bool is_cancelled() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> _impl_;
+};
+
+/**
+ * @brief 末端命令分发器类，负责接收命令请求并调用 EndEffector 执行相应操作
+ */
+class EefCmdDispatcher {
+public:
+    explicit EefCmdDispatcher(std::shared_ptr<EndEffector> eef);
+    ~EefCmdDispatcher();
+
+    EefCmdDispatcher(const EefCmdDispatcher&) = delete;
+    EefCmdDispatcher& operator=(const EefCmdDispatcher&) = delete;
+    EefCmdDispatcher(EefCmdDispatcher&&) = delete;
+    EefCmdDispatcher& operator=(EefCmdDispatcher&&) = delete;
+
+    using FeedbackCb = std::function<void(const EefCmdFeedback&)>;
+    EefCmdResult dispatch(const EefCmdRequest& req, FeedbackCb cb = nullptr);
+    std::string type_to_string(EefCmdType type) const;
 
     void cancel();
     bool is_cancelled() const;

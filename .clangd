@@ -1,0 +1,10 @@
+---
+# 针对特定路径禁用索引
+If:
+  PathMatch: [.*piper_ros/(build|devel)/.*, .*piper_tomato/(build|devel)/.*]
+Index:
+  Background: Skip
+---
+# 全局默认配置
+Index:
+  Background: Build

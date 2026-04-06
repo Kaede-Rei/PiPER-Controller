@@ -1,8 +1,8 @@
 # === Request ===
 
 uint8 command_type
-uint8 GET_CURRENT_JOINTS=13
-uint8 GET_CURRENT_POSE=14
+uint8 GET_CURRENT_JOINTS=12
+uint8 GET_CURRENT_POSE=13
 
 # 通用数值参数
 float64[] values

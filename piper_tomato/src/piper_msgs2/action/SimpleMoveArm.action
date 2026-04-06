@@ -1,16 +1,16 @@
 # === Goal ===
 
 uint8 command_type
-uint8 HOME=1
-uint8 MOVE_JOINTS=2
-uint8 MOVE_TARGET=3
-uint8 MOVE_TARGET_IN_EEF_FRAME=4
-uint8 TELESCOPIC_END=5
-uint8 ROTATE_END=6
-uint8 MOVE_LINE=7
-uint8 MOVE_BEZIER=8
-uint8 MOVE_DECARTES=9
-uint8 MOVE_TO_ZERO=15
+uint8 HOME=0
+uint8 MOVE_JOINTS=1
+uint8 MOVE_TARGET=2
+uint8 MOVE_TARGET_IN_EEF_FRAME=3
+uint8 TELESCOPIC_END=4
+uint8 ROTATE_END=5
+uint8 MOVE_LINE=6
+uint8 MOVE_BEZIER=7
+uint8 MOVE_DECARTES=8
+uint8 MOVE_TO_ZERO=14
 
 # 通用位姿字段
 uint8 target_type
