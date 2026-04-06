@@ -9,8 +9,6 @@ import rospy
 import actionlib
 from piper_msgs2.msg import SimpleMoveArmAction, SimpleMoveArmGoal
 
-# 添加sdk路径
-# sys.path.append("/home/hxloong/.local/lib/python3.8/site-packages")
 from pyorbbecsdk import OBFormat, OBSensorType, OBAlignMode, OBPropertyID
 from pyorbbecsdk import Pipeline, Config, VideoFrame
 

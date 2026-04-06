@@ -1,7 +1,23 @@
 .vscode
 .VSCodeCounter
-build
-Log
+
+# ROS / catkin generated artifacts
+**/build/
+**/devel/
+**/install/
+**/.catkin_tools/
+**/.catkin_workspace
+**/compile_commands.json
+**/.rosinstall
+**/*.log
+**/log/
+**/Log/
+
+# Workspace-local generated files
+build/
+devel/
+install/
+Log/
 
 plan.md
 

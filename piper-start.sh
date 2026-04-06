@@ -27,10 +27,10 @@ else
     echo "未找到 PiPER ROS 工作空间，请先编译 ROS 包"
     exit 1
 fi
-if [ -f "$SCRIPT_DIR/piper_controller/devel/setup.bash" ]; then
-    source "$SCRIPT_DIR/piper_controller/devel/setup.bash"
+if [ -f "$SCRIPT_DIR/piper_tomato/devel/setup.bash" ]; then
+    source "$SCRIPT_DIR/piper_tomato/devel/setup.bash"
 else
-    echo "未找到 PiPER Controller 工作空间，请先编译 ROS 包"
+    echo "未找到 PiPER Tomato 工作空间，请先编译 ROS 包"
     exit 1
 fi
 

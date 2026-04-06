@@ -101,12 +101,13 @@ pip install python-can piper_sdk
 
 ### 2. 源码编译
 
-仓库包含两个 catkin 工作区：`piper_ros` 与 `piper_tomato`。
-
-#### 2.1 Ubuntu 20.04
+仓库包含两个 catkin 工作区：`piper_ros` 与 `piper_tomato`。推荐使用下面的标准流程：
 
 ```bash
 cd /path/to/piper-ws
+
+# 先确保已 source 你的 ROS Noetic 环境
+# 例如：source /opt/ros/noetic/setup.bash
 
 cd piper_ros
 catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -115,29 +116,9 @@ source devel/setup.bash
 cd ../piper_tomato
 catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 source devel/setup.bash
-
-cd ..
-ln -sf ../piper_tomato/build/compile_commands.json ./build/compile_commands.json
 ```
 
-#### 2.2 Ubuntu 22.04
-
-```bash
-cd /path/to/piper-ws
-
-. ./ros_env/use-mamba-gcc.sh
-
-cd piper_ros
-catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-source devel/setup.bash
-
-cd ../piper_tomato
-catkin_make -DCATKIN_ENABLE_TESTING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-source devel/setup.bash
-
-cd ..
-ln -sf ../piper_tomato/build/compile_commands.json ./build/compile_commands.json
-```
+如需在 Ubuntu 22.04 上使用 `ros_env`，请先激活你自己的环境，再执行 `./ros_env/use-mamba-gcc.sh`；不要把编译产物或 `compile_commands.json` 软链接固定到仓库根目录。
 
 ---
 
