@@ -37,7 +37,7 @@ public:
     ErrorCode open() override;
     ErrorCode close() override;
     ErrorCode set_angle(double angle) override;
-    ErrorCode get_angle(double& angle) const override;
+    tl::optional<double> get_angle() const override;
     ErrorCode execute_preset_pose(const std::string& pose_name) override;
     ErrorCode set_joint_value(const std::string& joint_name, double value) override;
     ErrorCode set_joint_values(const std::vector<double>& joint_values) override;
@@ -49,7 +49,7 @@ public:
     std::vector<std::string> get_current_link_names() const override;
 
     std::vector<std::string> get_force_names() const override;
-    ErrorCode get_force(const std::string& force_name, double& force_value) const override;
+    tl::optional<double> get_force(const std::string& force_name) const override;
 
 private:
     moveit::planning_interface::MoveGroupInterface _gripper_;
@@ -74,14 +74,14 @@ public:
     ErrorCode open() override;
     ErrorCode close() override;
     ErrorCode set_angle(double angle) override;
-    ErrorCode get_angle(double& angle) const override;
+    tl::optional<double> get_angle() const override;
 
 private:
     STM32Serial _serialer_;
     tl::optional<double> _current_angle_;
 };
 
-// ! ========================= 模 版 方 法 实 现 ========================= ! //
+// ! ========================= 模 版 方 法 实 现 ========================= ! ///
 
 
 

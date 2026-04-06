@@ -73,18 +73,17 @@ ErrorCode TwoFingerGripper::set_angle(double angle) {
 
 /**
  * @brief 获取夹爪当前角度
- * @param angle 输出参数，返回当前夹爪角度，单位为度
+ * @return 当前夹爪角度，单位为度，如果获取失败则返回 nullopt
  */
-ErrorCode TwoFingerGripper::get_angle(double& angle) const {
+tl::optional<double> TwoFingerGripper::get_angle() const {
     std::vector<double> joint_values = _gripper_.getCurrentJointValues();
     if(joint_values.empty()) {
         ROS_WARN("末端执行器控制器 [%s] 获取当前关节值失败", get_eef_name().c_str());
-        return ErrorCode::FAILURE;
+        return tl::nullopt;
     }
 
     double joint_value = joint_values[0];
-    angle = joint_value * 90.0;
-    return ErrorCode::SUCCESS;
+    return joint_value * 90.0;
 }
 
 /**
@@ -223,13 +222,13 @@ std::vector<std::string> TwoFingerGripper::get_force_names() const {
 /**
  * @brief 获取指定力反馈值（当前为占位实现）
  * @param force_name 力反馈名称
- * @param force_value 力反馈值输出
+ * @return 力反馈值，如果获取失败则返回 nullopt
  */
-ErrorCode TwoFingerGripper::get_force(const std::string& force_name, double& force_value) const {
+tl::optional<double> TwoFingerGripper::get_force(const std::string& force_name) const {
     // TODO: 实现实际的力反馈获取逻辑，目前为占位实现
 
-    ROS_WARN("末端执行器控制器 [%s] 暂时不支持获取力反馈，力反馈名称：%s，力反馈数值：%.3f", get_eef_name().c_str(), force_name.c_str(), force_value);
-    return ErrorCode::FAILURE;
+    ROS_WARN("末端执行器控制器 [%s] 暂时不支持获取力反馈，力反馈名称：%s", get_eef_name().c_str(), force_name.c_str());
+    return tl::nullopt;
 }
 
 /**
@@ -305,12 +304,11 @@ ErrorCode ServoGripper::set_angle(double angle) {
  * @param angle 输出参数，返回当前夹爪角度（0-270度）
  * @return 错误码
  */
-ErrorCode ServoGripper::get_angle(double& angle) const {
+tl::optional<double> ServoGripper::get_angle() const {
     if(!_current_angle_) {
-        return ErrorCode::FAILURE;
+        return tl::nullopt;
     }
-    angle = *_current_angle_;
-    return ErrorCode::SUCCESS;
+    return *_current_angle_;
 }
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //

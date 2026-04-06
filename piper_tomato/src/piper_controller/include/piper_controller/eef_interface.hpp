@@ -11,6 +11,8 @@
 
 #include "piper_controller/types.hpp"
 
+#include "tl_optional/optional.hpp"
+
 namespace piper {
 
 // ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
@@ -31,7 +33,7 @@ public:
     virtual ErrorCode open() = 0;
     virtual ErrorCode close() = 0;
     virtual ErrorCode set_angle(double angle) = 0;
-    virtual ErrorCode get_angle(double& angle) const = 0;
+    virtual tl::optional<double> get_angle() const = 0;
 };
 
 /**
@@ -148,7 +150,7 @@ public:
     virtual std::vector<std::string> get_io_names() const = 0;
     virtual ErrorCode set_pwm(const std::string& io_name, double pwm_value) = 0;
     virtual ErrorCode set_all_pwm(double pwm_value) = 0;
-    virtual ErrorCode get_pwm(const std::string& io_name, double& pwm_value) const = 0;
+    virtual tl::optional<double> get_pwm(const std::string& io_name) const = 0;
     virtual ErrorCode get_all_pwm(std::map<std::string, double>& pwm_values) const = 0;
 };
 
@@ -166,7 +168,7 @@ public:
     ForceFeedbackEefInterface& operator=(ForceFeedbackEefInterface&&) = delete;
 
     virtual std::vector<std::string> get_force_names() const = 0;
-    virtual ErrorCode get_force(const std::string& force_name, double& force_value) const = 0;
+    virtual tl::optional<double> get_force(const std::string& force_name) const = 0;
 };
 
 /**
@@ -244,12 +246,18 @@ private:
  * @return 如果末端执行器支持该接口，则返回对应接口的指针；否则返回 nullptr
  */
 template <typename InterfaceT>
-InterfaceT* get_eef_interface(EndEffector* eef) {
-    return eef ? dynamic_cast<InterfaceT*>(eef) : nullptr;
+tl::optional<std::reference_wrapper<InterfaceT>> find_eef_interface(EndEffector& eef) {
+    if(auto* interface_ptr = dynamic_cast<InterfaceT*>(&eef)) {
+        return std::ref(*interface_ptr);
+    }
+    return tl::nullopt;
 }
 template <typename InterfaceT>
-const InterfaceT* get_eef_interface(const EndEffector* eef) {
-    return eef ? dynamic_cast<const InterfaceT*>(eef) : nullptr;
+tl::optional<std::reference_wrapper<const InterfaceT>> find_eef_interface(const EndEffector& eef) {
+    if(auto* interface_ptr = dynamic_cast<const InterfaceT*>(&eef)) {
+        return std::cref(*interface_ptr);
+    }
+    return tl::nullopt;
 }
 
 } /* namespace piper */

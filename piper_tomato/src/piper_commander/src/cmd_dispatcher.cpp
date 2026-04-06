@@ -752,9 +752,10 @@ EefCmdResult EefCmdDispatcher::Impl::handle_open_gripper(const EefCmdRequest& re
     }
 
     if(!_eef_) return make_err(ErrorCode::FAILURE, "EndEffector 未初始化");
-    auto* gripper = get_eef_interface<GripperEefInterface>(_eef_.get());
 
-    ErrorCode code = gripper ? gripper->open() : ErrorCode::INVALID_INTERFACE;
+    auto code = find_eef_interface<GripperEefInterface>(*_eef_)
+        .transform([](auto ref) { return ref.get().open(); })
+        .value_or(ErrorCode::INVALID_INTERFACE);
     if(code != ErrorCode::SUCCESS) return make_err(code, "打开夹爪失败：" + err_to_string(code));
 
     return make_ok();
@@ -773,9 +774,10 @@ EefCmdResult EefCmdDispatcher::Impl::handle_close_gripper(const EefCmdRequest& r
     }
 
     if(!_eef_) return make_err(ErrorCode::FAILURE, "EndEffector 未初始化");
-    auto* gripper = get_eef_interface<GripperEefInterface>(_eef_.get());
 
-    ErrorCode code = gripper ? gripper->close() : ErrorCode::INVALID_INTERFACE;
+    auto code = find_eef_interface<GripperEefInterface>(*_eef_)
+        .transform([](auto ref) { return ref.get().close(); })
+        .value_or(ErrorCode::INVALID_INTERFACE);
     if(code != ErrorCode::SUCCESS) return make_err(code, "关闭夹爪失败：" + err_to_string(code));
 
     return make_ok();

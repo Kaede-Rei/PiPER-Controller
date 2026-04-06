@@ -142,9 +142,9 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
             geometry_msgs::Pose current_pose = this->_arm_.getCurrentPose().pose;
             const auto reachable_result = search_reachable_pose(current_pose, pose);
 
-                if(reachable_result &&
-                    (reachable_result->state == SearchReachablePose::SOLUTION_FOUND ||
-                     reachable_result->state == SearchReachablePose::APPROXIMATE_SOLUTION_FOUND) &&
+            if(reachable_result &&
+                (reachable_result->state == SearchReachablePose::SOLUTION_FOUND ||
+                reachable_result->state == SearchReachablePose::APPROXIMATE_SOLUTION_FOUND) &&
                !reachable_result->reachable_joints.empty()) {
                 const bool ok = this->_arm_.setJointValueTarget(reachable_result->reachable_joints);
                 ROS_INFO("设置目标位姿（IK/A*关节解）是否成功：%s", ok ? "是" : "否");
