@@ -25,6 +25,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   piper_controller
   roscpp
+  tl_expected
   # rospy
   # std_msgs
   # sensor_msgs
@@ -48,6 +49,7 @@ catkin_package(
     geometry_msgs
     piper_controller
     roscpp
+    tl_expected
     # rospy
     # std_msgs
     # sensor_msgs

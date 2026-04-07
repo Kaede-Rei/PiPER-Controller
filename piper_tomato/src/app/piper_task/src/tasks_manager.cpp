@@ -32,7 +32,8 @@ TasksManager::TasksManager(std::shared_ptr<ArmController> arm, std::shared_ptr<E
  * @return 错误码
  */
 ErrorCode TasksManager::create_task_group(const std::string& group_name, SortType sort_type) {
-    if(_task_groups_.find(group_name) != _task_groups_.end()) {
+    auto group = find_task_group(group_name);
+    if(group) {
         ROS_WARN("任务组 '%s' 已存在，无法创建", group_name.c_str());
         return ErrorCode::TASK_GROUP_EXISTS;
     }
@@ -53,11 +54,8 @@ ErrorCode TasksManager::create_task_group(const std::string& group_name, SortTyp
  * @return 错误码
  */
 ErrorCode TasksManager::delete_task_group(const std::string& group_name) {
-    auto it = _task_groups_.find(group_name);
-    if(it == _task_groups_.end()) {
-        ROS_WARN("任务组 '%s' 不存在，无法删除", group_name.c_str());
-        return ErrorCode::TASK_GROUP_NOT_FOUND;
-    }
+    auto group = find_task_group(group_name);
+    if(!group) return group.error();
 
     _task_groups_.erase(group_name);
     ROS_INFO("成功删除任务组 '%s'", group_name.c_str());
@@ -71,13 +69,13 @@ ErrorCode TasksManager::delete_task_group(const std::string& group_name) {
  * @return 错误码
  */
 ErrorCode TasksManager::clear_task_group(const std::string& group_name) {
-    auto it = _task_groups_.find(group_name);
-    if(it == _task_groups_.end()) {
-        ROS_WARN("任务组 '%s' 不存在，无法清空", group_name.c_str());
-        return ErrorCode::TASK_GROUP_NOT_FOUND;
-    }
+    auto group = find_task_group(group_name);
+    if(!group) return group.error();
 
-    it->second.tasks.clear();
+    group.value()->tasks.clear();
+
+
+    group.value()->tasks.clear();
 
     ROS_INFO("成功清空任务组 '%s'", group_name.c_str());
     return ErrorCode::SUCCESS;
@@ -90,8 +88,8 @@ ErrorCode TasksManager::clear_task_group(const std::string& group_name) {
  * @return 错误码
  */
 ErrorCode TasksManager::set_dist_sort_weight_orient(const std::string& group_name, float weight_orient) {
-    auto it = _task_groups_.find(group_name);
-    if(it == _task_groups_.end()) {
+    auto group = find_task_group(group_name);
+    if(!group) {
         ROS_WARN("任务组 '%s' 不存在，无法设置排序权重", group_name.c_str());
         return ErrorCode::TASK_GROUP_NOT_FOUND;
     }
@@ -101,7 +99,7 @@ ErrorCode TasksManager::set_dist_sort_weight_orient(const std::string& group_nam
         return ErrorCode::INVALID_PARAMETER;
     }
 
-    it->second.weight_orient = weight_orient;
+    group.value()->weight_orient = weight_orient;
     ROS_INFO("成功设置任务组 '%s' 的距离排序姿态权重为 %f", group_name.c_str(), weight_orient);
 
     return ErrorCode::SUCCESS;
@@ -116,23 +114,20 @@ ErrorCode TasksManager::set_dist_sort_weight_orient(const std::string& group_nam
  * @return 错误码
  */
 ErrorCode TasksManager::add_task(const std::string& group_name, int id, TaskType task_type, const std::string& task_description) {
-    auto task_group = _task_groups_.find(group_name);
-    if(task_group == _task_groups_.end()) {
-        ROS_WARN("任务组 '%s' 不存在，无法添加任务", group_name.c_str());
-        return ErrorCode::TASK_GROUP_NOT_FOUND;
-    }
+    auto group = find_task_group(group_name);
+    if(!group) return group.error();
 
     Task new_task;
     new_task.desc = task_description;
     new_task.type = task_type;
     new_task.id = id;
 
-    if(task_group->second.tasks.find(id) != task_group->second.tasks.end()) {
+    if(group.value()->tasks.find(id) != group.value()->tasks.end()) {
         ROS_WARN("任务组 '%s' 中已存在任务 ID %d，无法添加", group_name.c_str(), id);
         return ErrorCode::TASK_EXISTS;
     }
 
-    task_group->second.tasks[id] = std::move(new_task);
+    group.value()->tasks[id] = std::move(new_task);
     ROS_INFO("成功向任务组 '%s' 添加任务 ID %d", group_name.c_str(), id);
     return ErrorCode::SUCCESS;
 }
@@ -144,14 +139,12 @@ ErrorCode TasksManager::add_task(const std::string& group_name, int id, TaskType
  * @return 错误码
  */
 ErrorCode TasksManager::delete_task(const std::string& group_name, int id) {
-    ErrorCode error_code;
-    Task* task = find_task(group_name, id, error_code);
-    if(task == nullptr) {
-        return error_code;
-    }
+    auto group = find_task_group(group_name);
+    if(!group) return group.error();
+    auto task = find_task(group_name, id);
+    if(!task) return task.error();
 
-    auto task_group = _task_groups_.find(group_name);
-    task_group->second.tasks.erase(id);
+    group.value()->tasks.erase(id);
     ROS_INFO("成功从任务组 '%s' 删除任务 ID %d", group_name.c_str(), id);
 
     return ErrorCode::SUCCESS;
@@ -164,14 +157,11 @@ ErrorCode TasksManager::delete_task(const std::string& group_name, int id) {
  * @param target 任务目标
  * @return 错误码
  */
-ErrorCode TasksManager::set_task_target(const std::string& group_name, int id, const TargetVariant& target) {
-    ErrorCode error_code;
-    Task* task = find_task(group_name, id, error_code);
-    if(task == nullptr) {
-        return error_code;
-    }
+ErrorCode TasksManager::set_task_target(const std::string& group_name, int id, const tl::optional<TargetVariant>& target) {
+    auto task = find_task(group_name, id);
+    if(!task) return task.error();
 
-    task->target = target;
+    task.value()->target = target;
     ROS_INFO("成功设置任务组 '%s'中任务 ID %d 的目标", group_name.c_str(), id);
 
     return ErrorCode::SUCCESS;
@@ -184,13 +174,10 @@ ErrorCode TasksManager::set_task_target(const std::string& group_name, int id, c
  * @return 错误码
  */
 ErrorCode TasksManager::execute_task(const std::string& group_name, int id) {
-    ErrorCode error_code;
-    Task* task = find_task(group_name, id, error_code);
-    if(task == nullptr) {
-        return error_code;
-    }
+    auto task = find_task(group_name, id);
+    if(!task) return task.error();
 
-    return execute_task(*task);
+    return execute_task(*task.value());
 }
 
 /**
@@ -203,9 +190,21 @@ ErrorCode TasksManager::execute_task(Task& task) {
     ROS_INFO("任务描述: %s", task.desc.c_str());
 
     if(task.type == TaskType::NONE) {
-        _arm_->set_target(task.target);
-        _arm_->plan_and_execute();
-        ROS_INFO("无特定任务，正在移动到指定目标...");
+        if(!task.target) {
+            ROS_WARN("任务 ID %d 没有设置目标，无法执行", task.id);
+            return ErrorCode::INVALID_PARAMETER;
+        }
+        ErrorCode code = _arm_->set_target(task.target.value());
+        if(code != ErrorCode::SUCCESS) {
+            ROS_WARN("执行任务 ID %d 失败，无法设置目标，错误码：%s", task.id, err_to_string(code).c_str());
+            return code;
+        }
+        code = _arm_->plan_and_execute();
+        if(code != ErrorCode::SUCCESS) {
+            ROS_WARN("执行任务 ID %d 失败，无法规划执行，错误码：%s", task.id, err_to_string(code).c_str());
+            return code;
+        }
+        ROS_INFO("成功执行任务 ID %d", task.id);
     }
     else if(task.type == TaskType::PICK) {
         ROS_INFO("正在执行 PICK 任务...");
@@ -220,16 +219,21 @@ ErrorCode TasksManager::execute_task(Task& task) {
  * @return 错误码
  */
 ErrorCode TasksManager::execute_task_group(const std::string& group_name) {
-    auto task_group = _task_groups_.find(group_name);
-    if(task_group == _task_groups_.end()) {
+    auto group = find_task_group(group_name);
+    if(!group) {
         ROS_WARN("任务组 '%s' 不存在，无法执行", group_name.c_str());
         return ErrorCode::TASK_GROUP_NOT_FOUND;
     }
 
     ROS_INFO("开始执行任务组 '%s'", group_name.c_str());
 
-    sort_tasks(task_group->second);
-    for(auto& task : task_group->second.sorted_tasks) {
+    ErrorCode code = sort_tasks(*group.value());
+    if(code != ErrorCode::SUCCESS) {
+        ROS_WARN("执行任务组 '%s' 失败，无法排序任务，错误码：%s", group_name.c_str(), err_to_string(code).c_str());
+        return code;
+    }
+
+    for(auto& task : group.value()->sorted_tasks) {
         ErrorCode err_code = execute_task(task);
         if(err_code != ErrorCode::SUCCESS) {
             ROS_WARN("执行任务组 '%s' 中任务 ID %d 失败，错误码：%s", group_name.c_str(), task.id, err_to_string(err_code).c_str());
@@ -243,28 +247,64 @@ ErrorCode TasksManager::execute_task_group(const std::string& group_name) {
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
 
 /**
+ * @brief 查找任务组对象
+ * @param group_name 任务组名称
+ * @return 任务组指针，失败返回错误码
+ */
+tl::expected<TaskGroup*, ErrorCode> TasksManager::find_task_group(const std::string& group_name) {
+    auto task_group = _task_groups_.find(group_name);
+    if(task_group == _task_groups_.end()) {
+        ROS_WARN("任务组 '%s' 不存在", group_name.c_str());
+        return tl::make_unexpected(ErrorCode::TASK_GROUP_NOT_FOUND);
+    }
+
+    return &task_group->second;
+}
+
+/**
  * @brief 查找任务对象
  * @param group_name 任务组名称
  * @param id 任务 ID
  * @param error_code 输出错误码
  * @return 任务指针，失败返回 nullptr
  */
-Task* TasksManager::find_task(const std::string& group_name, int id, ErrorCode& error_code) {
+tl::expected<Task*, ErrorCode> TasksManager::find_task(const std::string& group_name, int id) {
+    auto group = find_task_group(group_name);
+    if(!group) {
+        ROS_WARN("任务组 '%s' 不存在", group_name.c_str());
+        return tl::make_unexpected(ErrorCode::TASK_GROUP_NOT_FOUND);
+    }
+
+    auto task = group.value()->tasks.find(id);
+    if(task == group.value()->tasks.end()) {
+        ROS_WARN("任务组 '%s' 中不存在任务 ID %d", group_name.c_str(), id);
+        return tl::make_unexpected(ErrorCode::TASK_NOT_FOUND);
+    }
+
+    return &task->second;
+}
+
+/**
+ * @brief 查找任务对象（const 版本）
+ * @param group_name 任务组名称
+ * @param id 任务 ID
+ * @param error_code 输出错误码
+ * @return 任务指针，失败返回 nullptr
+ */
+tl::expected<const Task*, ErrorCode> TasksManager::find_task(const std::string& group_name, int id) const {
     auto task_group = _task_groups_.find(group_name);
     if(task_group == _task_groups_.end()) {
         ROS_WARN("任务组 '%s' 不存在", group_name.c_str());
-        error_code = ErrorCode::TASK_GROUP_NOT_FOUND;
-        return nullptr;
+        return tl::make_unexpected(ErrorCode::TASK_GROUP_NOT_FOUND);
     }
 
     auto task = task_group->second.tasks.find(id);
     if(task == task_group->second.tasks.end()) {
         ROS_WARN("任务组 '%s' 中不存在任务 ID %d", group_name.c_str(), id);
-        error_code = ErrorCode::TASK_NOT_FOUND;
-        return nullptr;
+        return tl::make_unexpected(ErrorCode::TASK_NOT_FOUND);
     }
 
-    return &(task->second);
+    return &task->second;
 }
 
 /**
@@ -283,12 +323,24 @@ ErrorCode TasksManager::sort_tasks(TaskGroup& task_group) {
         ROS_INFO("任务组已按 ID 排序");
     }
     else if(task_group.sort_type == SortType::DIST) {
+        std::vector<std::reference_wrapper<const Task>> sortable_tasks;
+        for(auto& [id, task] : task_group.tasks) {
+            if(task.target) {
+                sortable_tasks.push_back(std::cref(task));
+            }
+        }
+        if(sortable_tasks.empty()) {
+            ROS_WARN("任务组中没有设置目标的任务，无法按距离排序，默认按 ID 排序");
+            return ErrorCode::INVALID_PARAMETER;
+        }
+
         std::set<unsigned int> visited_ids;
 
         unsigned int cur_id = 0;
         double min_dist = -1.0;
         for(auto& [id, task] : task_group.tasks) {
-            double dist = calculate_dist(_arm_->get_current_pose(), task.target, task_group.weight_orient);
+            if(!task.target) continue;
+            double dist = calculate_dist(_arm_->get_current_pose(), task.target.value(), task_group.weight_orient);
             if(min_dist < 0 || dist < min_dist) {
                 min_dist = dist;
                 cur_id = id;
@@ -307,7 +359,8 @@ ErrorCode TasksManager::sort_tasks(TaskGroup& task_group) {
             for(const auto& [id, task] : task_group.tasks) {
                 if(visited_ids.count(id) > 0) continue;
 
-                double dist = calculate_dist(task_group.sorted_tasks.back().target, task.target, task_group.weight_orient);
+                if(!task.target) continue;
+                double dist = calculate_dist(task_group.sorted_tasks.back().target.value(), task.target.value(), task_group.weight_orient);
                 if(min_dist_local < 0 || dist < min_dist_local) {
                     min_dist_local = dist;
                     cur_id = id;
@@ -398,11 +451,12 @@ void TasksManager::optimize_with_2opt(std::vector<Task>& path, float weight_orie
         improved = false;
         for(int i = 0; i < n - 3; ++i) {
             for(int j = i + 2; j < n - 1; ++j) {
-                double dist1 = calculate_dist(path[i].target, path[i + 1].target, weight_orient);
-                double dist2 = calculate_dist(path[j].target, path[j + 1].target, weight_orient);
+                if(!path[i].target || !path[i + 1].target || !path[j].target || !path[j + 1].target) continue;
+                double dist1 = calculate_dist(path[i].target.value(), path[i + 1].target.value(), weight_orient);
+                double dist2 = calculate_dist(path[j].target.value(), path[j + 1].target.value(), weight_orient);
 
-                double dist3 = calculate_dist(path[i].target, path[j].target, weight_orient);
-                double dist4 = calculate_dist(path[i + 1].target, path[j + 1].target, weight_orient);
+                double dist3 = calculate_dist(path[i].target.value(), path[j].target.value(), weight_orient);
+                double dist4 = calculate_dist(path[i + 1].target.value(), path[j + 1].target.value(), weight_orient);
 
                 if(dist3 + dist4 < dist1 + dist2) {
                     std::reverse(path.begin() + i + 1, path.begin() + j + 1);

@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+#include "tl_optional/optional.hpp"
+#include "tl_expected/expected.hpp"
+
 #include "piper_controller/types.hpp"
 #include "piper_controller/arm_controller.hpp"
 #include "piper_controller/eef_controller.hpp"  // IWYU pragma: keep
@@ -37,14 +40,14 @@ enum class SortType {
  */
 struct Task {
     /// @brief 任务 ID
-    unsigned int id;
+    unsigned int id{};
     /// @brief 任务描述
     std::string desc;
     /// @brief 任务类型
-    TaskType type;
+    TaskType type{ TaskType::NONE };
 
     /// @brief 任务目标
-    TargetVariant target;
+    tl::optional<TargetVariant> target;
 };
 
 /**
@@ -57,9 +60,9 @@ struct TaskGroup {
     std::vector<Task> sorted_tasks;
 
     /// @brief 排序方式
-    SortType sort_type;
+    SortType sort_type{ SortType::ID };
     /// @brief 姿态权重，仅 DIST 排序方式使用
-    float weight_orient;
+    float weight_orient{ 0.3f };
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
@@ -83,12 +86,14 @@ public:
 
     ErrorCode add_task(const std::string& group_name, int id, TaskType task_type = TaskType::NONE, const std::string& task_description = "");
     ErrorCode delete_task(const std::string& group_name, int id);
-    ErrorCode set_task_target(const std::string& group_name, int id, const TargetVariant& target);
+    ErrorCode set_task_target(const std::string& group_name, int id, const tl::optional<TargetVariant>& target);
     ErrorCode execute_task(const std::string& group_name, int id);
     ErrorCode execute_task(Task& task);
 
 private:
-    Task* find_task(const std::string& group_name, int id, ErrorCode& error_code);
+    tl::expected<TaskGroup*, ErrorCode> find_task_group(const std::string& group_name);
+    tl::expected<Task*, ErrorCode> find_task(const std::string& group_name, int id);
+    tl::expected<const Task*, ErrorCode> find_task(const std::string& group_name, int id) const;
     ErrorCode sort_tasks(TaskGroup& task_group);
     double calculate_dist(const TargetVariant& base, const TargetVariant& target, float weight_orient = 0.3);
     void optimize_with_2opt(std::vector<Task>& path, float weight_orient = 0.3);
