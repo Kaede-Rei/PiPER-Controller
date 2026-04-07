@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "piper_controller/types.hpp"
 #include "piper_controller/arm_controller.hpp"
 #include "piper_controller/eef_controller.hpp"  // IWYU pragma: keep
 
