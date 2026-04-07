@@ -246,16 +246,16 @@ private:
  * @return 如果末端执行器支持该接口，则返回对应接口的指针；否则返回 nullptr
  */
 template <typename InterfaceT>
-tl::optional<std::reference_wrapper<InterfaceT>> find_eef_interface(EndEffector& eef) {
+tl::optional<InterfaceT&> find_eef_interface(EndEffector& eef) {
     if(auto* interface_ptr = dynamic_cast<InterfaceT*>(&eef)) {
-        return std::ref(*interface_ptr);
+        return *interface_ptr;
     }
     return tl::nullopt;
 }
 template <typename InterfaceT>
-tl::optional<std::reference_wrapper<const InterfaceT>> find_eef_interface(const EndEffector& eef) {
+tl::optional<const InterfaceT&> find_eef_interface(const EndEffector& eef) {
     if(auto* interface_ptr = dynamic_cast<const InterfaceT*>(&eef)) {
-        return std::cref(*interface_ptr);
+        return *interface_ptr;
     }
     return tl::nullopt;
 }
