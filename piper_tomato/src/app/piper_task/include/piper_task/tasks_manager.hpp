@@ -84,16 +84,16 @@ public:
 
     ErrorCode set_dist_sort_weight_orient(const std::string& group_name, float weight_orient);
 
-    ErrorCode add_task(const std::string& group_name, int id, TaskType task_type = TaskType::NONE, const std::string& task_description = "");
-    ErrorCode delete_task(const std::string& group_name, int id);
-    ErrorCode set_task_target(const std::string& group_name, int id, const tl::optional<TargetVariant>& target);
-    ErrorCode execute_task(const std::string& group_name, int id);
+    ErrorCode add_task(const std::string& group_name, unsigned int id, TaskType task_type = TaskType::NONE, const std::string& task_description = "");
+    ErrorCode delete_task(const std::string& group_name, unsigned int id);
+    ErrorCode set_task_target(const std::string& group_name, unsigned int id, const tl::optional<TargetVariant>& target);
+    ErrorCode execute_task(const std::string& group_name, unsigned int id);
     ErrorCode execute_task(Task& task);
 
 private:
     tl::expected<TaskGroup*, ErrorCode> find_task_group(const std::string& group_name);
-    tl::expected<Task*, ErrorCode> find_task(const std::string& group_name, int id);
-    tl::expected<const Task*, ErrorCode> find_task(const std::string& group_name, int id) const;
+    tl::expected<Task*, ErrorCode> find_task(const std::string& group_name, unsigned int id);
+    tl::expected<const Task*, ErrorCode> find_task(const std::string& group_name, unsigned int id) const;
     ErrorCode sort_tasks(TaskGroup& task_group);
     double calculate_dist(const TargetVariant& base, const TargetVariant& target, float weight_orient = 0.3);
     void optimize_with_2opt(std::vector<Task>& path, float weight_orient = 0.3);

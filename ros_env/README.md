@@ -1,4 +1,4 @@
-[RoboStack Documentation](https://moveit.picknik.ai/main/index.html)
+[RoboStack Documentation](https://robostack.github.io/)
 
 ```bash
 # Create a ros-noetic desktop environment
@@ -14,6 +14,8 @@ micromamba install -c conda-forge compilers cxx-compiler c-compiler binutils sys
 micromamba install -c conda-forge ros-noetic-moveit
 # Add Serial to the environment
 micromamba install -c conda-forge ros-noetic-rosserial ros-noetic-rosserial-python
+# Add OrbbecSDK to the environment
+cd ./ros_env/pyorbbecsdk && sudo chmod +x ./install_udev_rules.sh && sudo ./install_udev_rules.sh && sudo udevadm control --reload && sudo udevadm trigger && pip install pyorbbecsdk2
 # Add Can and PiPER-SDK to the environment
 pip install python-can piper_sdk
 # Use the conda compilers to build the workspace, the cmake version depends on your system, here we use 3.5 as an example in Ubuntu 22.04
@@ -37,6 +39,10 @@ micromamba create -n ros_env -c conda-forge -c robostack-noetic \
     ros-noetic-rosserial \
     ros-noetic-rosserial-python \
     compilers cxx-compiler c-compiler binutils sysroot_linux-64
+
+# install the OrbbecSDK and add the udev rules
+cd ./ros_env/pyorbbecsdk && sudo chmod +x ./install_udev_rules.sh && sudo ./install_udev_rules.sh && sudo udevadm control --reload && sudo udevadm trigger && pip install pyorbbecsdk2 && cd ../../
+# install Can and PiPER-SDK
 pip install python-can piper_sdk
 # optional trimesh can be used to simplify robotic arm meshes
 pip install fast-simplification trimesh

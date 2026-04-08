@@ -73,9 +73,7 @@ ErrorCode TasksManager::clear_task_group(const std::string& group_name) {
     if(!group) return group.error();
 
     group.value()->tasks.clear();
-
-
-    group.value()->tasks.clear();
+    group.value()->sorted_tasks.clear();
 
     ROS_INFO("成功清空任务组 '%s'", group_name.c_str());
     return ErrorCode::SUCCESS;
@@ -113,7 +111,7 @@ ErrorCode TasksManager::set_dist_sort_weight_orient(const std::string& group_nam
  * @param task_description 任务描述
  * @return 错误码
  */
-ErrorCode TasksManager::add_task(const std::string& group_name, int id, TaskType task_type, const std::string& task_description) {
+ErrorCode TasksManager::add_task(const std::string& group_name, unsigned int id, TaskType task_type, const std::string& task_description) {
     auto group = find_task_group(group_name);
     if(!group) return group.error();
 
@@ -138,7 +136,7 @@ ErrorCode TasksManager::add_task(const std::string& group_name, int id, TaskType
  * @param id 任务 ID
  * @return 错误码
  */
-ErrorCode TasksManager::delete_task(const std::string& group_name, int id) {
+ErrorCode TasksManager::delete_task(const std::string& group_name, unsigned int id) {
     auto group = find_task_group(group_name);
     if(!group) return group.error();
     auto task = find_task(group_name, id);
@@ -157,7 +155,7 @@ ErrorCode TasksManager::delete_task(const std::string& group_name, int id) {
  * @param target 任务目标
  * @return 错误码
  */
-ErrorCode TasksManager::set_task_target(const std::string& group_name, int id, const tl::optional<TargetVariant>& target) {
+ErrorCode TasksManager::set_task_target(const std::string& group_name, unsigned int id, const tl::optional<TargetVariant>& target) {
     auto task = find_task(group_name, id);
     if(!task) return task.error();
 
@@ -173,7 +171,7 @@ ErrorCode TasksManager::set_task_target(const std::string& group_name, int id, c
  * @param id 任务 ID
  * @return 错误码
  */
-ErrorCode TasksManager::execute_task(const std::string& group_name, int id) {
+ErrorCode TasksManager::execute_task(const std::string& group_name, unsigned int id) {
     auto task = find_task(group_name, id);
     if(!task) return task.error();
 
@@ -268,7 +266,7 @@ tl::expected<TaskGroup*, ErrorCode> TasksManager::find_task_group(const std::str
  * @param error_code 输出错误码
  * @return 任务指针，失败返回 nullptr
  */
-tl::expected<Task*, ErrorCode> TasksManager::find_task(const std::string& group_name, int id) {
+tl::expected<Task*, ErrorCode> TasksManager::find_task(const std::string& group_name, unsigned int id) {
     auto group = find_task_group(group_name);
     if(!group) {
         ROS_WARN("任务组 '%s' 不存在", group_name.c_str());
@@ -291,7 +289,7 @@ tl::expected<Task*, ErrorCode> TasksManager::find_task(const std::string& group_
  * @param error_code 输出错误码
  * @return 任务指针，失败返回 nullptr
  */
-tl::expected<const Task*, ErrorCode> TasksManager::find_task(const std::string& group_name, int id) const {
+tl::expected<const Task*, ErrorCode> TasksManager::find_task(const std::string& group_name, unsigned int id) const {
     auto task_group = _task_groups_.find(group_name);
     if(task_group == _task_groups_.end()) {
         ROS_WARN("任务组 '%s' 不存在", group_name.c_str());
@@ -331,7 +329,11 @@ ErrorCode TasksManager::sort_tasks(TaskGroup& task_group) {
         }
         if(sortable_tasks.empty()) {
             ROS_WARN("任务组中没有设置目标的任务，无法按距离排序，默认按 ID 排序");
-            return ErrorCode::INVALID_PARAMETER;
+            for(auto& [id, task] : task_group.tasks) {
+                task_group.sorted_tasks.push_back(task);
+                task_group.sorted_tasks.back().id = id;
+            }
+            return ErrorCode::SUCCESS;
         }
 
         std::set<unsigned int> visited_ids;
@@ -347,7 +349,7 @@ ErrorCode TasksManager::sort_tasks(TaskGroup& task_group) {
             }
         }
 
-        while(task_group.sorted_tasks.size() < task_group.tasks.size()) {
+        while(task_group.sorted_tasks.size() < sortable_tasks.size()) {
             auto cur_task = task_group.tasks.find(cur_id);
             task_group.sorted_tasks.push_back(cur_task->second);
             task_group.sorted_tasks.back().id = cur_id;
