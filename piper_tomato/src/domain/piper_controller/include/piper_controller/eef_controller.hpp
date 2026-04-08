@@ -61,7 +61,7 @@ private:
 class ServoGripper : public EndEffector,
     public GripperEefInterface {
 public:
-    ServoGripper(ros::NodeHandle& nh, const geometry_msgs::Pose& tcp_offset, const std::string& serial_port = "/dev/ttyACM0", int baud_rate = 115200);
+    ServoGripper(ros::NodeHandle& nh, const std::string& serial_port = "/dev/ttyACM0", int baud_rate = 115200);
     ~ServoGripper() override = default;
 
     ServoGripper(const ServoGripper&) = delete;

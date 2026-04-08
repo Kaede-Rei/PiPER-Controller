@@ -9,6 +9,10 @@ import rospy
 import actionlib
 from piper_msgs2.msg import SimpleMoveArmAction, SimpleMoveArmGoal
 
+import tf2_ros
+import tf2_geometry_msgs
+from geometry_msgs.msg import PoseStamped
+
 from pyorbbecsdk import OBFormat, OBSensorType, OBAlignMode, OBPropertyID
 from pyorbbecsdk import Pipeline, Config, VideoFrame
 
@@ -433,6 +437,9 @@ class MainWindow(QMainWindow):
             dtype=np.float32,
         )
 
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+
         self.init_ui()
         self.init_thread()
 
@@ -462,6 +469,21 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[ROS] 未知错误: {e}")
             self.ros_available = False
+
+    def flange_point_to_tcp_point(self, x_flange, y_flange, z_flange):
+        pt_flange = PoseStamped()
+        pt_flange.header.frame_id = "link6"
+        pt_flange.header.stamp = rospy.Time(0)
+        pt_flange.pose.position.x = x_flange
+        pt_flange.pose.position.y = y_flange
+        pt_flange.pose.position.z = z_flange
+        pt_flange.pose.orientation.x = 0.0
+        pt_flange.pose.orientation.y = 0.0
+        pt_flange.pose.orientation.z = 0.0
+        pt_flange.pose.orientation.w = 1.0
+
+        pt_tcp = self.tf_buffer.transform(pt_flange, "link_tcp", rospy.Duration(0.2))
+        return pt_tcp.pose.position.x, pt_tcp.pose.position.y, pt_tcp.pose.position.z
 
     def send_arm_command(self, x, y, z):
         if not self.ros_available:
@@ -628,7 +650,13 @@ class MainWindow(QMainWindow):
         x_cam, y_cam, z_cam = depth_to_pointcloud(
             du, dv, depth_m, self.depth_intrinsics
         )
-        x_arm, y_arm, z_arm = hand_eye_calibration(x_cam, y_cam, z_cam)
+        # 进行手眼标定转换，得到法兰坐标
+        x_flange, y_flange, z_flange = hand_eye_calibration(x_cam, y_cam, z_cam)
+
+        # 将法兰坐标转换为TCP坐标
+        x_arm, y_arm, z_arm = self.flange_point_to_tcp_point(
+            x_flange, y_flange, z_flange
+        )
 
         # 存储目标坐标并启用发送按钮
         self.target_arm_coord = (x_arm, y_arm, z_arm)

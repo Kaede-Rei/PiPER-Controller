@@ -42,11 +42,8 @@ void ROSInterface::init_eef(ros::NodeHandle& nh, const ROSInterfaceConfig& confi
             _eef_ = eef;
         }
         else if(config.eef_type == "servo_gripper") {
-            geometry_msgs::Pose identity_tcp;
-            identity_tcp.orientation.w = 1.0;
             auto eef = std::make_shared<ServoGripper>(
                 nh,
-                identity_tcp,
                 config.eef_serial_port,
                 config.eef_baud_rate);
             _eef_ = eef;

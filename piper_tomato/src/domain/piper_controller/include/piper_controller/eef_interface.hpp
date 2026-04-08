@@ -194,18 +194,6 @@ public:
      */
     virtual void stop() = 0;
 
-    /**
-     * @brief 设置 TCP 偏移（相对于 flange）
-     * @param tcp_offset TCP 偏移位姿，即 tf_flange_tcp，表示从 flange 到 TCP 的变换矩阵
-     */
-    void set_tcp_offset(const geometry_msgs::Pose& tcp_offset) { _tf_flange_tcp_ = tcp_offset; }
-
-    /**
-     * @brief 获取 TCP 偏移（相对于 flange）
-     * @return TCP 偏移位姿
-     */
-    const geometry_msgs::Pose& get_tcp_offset() const { return _tf_flange_tcp_; }
-
 private:
     /**
      * @brief 位姿乘法：将两个位姿进行矩阵乘法，得到新的位姿
