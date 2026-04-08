@@ -14,6 +14,59 @@
 
 namespace piper {
 
+// ! ========================= 私 有 函 数 实 现 ========================= ! //
+
+namespace {
+
+tl::optional<geometry_msgs::PoseStamped> normalize_target_to_pose_stamped(const TargetVariant& target, const std::string& default_source_frame) {
+
+    return std::visit(variant_visitor{
+        [&](const std::monostate&) -> tl::optional<geometry_msgs::PoseStamped> {
+            return tl::nullopt;
+        },
+        [&](const geometry_msgs::Pose& pose) -> tl::optional<geometry_msgs::PoseStamped> {
+            if(default_source_frame.empty()) return tl::nullopt;
+            geometry_msgs::PoseStamped ps;
+            ps.header.frame_id = default_source_frame;
+            ps.header.stamp = ros::Time(0);
+            ps.pose = pose;
+            return ps;
+        },
+        [&](const geometry_msgs::Point& point) -> tl::optional<geometry_msgs::PoseStamped> {
+            if(default_source_frame.empty()) return tl::nullopt;
+            geometry_msgs::PoseStamped ps;
+            ps.header.frame_id = default_source_frame;
+            ps.header.stamp = ros::Time(0);
+            ps.pose.position = point;
+            ps.pose.orientation.w = 1.0;
+            return ps;
+        },
+        [&](const geometry_msgs::Quaternion& quat) -> tl::optional<geometry_msgs::PoseStamped> {
+            if(default_source_frame.empty()) return tl::nullopt;
+            geometry_msgs::PoseStamped ps;
+            ps.header.frame_id = default_source_frame;
+            ps.header.stamp = ros::Time(0);
+            ps.pose.orientation = quat;
+            return ps;
+        },
+        [&](const geometry_msgs::PoseStamped& pose_stamped) -> tl::optional<geometry_msgs::PoseStamped> {
+            if(pose_stamped.header.frame_id.empty() && default_source_frame.empty()) {
+                return tl::nullopt;
+            }
+            geometry_msgs::PoseStamped ps = pose_stamped;
+            if(ps.header.frame_id.empty()) {
+                ps.header.frame_id = default_source_frame;
+            }
+            if(ps.header.stamp == ros::Time(0)) {
+                ps.header.stamp = ros::Time(0);
+            }
+            return ps;
+        }
+        }, target);
+}
+
+}
+
 // ! ========================= 接 口 类 / 函 数 实 现 ========================= ! //
 
 /**
@@ -840,6 +893,61 @@ geometry_msgs::Pose ArmController::rpy_to_pose(double roll, double pitch, double
     pose.orientation = rpy_to_quaternion(roll, pitch, yaw);
 
     return pose;
+}
+
+/**
+ * @brief 将目标位姿从末端坐标系转换到底座坐标系
+ * @param target 目标位姿（Pose/PoseStamped/Point/Quaternion）
+ * @param out_base_pose 转换后的位姿输出
+ * @param default_source_frame 当目标不包含坐标系信息时使用的默认源坐标系
+ * @return 错误码
+ */
+ErrorCode ArmController::resolve_target_to_base(const TargetVariant& target, geometry_msgs::PoseStamped& out_base_pose, const std::string& default_source_frame) {
+
+    auto pose_opt = normalize_target_to_pose_stamped(target, default_source_frame);
+    if(!pose_opt) {
+        ROS_WARN("目标无法归一化为 PoseStamped");
+        return ErrorCode::INVALID_TARGET_TYPE;
+    }
+
+    const auto& src = *pose_opt;
+
+    try {
+        if(src.header.frame_id == _base_link_) {
+            out_base_pose = src;
+            return ErrorCode::SUCCESS;
+        }
+
+        out_base_pose = _tf_buffer_.transform(src, _base_link_, ros::Duration(0.2));
+        out_base_pose.header.frame_id = _base_link_;
+        return ErrorCode::SUCCESS;
+    }
+    catch(const tf2::TransformException& e) {
+        ROS_WARN("resolve_target_to_base 失败: %s", e.what());
+        return ErrorCode::TF_TRANSFORM_FAILED;
+    }
+}
+
+/**
+ * @brief 设置末端目标（底座坐标系）
+ * @param target 目标位姿/位置/姿态
+ * @param source_frame 当目标不包含坐标系信息时使用的默认源坐标系
+ * @return 错误码
+ */
+ErrorCode ArmController::set_target_in_frame(const TargetVariant& target, const std::string& source_frame) {
+
+    if(_is_planning_or_executing_) {
+        ROS_WARN("当前已有异步任务正在执行，无法设置新目标");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    geometry_msgs::PoseStamped base_pose;
+    ErrorCode code = resolve_target_to_base(target, base_pose, source_frame);
+    if(code != ErrorCode::SUCCESS) {
+        return code;
+    }
+
+    return set_target(base_pose.pose);
 }
 
 /**

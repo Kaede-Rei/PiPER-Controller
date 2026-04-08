@@ -6,6 +6,9 @@
 
 namespace piper {
 
+class TasksManager;
+class PickTaskAction;
+
 class EndEffector;
 
 // ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
@@ -28,6 +31,7 @@ struct ROSInterfaceConfig {
     ROSInterfaceSwitch simple_arm_move_action{ false, "simple_arm_move_action" };
     ROSInterfaceSwitch arm_config_service{ false, "arm_config_service" };
     ROSInterfaceSwitch arm_query_service{ false, "arm_query_service" };
+    ROSInterfaceSwitch pick_action{ true, "pick_action" };
 
     ROSInterfaceSwitch eef_cmd_service{ false, "eef_cmd_service" };
 };
@@ -53,8 +57,10 @@ private:
 private:
     std::shared_ptr<ArmController> _arm_;
     std::shared_ptr<EndEffector> _eef_;
+    std::shared_ptr<TasksManager> _tasks_manager_;
     std::shared_ptr<ArmCmdDispatcher> _arm_dispatcher_;
     std::shared_ptr<EefCmdDispatcher> _eef_dispatcher_;
+    std::shared_ptr<PickTaskAction> _pick_action_server_;
     std::vector<std::unique_ptr<ROSModuleInterface>> _modules_;
 };
 

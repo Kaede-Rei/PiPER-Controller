@@ -19,7 +19,9 @@
 
     <!-- ========================= 常规依赖(按需添加) ========================= -->
     <!-- TODO: 最简单的写法可直接用 depend；如果依赖你自己的接口包，也写在这里 -->
+    <depend>actionlib</depend>
     <depend>geometry_msgs</depend>
+    <depend>piper_msgs2</depend>
     <depend>piper_controller</depend>
     <depend>roscpp</depend>
     <depend>tl_expected</depend>

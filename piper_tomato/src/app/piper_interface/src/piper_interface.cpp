@@ -1,6 +1,8 @@
 #include "piper_interface/piper_interface.hpp"
 
 #include "piper_controller/eef_controller.hpp"
+#include "piper_task/pick_action.hpp"
+#include "piper_task/tasks_manager.hpp"
 
 namespace piper {
 
@@ -21,6 +23,7 @@ namespace piper {
 ROSInterface::ROSInterface(ros::NodeHandle& nh, const ROSInterfaceConfig& config) {
     _arm_ = std::make_shared<ArmController>(config.arm_group_name);
     init_eef(nh, config);
+    _tasks_manager_ = std::make_shared<TasksManager>(_arm_, _eef_);
     _arm_dispatcher_ = std::make_shared<ArmCmdDispatcher>(_arm_);
     if(_eef_) {
         _eef_dispatcher_ = std::make_shared<EefCmdDispatcher>(_eef_);
@@ -68,6 +71,11 @@ void ROSInterface::init_interfaces(ros::NodeHandle& nh, const ROSInterfaceConfig
     add_interface<ArmQueryService>(config.arm_query_service, nh, _arm_, _arm_dispatcher_);
 
     add_interface<EefCmdService>(config.eef_cmd_service, nh, _eef_, _eef_dispatcher_);
+
+    if(config.pick_action.enable && !config.pick_action.name.empty()) {
+        _pick_action_server_ = std::make_shared<PickTaskAction>(nh, _tasks_manager_, _arm_, config.pick_action.name);
+        ROS_INFO("初始化接口: %s", config.pick_action.name.c_str());
+    }
 }
 
 }

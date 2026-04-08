@@ -131,6 +131,11 @@ public:
     template<class T>
     ErrorCode end_to_base_tf(const T& in, T& out);
 
+    ErrorCode resolve_target_to_base(const TargetVariant& target, geometry_msgs::PoseStamped& out_base_pose, const std::string& default_source_frame = "");
+    ErrorCode set_target_in_frame(const TargetVariant& target, const std::string& source_frame);
+    const std::string& get_base_link() const { return _base_link_; }
+    const std::string& get_eef_link() const { return _eef_link_; }
+
     const std::string& get_arm_name() const;
     std::vector<double> get_current_joints() const;
     std::vector<std::string> get_current_link_names() const;

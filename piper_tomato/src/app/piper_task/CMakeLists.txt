@@ -22,7 +22,9 @@ endif()
 # ========================= 依赖配置(按需修改) ========================= #
 # TODO: 在这里填写所有 catkin 依赖；如果依赖你自己的接口包，也写在这里
 find_package(catkin REQUIRED COMPONENTS
+  actionlib
   geometry_msgs
+  piper_msgs2
   piper_controller
   roscpp
   tl_expected
@@ -46,7 +48,9 @@ catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ${PROJECT_NAME}
   CATKIN_DEPENDS
+    actionlib
     geometry_msgs
+    piper_msgs2
     piper_controller
     roscpp
     tl_expected
@@ -76,6 +80,7 @@ include_directories(
 set(LIB_NAME ${PROJECT_NAME})
 set(LIB_SOURCES
   src/tasks_manager.cpp
+  src/pick_action.cpp
 )
 
 if(LIB_SOURCES)
@@ -86,29 +91,6 @@ if(LIB_SOURCES)
     # ${OpenCV_LIBS}
   )
 endif()
-
-# ========================= C++ 节点配置 ========================= #
-# TODO: 在此列表中添加所有节点名称(不带 .cpp 后缀)
-set(NODES
-  # node_name
-)
-
-foreach(node IN LISTS NODES)
-  if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/${node}.cpp)
-    message(FATAL_ERROR "节点源码文件不存在：src/${node}.cpp")
-  endif()
-
-  add_executable(${node} src/${node}.cpp)
-  target_link_libraries(${node}
-    ${catkin_LIBRARIES}
-    # Eigen3::Eigen
-    # ${OpenCV_LIBS}
-  )
-
-  if(LIB_SOURCES)
-    target_link_libraries(${node} ${LIB_NAME})
-  endif()
-endforeach()
 
 # ========================= Python 脚本安装(可选) ========================= #
 # TODO: 若无 Python 脚本，保持为空即可

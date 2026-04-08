@@ -39,6 +39,7 @@ int main(int argc, char** argv) {
     config.arm_config_service = { pnh.param<bool>("start/arm_config_service/enabled", true), pnh.param<std::string>("start/arm_config_service/name", "arm_config") };
     config.arm_query_service = { pnh.param<bool>("start/arm_query_service/enabled", true), pnh.param<std::string>("start/arm_query_service/name", "arm_query") };
     config.eef_cmd_service = { pnh.param<bool>("start/eef_cmd_service/enabled", true), pnh.param<std::string>("start/eef_cmd_service/name", "eef_cmd") };
+    config.pick_action = { pnh.param<bool>("start/pick_action/enabled", true), pnh.param<std::string>("start/pick_action/name", "pick_action") };
     piper::ROSInterface piper_interface(nh, config);
 
     ros::waitForShutdown();

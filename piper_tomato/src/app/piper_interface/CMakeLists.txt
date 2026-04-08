@@ -2,12 +2,14 @@ cmake_minimum_required(VERSION 3.0.2)
 project(piper_interface)
 
 find_package(catkin REQUIRED COMPONENTS
+  actionlib
   geometry_msgs
   moveit_core
   moveit_ros_planning_interface
   piper_controller
   piper_commander
   piper_msgs2
+  piper_task
   roscpp
   rospy
   serial_driver
@@ -110,7 +112,7 @@ catkin_package(
  INCLUDE_DIRS include
  LIBRARIES piper_interface
 #  CATKIN_DEPENDS geometry_msgs moveit_core moveit_ros_planning_interface piper_controller piper_commander piper_msgs2 roscpp rospy std_msgs std_srvs tf2_geometry_msgs tf2_ros
- CATKIN_DEPENDS geometry_msgs piper_controller piper_commander piper_msgs2 roscpp std_msgs std_srvs
+ CATKIN_DEPENDS actionlib geometry_msgs piper_controller piper_commander piper_msgs2 piper_task roscpp std_msgs std_srvs
 #  DEPENDS system_lib
 )
 

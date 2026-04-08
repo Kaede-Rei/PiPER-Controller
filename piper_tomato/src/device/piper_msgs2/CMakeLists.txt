@@ -23,6 +23,7 @@ add_service_files(
 
 add_action_files(
     FILES
+    PickTask.action
     MoveArm.action
     SimpleMoveArm.action
 )

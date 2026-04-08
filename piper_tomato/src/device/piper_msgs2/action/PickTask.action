@@ -1,0 +1,84 @@
+# ===== Goal =====
+
+# 任务组名称
+string group_name
+
+# 任务 ID，可由 GUI 生成，也可传 0 让服务端自生成
+uint32 id
+
+# 目标果实的 TCP 目标位姿（相对于 link_tcp）
+geometry_msgs/PoseStamped target_pose
+
+# 是否启用放置动作
+bool use_place_pose
+
+# 放置位姿（当 use_place_pose=true 时有效）
+geometry_msgs/PoseStamped place_pose
+
+# 是否执行夹爪动作
+bool use_eef
+
+# 是否在任务结束后回到 home / standby 位
+bool go_home_after_finish
+
+# 是否在取消后自动回安全位
+bool go_safe_after_cancel
+
+# 最大重试次数
+uint8 retry_times
+
+# 指定任务组开始执行任务流
+string start_group
+
+# 可选描述
+string description
+
+---
+
+# ===== Result =====
+
+# 是否整体成功
+bool success
+
+# 最终状态码
+int32 error_code
+
+# 失败发生在哪个阶段
+uint8 failed_stage
+
+# 文字说明
+string message
+
+# 实际完成的步骤数量
+uint32 completed_steps
+
+# 是否是由于 cancel 结束
+bool canceled
+
+# 任务结束时机械臂当前位姿
+geometry_msgs/PoseStamped final_pose
+
+---
+
+# ===== Feedback =====
+
+# 当前阶段
+uint8 current_stage
+
+# 当前步骤索引
+uint32 current_step_index
+
+# 当前步骤总数
+uint32 total_steps
+
+# 当前阶段说明
+string stage_text
+
+# 最近一次底层调用是否成功
+bool last_substep_success
+
+# 最近一次底层调用返回码
+int32 last_error_code
+
+# 当前机械臂位姿
+geometry_msgs/PoseStamped current_pose

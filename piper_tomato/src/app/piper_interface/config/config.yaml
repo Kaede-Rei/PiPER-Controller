@@ -20,6 +20,10 @@ start:
     enabled: true
     name: "arm_query"
 
+  pick_action:
+    enabled: true
+    name: "pick_action"
+
   eef_cmd_service:
     enabled: true
     name: "eef_cmd"

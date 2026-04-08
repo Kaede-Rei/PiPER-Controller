@@ -11,7 +11,7 @@ import actionlib
 import tf2_ros
 import tf2_geometry_msgs
 from geometry_msgs.msg import PoseStamped
-from piper_msgs2.msg import SimpleMoveArmAction, SimpleMoveArmGoal
+from piper_msgs2.msg import PickTaskAction, PickTaskGoal
 from pyorbbecsdk import (
     OBAlignMode,
     OBFormat,
@@ -34,9 +34,13 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
+    QFormLayout,
     QHBoxLayout,
+    QGroupBox,
     QLabel,
     QMainWindow,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -72,9 +76,11 @@ class CameraConfig:
 @dataclass(frozen=True)
 class RosConfig:
     node_name: str = "tomato_picking_gui"
-    action_name: str = "/simple_move_arm"
+    action_name: str = "/pick_action"
+    pick_group_name: str = "gui_pick"
     flange_frame: str = "link6"
     tcp_frame: str = "link_tcp"
+    place_frame: str = "base_link"
     action_wait_sec: float = 5.0
     result_wait_sec: float = 10.0
     tf_wait_sec: float = 0.2
@@ -534,7 +540,7 @@ class MainWindow(QMainWindow):
         self.last_flange_coord = None
 
         self.ros_available = False
-        self.simple_move_client = None
+        self.pick_client = None
         self.depth_intrinsics = DEFAULT_DEPTH_INTRINSICS.copy()
 
         # 先初始化 ROS
@@ -554,10 +560,10 @@ class MainWindow(QMainWindow):
         try:
             if not rospy.is_shutdown():
                 rospy.init_node(ROS_CFG.node_name, anonymous=True, disable_signals=True)
-                self.simple_move_client = actionlib.SimpleActionClient(
-                    ROS_CFG.action_name, SimpleMoveArmAction
+                self.pick_client = actionlib.SimpleActionClient(
+                    ROS_CFG.action_name, PickTaskAction
                 )
-                if not self.simple_move_client.wait_for_server(
+                if not self.pick_client.wait_for_server(
                     rospy.Duration(ROS_CFG.action_wait_sec)
                 ):
                     raise rospy.ROSException(f"{ROS_CFG.action_name} action 不可用")
@@ -597,43 +603,9 @@ class MainWindow(QMainWindow):
         return pt_tcp.pose.position.x, pt_tcp.pose.position.y, pt_tcp.pose.position.z
 
     def send_arm_command(self, x: float, y: float, z: float) -> bool:
-        if not self.ros_available:
-            print("[ROS] 未连接到ROS，跳过发送指令")
-            return False
-
-        try:
-            goal = SimpleMoveArmGoal()
-            goal.command_type = SimpleMoveArmGoal.MOVE_TARGET_IN_EEF_FRAME
-            goal.target_type = SimpleMoveArmGoal.TARGET_POINT
-            goal.x = [x]
-            goal.y = [y]
-            goal.z = [z]
-            goal.roll = []
-            goal.pitch = []
-            goal.yaw = []
-            goal.joint_names = []
-            goal.joints = []
-            goal.values = []
-
-            print(f"[ROS] 发送机械臂指令(TCP): x={x:.4f}, y={y:.4f}, z={z:.4f}")
-            self.simple_move_client.send_goal(goal)
-            finished = self.simple_move_client.wait_for_result(
-                rospy.Duration(ROS_CFG.result_wait_sec)
-            )
-            if not finished:
-                self.simple_move_client.cancel_goal()
-                print("[ROS] action 超时，已取消")
-                return False
-
-            result = self.simple_move_client.get_result()
-            print(f"[ROS] action 返回: {result!r}")
-            if result is not None and hasattr(result, "success"):
-                print(f"[ROS] 业务成功标志: {result.success}")
-                return bool(result.success)
-            return False
-        except Exception as e:
-            print(f"[ROS] action 调用失败: {e}")
-            return False
+        del x, y, z
+        self.send_pick_task()
+        return True
 
     def init_ui(self) -> None:
         central_widget = QWidget()
@@ -646,6 +618,32 @@ class MainWindow(QMainWindow):
 
         panel_layout = QVBoxLayout()
         main_layout.addLayout(panel_layout, stretch=1)
+
+        self.task_status_label = QLabel("采摘任务状态：未发送")
+        self.task_status_label.setWordWrap(True)
+        self.task_status_label.setFont(
+            QFont(UI_CFG.info_font_name, UI_CFG.info_font_size)
+        )
+        panel_layout.addWidget(self.task_status_label)
+
+        place_group = QGroupBox("放置区配置（base_link）")
+        place_layout = QFormLayout(place_group)
+        self.chk_use_place_pose = QCheckBox("启用放置动作")
+        self.chk_use_place_pose.setChecked(True)
+        self.place_x_edit = QLineEdit("0.25")
+        self.place_y_edit = QLineEdit("0.00")
+        self.place_z_edit = QLineEdit("0.10")
+        self.place_roll_edit = QLineEdit("0.00")
+        self.place_pitch_edit = QLineEdit("0.00")
+        self.place_yaw_edit = QLineEdit("0.00")
+        place_layout.addRow(self.chk_use_place_pose)
+        place_layout.addRow("X", self.place_x_edit)
+        place_layout.addRow("Y", self.place_y_edit)
+        place_layout.addRow("Z", self.place_z_edit)
+        place_layout.addRow("Roll", self.place_roll_edit)
+        place_layout.addRow("Pitch", self.place_pitch_edit)
+        place_layout.addRow("Yaw", self.place_yaw_edit)
+        panel_layout.addWidget(place_group)
 
         self.info_label = QLabel(
             "系统初始化中...\n\n操作说明：\n1. 左键：添加轮廓点\n2. 右键：撤销上一个点\n3. 双击：闭合多边形"
@@ -662,7 +660,7 @@ class MainWindow(QMainWindow):
         )
         panel_layout.addWidget(self.btn_reset)
 
-        self.btn_send_cmd = QPushButton("发送机械臂指令")
+        self.btn_send_cmd = QPushButton("发送采摘任务")
         self.btn_send_cmd.clicked.connect(self.manual_send_command)
         self.btn_send_cmd.setMinimumHeight(40)
         self.btn_send_cmd.setStyleSheet(
@@ -670,6 +668,14 @@ class MainWindow(QMainWindow):
         )
         self.btn_send_cmd.setEnabled(False)
         panel_layout.addWidget(self.btn_send_cmd)
+
+        self.btn_cancel_cmd = QPushButton("取消采摘任务")
+        self.btn_cancel_cmd.clicked.connect(self.cancel_pick_task)
+        self.btn_cancel_cmd.setMinimumHeight(40)
+        self.btn_cancel_cmd.setStyleSheet(
+            "background-color: #c0392b; color: white; font-size:14px; font-weight:bold;"
+        )
+        panel_layout.addWidget(self.btn_cancel_cmd)
 
         panel_layout.addStretch()
 
@@ -763,17 +769,98 @@ class MainWindow(QMainWindow):
             <p><b>Y:</b> {y_flange:.4f}</p>
             <p><b>Z:</b> {z_flange:.4f}</p>
             <hr>
-            <p><b style='color: #9b59b6;'>TCP坐标:</b></p>
+            <p><b style='color: #9b59b6;'>TCP相对坐标（提交给任务层后会冻结到底座坐标系）:</b></p>
             <p><b>X:</b> {x_tcp:.4f}</p>
             <p><b>Y:</b> {y_tcp:.4f}</p>
             <p><b>Z:</b> {z_tcp:.4f}</p>
             """)
 
     def manual_send_command(self) -> None:
-        if self.target_tcp_coord is None:
+        self.send_pick_task()
+
+    def _parse_float(self, edit: QLineEdit, default: float = 0.0) -> float:
+        try:
+            return float(edit.text().strip())
+        except Exception:
+            return default
+
+    def _build_pose_stamped(
+        self, frame_id: str, x: float, y: float, z: float
+    ) -> PoseStamped:
+        pose = PoseStamped()
+        pose.header.frame_id = frame_id
+        pose.header.stamp = rospy.Time.now() if self.ros_available else rospy.Time(0)
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.position.z = z
+        pose.pose.orientation.w = 1.0
+        return pose
+
+    def send_pick_task(self) -> None:
+        if not self.ros_available or self.pick_client is None:
+            self.task_status_label.setText("采摘任务状态：ROS 未连接")
             return
+
+        if self.target_tcp_coord is None:
+            self.task_status_label.setText("采摘任务状态：请先选择目标")
+            return
+
         x, y, z = self.target_tcp_coord
-        self.send_arm_command(x, y, z)
+        goal = PickTaskGoal()
+        goal.group_name = ROS_CFG.pick_group_name
+        goal.id = 0
+        goal.target_pose = self._build_pose_stamped(ROS_CFG.tcp_frame, x, y, z)
+        goal.use_place_pose = self.chk_use_place_pose.isChecked()
+        goal.place_pose = self._build_pose_stamped(
+            ROS_CFG.place_frame,
+            self._parse_float(self.place_x_edit, 0.0),
+            self._parse_float(self.place_y_edit, 0.0),
+            self._parse_float(self.place_z_edit, 0.0),
+        )
+        goal.use_eef = True
+        goal.go_home_after_finish = True
+        goal.go_safe_after_cancel = True
+        goal.retry_times = 0
+        goal.start_group = ROS_CFG.pick_group_name
+        goal.description = "GUI采摘任务"
+
+        self.task_status_label.setText(
+            f"采摘任务状态：已发送，目标=({x:.3f}, {y:.3f}, {z:.3f})"
+        )
+        self.pick_client.send_goal(
+            goal,
+            done_cb=self._on_pick_done,
+            active_cb=self._on_pick_active,
+            feedback_cb=self._on_pick_feedback,
+        )
+
+    def cancel_pick_task(self) -> None:
+        if self.ros_available and self.pick_client is not None:
+            self.pick_client.cancel_goal()
+            self.task_status_label.setText("采摘任务状态：已请求取消")
+
+    def _on_pick_active(self) -> None:
+        self.task_status_label.setText("采摘任务状态：执行中")
+
+    def _on_pick_feedback(self, feedback) -> None:
+        try:
+            self.task_status_label.setText(
+                f"采摘任务状态：{feedback.stage_text} | step {feedback.current_step_index}/{feedback.total_steps}"
+            )
+        except Exception:
+            pass
+
+    def _on_pick_done(self, state, result) -> None:
+        try:
+            msg = getattr(result, "message", "")
+            if getattr(result, "success", False):
+                self.task_status_label.setText(f"采摘任务状态：完成 - {msg}")
+            elif getattr(result, "canceled", False):
+                self.task_status_label.setText(f"采摘任务状态：已取消 - {msg}")
+            else:
+                self.task_status_label.setText(f"采摘任务状态：失败 - {msg}")
+        except Exception:
+            self.task_status_label.setText(f"采摘任务状态：结束，state={state}")
 
     def on_roi_selected(self, cutting_pixel, mask) -> None:
         if (
