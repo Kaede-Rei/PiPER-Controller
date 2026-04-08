@@ -186,29 +186,41 @@ void ArmMoveAction::on_preempt() {
  * @param req 转换后的 ArmCmdRequest
  * @return 转换是否成功
  */
-tl::optional<ArmCmdRequest> SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveArmGoal& goal) {
+tl::optional<ArmCmdRequest> SimpleArmMoveAction::convert_goal_to_request(
+    const piper_msgs2::SimpleMoveArmGoal& goal
+) {
     ArmCmdRequest req{};
     req.type = static_cast<ArmCmdType>(goal.command_type);
-    if(static_cast<std::size_t>(goal.command_type) >= static_cast<std::size_t>(ArmCmdType::MAX)) {
+
+    if(static_cast<std::size_t>(goal.command_type) >=
+        static_cast<std::size_t>(ArmCmdType::MAX)) {
         ROS_WARN("接收到无效的命令类型: %d", goal.command_type);
         return tl::nullopt;
     }
 
     req.joint_names = goal.joint_names;
     req.joints = goal.joints;
+    req.values = goal.values;
 
     if(goal.target_type == goal.TARGET_POSE) {
         if(!xyz_sizes_match(goal) || !rpy_sizes_match(goal) || goal.x.empty()) {
             ROS_WARN("接收到的目标位姿数据长度不匹配");
             return tl::nullopt;
         }
+
         req.target = pose_from_goal(goal, 0);
+
+        req.waypoints.reserve(goal.x.size());
+        for(size_t i = 0; i < goal.x.size(); ++i) {
+            req.waypoints.push_back(pose_from_goal(goal, i));
+        }
     }
     else if(goal.target_type == goal.TARGET_POINT) {
         if(!xyz_sizes_match(goal) || goal.x.empty()) {
             ROS_WARN("接收到的目标点数据长度不匹配");
             return tl::nullopt;
         }
+
         geometry_msgs::Point point;
         point.x = goal.x[0];
         point.y = goal.y[0];
@@ -220,15 +232,13 @@ tl::optional<ArmCmdRequest> SimpleArmMoveAction::convert_goal_to_request(const p
             ROS_WARN("接收到的目标姿态数据长度不匹配");
             return tl::nullopt;
         }
+
         req.target = quat_from_rpy(goal.roll[0], goal.pitch[0], goal.yaw[0]);
     }
     else {
         ROS_WARN("接收到无效的目标类型: %d", goal.target_type);
         return tl::nullopt;
     }
-
-    req.values = goal.values;
-    for(size_t i = 0; i < goal.x.size(); ++i) req.waypoints.push_back(pose_from_goal(goal, i));
 
     return req;
 }

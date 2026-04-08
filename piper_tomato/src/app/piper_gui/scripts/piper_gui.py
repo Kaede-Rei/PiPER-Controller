@@ -1,137 +1,226 @@
 #! /usr/bin/env python
 import sys
+from dataclasses import dataclass
+from typing import Any, Optional, Tuple, Union
+
 import cv2
 import numpy as np
-from typing import Union, Any, Optional
 
-# ================= 新增 ROS 相关导入 =================
 import rospy
 import actionlib
-from piper_msgs2.msg import SimpleMoveArmAction, SimpleMoveArmGoal
-
 import tf2_ros
 import tf2_geometry_msgs
 from geometry_msgs.msg import PoseStamped
-
-from pyorbbecsdk import OBFormat, OBSensorType, OBAlignMode, OBPropertyID
-from pyorbbecsdk import Pipeline, Config, VideoFrame
-
-# ================= 导入 PyQt5 =================
-from PyQt5.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QHBoxLayout,
-    QWidget,
+from piper_msgs2.msg import SimpleMoveArmAction, SimpleMoveArmGoal
+from pyorbbecsdk import (
+    OBAlignMode,
+    OBFormat,
+    OBPropertyID,
+    OBSensorType,
+    Config,
+    Pipeline,
+    VideoFrame,
 )
+from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QThread
 from PyQt5.QtGui import (
-    QImage,
-    QPixmap,
-    QPainter,
-    QPen,
+    QBrush,
     QColor,
     QFont,
+    QImage,
+    QPainter,
+    QPen,
+    QPixmap,
     QPolygonF,
-    QBrush,
 )
-from PyQt5.QtCore import Qt, QPoint, QPointF, pyqtSignal, QThread
-
-# ================= 全局变量和辅助函数 =================
-ESC_KEY = 27
-MIN_DEPTH = 100  # 100mm
-MAX_DEPTH = 10000  # 10000mm
-LRM_VALID_MIN = 1  # LRM最小有效距离1mm
-LRM_VALID_MAX = 400  # LRM最大有效距离400mm (核心：0.4m以内强制用LRM)
-
-LINK_FLANGE_NAME = "link6"
-LINK_TCP_NAME = "link_tcp"
+from PyQt5.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 
-def frame_to_bgr_image(frame: VideoFrame) -> Union[Optional[np.array], Any]:
+@dataclass(frozen=True)
+class DepthConfig:
+    min_mm: int = 100
+    max_mm: int = 10000
+    kernel_size: int = 15
+
+
+@dataclass(frozen=True)
+class LRMConfig:
+    valid_min_mm: int = 1
+    valid_max_mm: int = 400
+    enable_property: int = OBPropertyID.OB_PROP_LDP_BOOL
+    measure_property: int = OBPropertyID.OB_PROP_LDP_MEASURE_DISTANCE_INT
+
+
+@dataclass(frozen=True)
+class CameraConfig:
+    color_width: int = 1280
+    color_height: int = 720
+    color_fps: int = 30
+    depth_width: int = 848
+    depth_height: int = 480
+    depth_fps: int = 30
+    align_mode: int = OBAlignMode.SW_MODE
+
+
+@dataclass(frozen=True)
+class RosConfig:
+    node_name: str = "tomato_picking_gui"
+    action_name: str = "/simple_move_arm"
+    flange_frame: str = "link6"
+    tcp_frame: str = "link_tcp"
+    action_wait_sec: float = 5.0
+    result_wait_sec: float = 10.0
+    tf_wait_sec: float = 0.2
+
+
+@dataclass(frozen=True)
+class UiConfig:
+    window_title: str = "番茄"
+    window_x: int = 100
+    window_y: int = 100
+    window_w: int = 1280
+    window_h: int = 720
+    image_min_w: int = 640
+    image_min_h: int = 480
+    info_font_name: str = "Arial"
+    info_font_size: int = 10
+
+
+@dataclass(frozen=True)
+class HandEyeConfig:
+    # ^flange T_cam
+    T_cam_to_flange: Tuple[Tuple[float, float, float, float], ...] = (
+        (0.103597, 0.960173, 0.259493, -0.059774),
+        (-0.994337, 0.1062, 0.004006, 0.011284),
+        (-0.023712, -0.258438, 0.965737, 0.107886),
+        (0.0, 0.0, 0.0, 1.0),
+    )
+
+
+@dataclass(frozen=True)
+class IntrinsicsConfig:
+    fx: float = 612.287415
+    fy: float = 612.246033
+    cx: float = 638.468506
+    cy: float = 359.933319
+
+
+DEPTH_CFG = DepthConfig()
+LRM_CFG = LRMConfig()
+CAMERA_CFG = CameraConfig()
+ROS_CFG = RosConfig()
+UI_CFG = UiConfig()
+HAND_EYE_CFG = HandEyeConfig()
+INTRINSICS_CFG = IntrinsicsConfig()
+
+DEFAULT_DEPTH_INTRINSICS = np.array(
+    [
+        [INTRINSICS_CFG.fx, 0.0, INTRINSICS_CFG.cx],
+        [0.0, INTRINSICS_CFG.fy, INTRINSICS_CFG.cy],
+        [0.0, 0.0, 1.0],
+    ],
+    dtype=np.float64,
+)
+
+T_CAM_TO_FLANGE = np.array(HAND_EYE_CFG.T_cam_to_flange, dtype=np.float64)
+
+
+def frame_to_bgr_image(frame: VideoFrame) -> Union[Optional[np.ndarray], Any]:
     width = frame.get_width()
     height = frame.get_height()
     color_format = frame.get_format()
     data = np.asanyarray(frame.get_data())
-    image = np.zeros((height, width, 3), dtype=np.uint8)
+
     if color_format == OBFormat.RGB:
         image = np.resize(data, (height, width, 3))
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    elif color_format == OBFormat.YUYV:
+        return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    if color_format == OBFormat.YUYV:
         image = np.resize(data, (height, width, 2))
-        image = cv2.cvtColor(image, cv2.COLOR_YUV2BGR_YUYV)
-    elif color_format == OBFormat.MJPG:
-        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-    else:
-        return None
-    return image
+        return cv2.cvtColor(image, cv2.COLOR_YUV2BGR_YUYV)
+    if color_format == OBFormat.MJPG:
+        return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    return None
 
 
-def hand_eye_calibration(x_cam, y_cam, z_cam):
-    T_cam2end = np.array(
-        [
-            [0.103597, 0.960173, 0.259493, -0.059774],
-            [-0.994337, 0.1062, 0.004006, 0.011284],
-            [-0.023712, -0.258438, 0.965737, 0.107886],
-            [0.0, 0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
+def cam_point_to_flange_point(
+    x_cam: float, y_cam: float, z_cam: float
+) -> Tuple[float, float, float]:
     p_cam_homo = np.array([[x_cam], [y_cam], [z_cam], [1.0]], dtype=np.float64)
-    p_end_homo = T_cam2end @ p_cam_homo
-    return p_end_homo[0, 0], p_end_homo[1, 0], p_end_homo[2, 0]
+    p_flange_homo = T_CAM_TO_FLANGE @ p_cam_homo
+    return -p_flange_homo[0, 0], -p_flange_homo[1, 0], p_flange_homo[2, 0]
 
 
-def get_mask_center(mask):
+def get_mask_center(mask: np.ndarray) -> Optional[Tuple[float, float]]:
     M = cv2.moments(mask.astype(np.uint8))
     if M["m00"] == 0:
         return None
     cx = float(M["m10"] / M["m00"])
     cy = float(M["m01"] / M["m00"])
-    return (cx, cy)
+    return cx, cy
 
 
-def find_cutting_point(stem_mask, stem_center, original_image):
+def find_cutting_point(
+    stem_mask: np.ndarray,
+    stem_center: Tuple[float, float],
+    original_image: np.ndarray,
+) -> Tuple[float, float]:
+    del original_image
+
     binary_mask = (stem_mask > 0.5).astype(np.uint8) * 255
     contours, _ = cv2.findContours(
         binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
-    if len(contours) > 0:
-        largest_contour = max(contours, key=cv2.contourArea)
-        epsilon = 0.001 * cv2.arcLength(largest_contour, True)
-        largest_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
-        hull = cv2.convexHull(largest_contour, returnPoints=False)
-        try:
-            defects = cv2.convexityDefects(largest_contour, hull)
-            if defects is not None:
-                cutting_points = []
-                for i in range(defects.shape[0]):
-                    s, e, f, d = defects[i, 0]
-                    far_point = tuple(largest_contour[f][0])
-                    cutting_points.append(far_point)
-                if cutting_points:
-                    return min(
-                        cutting_points,
-                        key=lambda p: np.sqrt(
-                            (p[0] - stem_center[0]) ** 2 + (p[1] - stem_center[1]) ** 2
-                        ),
-                    )
-        except cv2.error:
-            pass
-    return stem_center
+    if len(contours) == 0:
+        return stem_center
+
+    largest_contour = max(contours, key=cv2.contourArea)
+    epsilon = 0.001 * cv2.arcLength(largest_contour, True)
+    largest_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
+    hull = cv2.convexHull(largest_contour, returnPoints=False)
+
+    try:
+        defects = cv2.convexityDefects(largest_contour, hull)
+        if defects is None:
+            return stem_center
+
+        cutting_points = []
+        for i in range(defects.shape[0]):
+            _, _, f, _ = defects[i, 0]
+            far_point = tuple(largest_contour[f][0])
+            cutting_points.append(far_point)
+
+        if not cutting_points:
+            return stem_center
+
+        return min(
+            cutting_points,
+            key=lambda p: np.sqrt(
+                (p[0] - stem_center[0]) ** 2 + (p[1] - stem_center[1]) ** 2
+            ),
+        )
+    except cv2.error:
+        return stem_center
 
 
-def depth_to_pointcloud(u, v, depth, depth_intrinsics):
+def depth_to_pointcloud(
+    u: int,
+    v: int,
+    depth_m: float,
+    depth_intrinsics: np.ndarray,
+) -> Tuple[float, float, float]:
     fx, fy = depth_intrinsics[0, 0], depth_intrinsics[1, 1]
     cx, cy = depth_intrinsics[0, 2], depth_intrinsics[1, 2]
-    z = depth
-    x = (u - cx) * z / fx
-    y = (v - cy) * z / fy
+    x = (u - cx) * depth_m / fx
+    y = (v - cy) * depth_m / fy
+    z = depth_m
     return x, y, z
-
-
-# ================= GUI 组件类 =================
 
 
 class ImageDisplayWidget(QLabel):
@@ -139,15 +228,17 @@ class ImageDisplayWidget(QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(640, 480)
-        self._pixmap = None
-        self._screen_points = []
-        self._cutting_point_screen = None
-        self._is_polygon_closed = False
+        self.setMinimumSize(UI_CFG.image_min_w, UI_CFG.image_min_h)
         self.setStyleSheet("background-color: black;")
         self.setAlignment(Qt.AlignCenter)
 
-    def set_image(self, cv_img):
+        self._pixmap = None
+        self._latest_cv_image = None
+        self._screen_points = []
+        self._cutting_point_screen = None
+        self._is_polygon_closed = False
+
+    def set_image(self, cv_img: np.ndarray) -> None:
         if cv_img is None:
             return
         self._latest_cv_image = cv_img
@@ -178,6 +269,7 @@ class ImageDisplayWidget(QLabel):
             painter.setPen(pen)
             for i in range(len(self._screen_points) - 1):
                 painter.drawLine(self._screen_points[i], self._screen_points[i + 1])
+
             if len(self._screen_points) >= 3 or self._is_polygon_closed:
                 if len(self._screen_points) >= 3:
                     painter.drawLine(self._screen_points[-1], self._screen_points[0])
@@ -185,6 +277,7 @@ class ImageDisplayWidget(QLabel):
                     painter.setBrush(brush)
                     painter.drawPolygon(QPolygonF(self._screen_points))
                     painter.setBrush(Qt.NoBrush)
+
             pen_point = QPen(QColor(255, 0, 0), 12, Qt.SolidLine)
             pen_point.setCapStyle(Qt.RoundCap)
             painter.setPen(pen_point)
@@ -197,7 +290,7 @@ class ImageDisplayWidget(QLabel):
             painter.setPen(pen_cut)
             painter.drawPoint(self._cutting_point_screen)
 
-    def _screen_to_img(self, pt):
+    def _screen_to_img(self, pt: QPoint) -> Tuple[float, float]:
         img_x = np.clip(
             (pt.x() - self._pixmap_offset[0]) / self._scale_x,
             0,
@@ -208,9 +301,9 @@ class ImageDisplayWidget(QLabel):
             0,
             self._pixmap.height() - 1,
         )
-        return (img_x, img_y)
+        return img_x, img_y
 
-    def _img_to_screen(self, x, y):
+    def _img_to_screen(self, x: float, y: float) -> QPoint:
         if not hasattr(self, "_scale_x"):
             return QPoint()
         return QPoint(
@@ -221,20 +314,20 @@ class ImageDisplayWidget(QLabel):
     def mousePressEvent(self, event):
         if self._is_polygon_closed:
             self.clear_selection()
+
         if event.button() == Qt.LeftButton:
             self._screen_points.append(event.pos())
             self._cutting_point_screen = None
             self.update()
             if len(self._screen_points) >= 3:
                 self._update_mask_and_calculate()
-        elif event.button() == Qt.RightButton:
-            if len(self._screen_points) > 0:
-                self._screen_points.pop()
-                self._cutting_point_screen = None
-                self._is_polygon_closed = False
-                self.update()
-                if len(self._screen_points) >= 3:
-                    self._update_mask_and_calculate()
+        elif event.button() == Qt.RightButton and len(self._screen_points) > 0:
+            self._screen_points.pop()
+            self._cutting_point_screen = None
+            self._is_polygon_closed = False
+            self.update()
+            if len(self._screen_points) >= 3:
+                self._update_mask_and_calculate()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton and len(self._screen_points) >= 3:
@@ -242,33 +335,35 @@ class ImageDisplayWidget(QLabel):
             self.update()
             self._update_mask_and_calculate()
 
-    def _update_mask_and_calculate(self):
-        if len(self._screen_points) < 3 or not hasattr(self, "_latest_cv_image"):
+    def _update_mask_and_calculate(self) -> None:
+        if len(self._screen_points) < 3 or self._latest_cv_image is None:
             return
+
         img_pts = [self._screen_to_img(p) for p in self._screen_points]
         img_pts_np = np.array(img_pts, dtype=np.int32)
         h, w = self._latest_cv_image.shape[:2]
         mask = np.zeros((h, w), dtype=np.uint8)
         cv2.fillPoly(mask, [img_pts_np], 255)
+
         stem_center = get_mask_center(mask)
         if stem_center is None:
             return
-        cutting_point = find_cutting_point(mask, stem_center, self._latest_cv_image)
-        if cutting_point is not None:
-            self._cutting_point_screen = self._img_to_screen(
-                cutting_point[0], cutting_point[1]
-            )
-            self.update()
-            self.selection_changed.emit(cutting_point, mask)
 
-    def clear_selection(self):
+        cutting_point = find_cutting_point(mask, stem_center, self._latest_cv_image)
+        if cutting_point is None:
+            return
+
+        self._cutting_point_screen = self._img_to_screen(
+            cutting_point[0], cutting_point[1]
+        )
+        self.update()
+        self.selection_changed.emit(cutting_point, mask)
+
+    def clear_selection(self) -> None:
         self._screen_points = []
         self._cutting_point_screen = None
         self._is_polygon_closed = False
         self.update()
-
-
-# ================= 工作线程 (相机采集) =================
 
 
 class WorkerThread(QThread):
@@ -282,8 +377,60 @@ class WorkerThread(QThread):
         super().__init__()
         self._running = False
         self.pipeline = None
-        self._has_sent_intrinsics = False
         self.device = None
+        self._has_sent_intrinsics = False
+
+    def _select_color_profile(self, profile_list):
+        try:
+            return profile_list.get_video_stream_profile(
+                CAMERA_CFG.color_width,
+                CAMERA_CFG.color_height,
+                OBFormat.RGB,
+                CAMERA_CFG.color_fps,
+            )
+        except Exception:
+            return profile_list.get_default_video_stream_profile()
+
+    def _select_depth_profile(self, profile_list):
+        try:
+            return profile_list.get_video_stream_profile(
+                CAMERA_CFG.depth_width,
+                CAMERA_CFG.depth_height,
+                OBFormat.Y16,
+                CAMERA_CFG.depth_fps,
+            )
+        except Exception:
+            return profile_list.get_default_video_stream_profile()
+
+    def _emit_intrinsics_once(self, depth_frame) -> None:
+        if self._has_sent_intrinsics:
+            return
+        try:
+            stream_profile = depth_frame.get_stream_profile()
+            video_profile = stream_profile.as_video_stream_profile()
+            intrinsics = video_profile.get_intrinsic()
+            K = np.array(
+                [
+                    [intrinsics.fx, 0, intrinsics.cx],
+                    [0, intrinsics.fy, intrinsics.cy],
+                    [0, 0, 1],
+                ],
+                dtype=np.float64,
+            )
+            self.intrinsics_ready.emit(K)
+            self.log_signal.emit("✅ 内参读取成功")
+            self._has_sent_intrinsics = True
+        except Exception:
+            pass
+
+    def _read_lrm_data(self) -> None:
+        if not self.device:
+            return
+        try:
+            lrm_dist_mm = self.device.get_int_property(LRM_CFG.measure_property)
+            self.lrm_data_ready.emit(lrm_dist_mm, lrm_dist_mm / 1000.0)
+        except Exception:
+            pass
 
     def run(self):
         self._running = True
@@ -294,41 +441,21 @@ class WorkerThread(QThread):
             self.device = self.pipeline.get_device()
             config = Config()
 
-            # 1. 配置 Color Stream
-            profile_list = self.pipeline.get_stream_profile_list(
-                OBSensorType.COLOR_SENSOR
+            color_profile = self._select_color_profile(
+                self.pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
             )
-            try:
-                # 彩色流使用1280x720，保持较高清晰度
-                color_profile = profile_list.get_video_stream_profile(
-                    1280, 720, OBFormat.RGB, 30
-                )
-            except:
-                color_profile = profile_list.get_default_video_stream_profile()
+            depth_profile = self._select_depth_profile(
+                self.pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
+            )
+
             config.enable_stream(color_profile)
-
-            # 2. 配置 Depth Stream 为 848x480 (默认128视差，最近工作距离0.34m)
-            profile_list = self.pipeline.get_stream_profile_list(
-                OBSensorType.DEPTH_SENSOR
-            )
-            try:
-                depth_profile = profile_list.get_video_stream_profile(
-                    848, 480, OBFormat.Y16, 30
-                )
-            except:
-                depth_profile = profile_list.get_default_video_stream_profile()
             config.enable_stream(depth_profile)
-
-            # 3. 开启对齐和同步
-            config.set_align_mode(OBAlignMode.SW_MODE)
+            config.set_align_mode(CAMERA_CFG.align_mode)
             self.pipeline.enable_frame_sync()
-
-            # 4. 先启动 Pipeline
             self.pipeline.start(config)
 
-            # 5. 开启 LRM 激光补盲模块 (覆盖 0.001m~0.4m，解决20~30cm盲区)
             try:
-                self.device.set_bool_property(OBPropertyID.OB_PROP_LDP_BOOL, True)
+                self.device.set_bool_property(LRM_CFG.enable_property, True)
                 self.log_signal.emit("✅ LRM 激光补盲模块已开启 (0.001m~0.4m强制使用)")
             except Exception as e:
                 self.log_signal.emit(f"⚠️  LRM 开启失败: {e}")
@@ -336,9 +463,8 @@ class WorkerThread(QThread):
             self.log_signal.emit(
                 f"✅ 相机启动成功 (深度分辨率: {depth_profile.get_width()}x{depth_profile.get_height()}, 视差: 128)"
             )
-            self.log_signal.emit(f"⚠️  注意: 0.4m以内深度将优先使用LRM数据")
+            self.log_signal.emit("⚠️  注意: 0.4m以内深度将优先使用LRM数据")
 
-            # 6. 采集循环
             while self._running:
                 frames = self.pipeline.wait_for_frames(100)
                 if frames is None:
@@ -346,43 +472,24 @@ class WorkerThread(QThread):
 
                 color_frame = frames.get_color_frame()
                 depth_frame = frames.get_depth_frame()
-
                 if color_frame is None or depth_frame is None:
                     continue
 
-                # 获取内参
-                if not self._has_sent_intrinsics:
-                    try:
-                        stream_profile = depth_frame.get_stream_profile()
-                        video_profile = stream_profile.as_video_stream_profile()
-                        intrinsics = video_profile.get_intrinsic()
-                        K = np.array(
-                            [
-                                [intrinsics.fx, 0, intrinsics.cx],
-                                [0, intrinsics.fy, intrinsics.cy],
-                                [0, 0, 1],
-                            ],
-                            dtype=np.float64,
-                        )
-                        self.intrinsics_ready.emit(K)
-                        self.log_signal.emit(f"✅ 内参读取成功")
-                        self._has_sent_intrinsics = True
-                    except Exception as e:
-                        pass
+                self._emit_intrinsics_once(depth_frame)
 
-                # 图像处理
                 color_image = frame_to_bgr_image(color_frame)
                 if color_image is None:
                     continue
 
-                # 深度数据预处理：中值滤波，去除噪声
                 depth_data = np.frombuffer(depth_frame.get_data(), dtype=np.uint16)
                 depth_data = depth_data.reshape(
                     (depth_frame.get_height(), depth_frame.get_width())
                 )
-                depth_data = cv2.medianBlur(depth_data, 5)  # 中值滤波去椒盐
+                depth_data = cv2.medianBlur(depth_data, 5)
                 depth_data = np.where(
-                    (depth_data > MIN_DEPTH) & (depth_data < MAX_DEPTH), depth_data, 0
+                    (depth_data > DEPTH_CFG.min_mm) & (depth_data < DEPTH_CFG.max_mm),
+                    depth_data,
+                    0,
                 )
 
                 self.frame_ready.emit(color_image)
@@ -391,16 +498,7 @@ class WorkerThread(QThread):
                     depth_frame.get_depth_scale(),
                     (color_frame.get_width(), color_frame.get_height()),
                 )
-
-                # 读取 LRM 数据
-                if self.device:
-                    try:
-                        lrm_dist_mm = self.device.get_int_property(
-                            OBPropertyID.OB_PROP_LDP_MEASURE_DISTANCE_INT
-                        )
-                        self.lrm_data_ready.emit(lrm_dist_mm, lrm_dist_mm / 1000.0)
-                    except:
-                        pass
+                self._read_lrm_data()
 
         except Exception as e:
             self.log_signal.emit(f"❌ 工作线程错误: {e}")
@@ -408,64 +506,64 @@ class WorkerThread(QThread):
             if self.pipeline:
                 self.pipeline.stop()
 
-    def stop(self):
+    def stop(self) -> None:
         self._running = False
         self.wait()
-
-
-# ================= 主窗口 GUI (整合ROS) =================
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("番茄")
-        self.setGeometry(100, 100, 1280, 720)
+        self.setWindowTitle(UI_CFG.window_title)
+        self.setGeometry(
+            UI_CFG.window_x,
+            UI_CFG.window_y,
+            UI_CFG.window_w,
+            UI_CFG.window_h,
+        )
 
         self.current_depth_data = None
         self.current_depth_scale = None
         self.current_color_size = None
         self.current_lrm_mm = 0
         self.current_lrm_m = 0.0
-        self.target_arm_coord = None  # 存储机械臂目标坐标
-        self.current_cutting_pixel = None  # 存储当前切割点像素
+        self.current_cutting_pixel = None
 
-        # ================= ROS 相关初始化 =================
+        self.target_tcp_coord = None
+        self.last_cam_coord = None
+        self.last_flange_coord = None
+
         self.ros_available = False
-        self.simple_move_client = None  # ROS Action 客户端
+        self.simple_move_client = None
+        self.depth_intrinsics = DEFAULT_DEPTH_INTRINSICS.copy()
+
+        # 先初始化 ROS
         self.init_ros()
 
-        self.depth_intrinsics = np.array(
-            [[612.287415, 0, 638.468506], [0, 612.246033, 359.933319], [0, 0, 1]],
-            dtype=np.float32,
-        )
-
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        # 再创建 TF
+        self.tf_buffer = None
+        self.tf_listener = None
+        if self.ros_available:
+            self.tf_buffer = tf2_ros.Buffer()
+            self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
         self.init_ui()
         self.init_thread()
 
-    def init_ros(self):
-        """初始化ROS节点和 Action 客户端"""
+    def init_ros(self) -> None:
         try:
-            # 检查ROS Master是否运行
             if not rospy.is_shutdown():
-                # 初始化ROS节点，disable_signals=True防止Qt和ROS信号冲突
-                rospy.init_node(
-                    "tomato_picking_gui", anonymous=True, disable_signals=True
-                )
-
-                # 等待 simple_move_arm action 可用（超时5秒）
+                rospy.init_node(ROS_CFG.node_name, anonymous=True, disable_signals=True)
                 self.simple_move_client = actionlib.SimpleActionClient(
-                    "/simple_move_arm", SimpleMoveArmAction
+                    ROS_CFG.action_name, SimpleMoveArmAction
                 )
-                if not self.simple_move_client.wait_for_server(rospy.Duration(5.0)):
-                    raise rospy.ROSException("/simple_move_arm action 不可用")
+                if not self.simple_move_client.wait_for_server(
+                    rospy.Duration(ROS_CFG.action_wait_sec)
+                ):
+                    raise rospy.ROSException(f"{ROS_CFG.action_name} action 不可用")
 
                 self.ros_available = True
-                print("[ROS] 初始化成功，已连接到 /simple_move_arm action")
-
+                print(f"[ROS] 初始化成功，已连接到 {ROS_CFG.action_name}")
         except rospy.ROSException as e:
             print(f"[ROS] 初始化失败: {e}")
             self.ros_available = False
@@ -473,9 +571,17 @@ class MainWindow(QMainWindow):
             print(f"[ROS] 未知错误: {e}")
             self.ros_available = False
 
-    def flange_point_to_tcp_point(self, x_flange, y_flange, z_flange):
+    def flange_point_to_tcp_point(
+        self,
+        x_flange: float,
+        y_flange: float,
+        z_flange: float,
+    ) -> Tuple[float, float, float]:
+        if not self.ros_available or self.tf_buffer is None:
+            raise RuntimeError("ROS/TF 未初始化，无法执行 flange -> tcp 变换")
+
         pt_flange = PoseStamped()
-        pt_flange.header.frame_id = LINK_FLANGE_NAME
+        pt_flange.header.frame_id = ROS_CFG.flange_frame
         pt_flange.header.stamp = rospy.Time(0)
         pt_flange.pose.position.x = x_flange
         pt_flange.pose.position.y = y_flange
@@ -485,10 +591,12 @@ class MainWindow(QMainWindow):
         pt_flange.pose.orientation.z = 0.0
         pt_flange.pose.orientation.w = 1.0
 
-        pt_tcp = self.tf_buffer.transform(pt_flange, LINK_TCP_NAME, rospy.Duration(0.2))
+        pt_tcp = self.tf_buffer.transform(
+            pt_flange, ROS_CFG.tcp_frame, rospy.Duration(ROS_CFG.tf_wait_sec)
+        )
         return pt_tcp.pose.position.x, pt_tcp.pose.position.y, pt_tcp.pose.position.z
 
-    def send_arm_command(self, x, y, z):
+    def send_arm_command(self, x: float, y: float, z: float) -> bool:
         if not self.ros_available:
             print("[ROS] 未连接到ROS，跳过发送指令")
             return False
@@ -496,22 +604,22 @@ class MainWindow(QMainWindow):
         try:
             goal = SimpleMoveArmGoal()
             goal.command_type = SimpleMoveArmGoal.MOVE_TARGET_IN_EEF_FRAME
-            goal.target_type = SimpleMoveArmGoal.TARGET_POSE
-
+            goal.target_type = SimpleMoveArmGoal.TARGET_POINT
             goal.x = [x]
             goal.y = [y]
             goal.z = [z]
-            goal.roll = [0.0]
-            goal.pitch = [0.0]
-            goal.yaw = [0.0]
-
+            goal.roll = []
+            goal.pitch = []
+            goal.yaw = []
             goal.joint_names = []
             goal.joints = []
             goal.values = []
 
-            print(f"[ROS] 发送机械臂指令: x={x:.4f}, y={y:.4f}, z={z:.4f}")
+            print(f"[ROS] 发送机械臂指令(TCP): x={x:.4f}, y={y:.4f}, z={z:.4f}")
             self.simple_move_client.send_goal(goal)
-            finished = self.simple_move_client.wait_for_result(rospy.Duration(10.0))
+            finished = self.simple_move_client.wait_for_result(
+                rospy.Duration(ROS_CFG.result_wait_sec)
+            )
             if not finished:
                 self.simple_move_client.cancel_goal()
                 print("[ROS] action 超时，已取消")
@@ -519,18 +627,15 @@ class MainWindow(QMainWindow):
 
             result = self.simple_move_client.get_result()
             print(f"[ROS] action 返回: {result!r}")
-
             if result is not None and hasattr(result, "success"):
                 print(f"[ROS] 业务成功标志: {result.success}")
                 return bool(result.success)
-
             return False
-
         except Exception as e:
             print(f"[ROS] action 调用失败: {e}")
             return False
 
-    def init_ui(self):
+    def init_ui(self) -> None:
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
@@ -546,7 +651,7 @@ class MainWindow(QMainWindow):
             "系统初始化中...\n\n操作说明：\n1. 左键：添加轮廓点\n2. 右键：撤销上一个点\n3. 双击：闭合多边形"
         )
         self.info_label.setWordWrap(True)
-        self.info_label.setFont(QFont("Arial", 10))
+        self.info_label.setFont(QFont(UI_CFG.info_font_name, UI_CFG.info_font_size))
         panel_layout.addWidget(self.info_label)
 
         self.btn_reset = QPushButton("重置选择")
@@ -557,25 +662,18 @@ class MainWindow(QMainWindow):
         )
         panel_layout.addWidget(self.btn_reset)
 
-        # ================= 新增：发送机械臂指令按钮 =================
         self.btn_send_cmd = QPushButton("发送机械臂指令")
         self.btn_send_cmd.clicked.connect(self.manual_send_command)
         self.btn_send_cmd.setMinimumHeight(40)
         self.btn_send_cmd.setStyleSheet(
             "background-color: #27ae60; color: white; font-size:14px; font-weight:bold;"
         )
-        self.btn_send_cmd.setEnabled(False)  # 默认禁用（有坐标后启用）
+        self.btn_send_cmd.setEnabled(False)
         panel_layout.addWidget(self.btn_send_cmd)
 
         panel_layout.addStretch()
 
-    def manual_send_command(self):
-        """手动触发发送机械臂指令"""
-        if self.target_arm_coord:
-            x, y, z = self.target_arm_coord
-            self.send_arm_command(x, y, z)
-
-    def init_thread(self):
+    def init_thread(self) -> None:
         self.worker = WorkerThread()
         self.worker.frame_ready.connect(self.video_label.set_image)
         self.worker.data_ready.connect(self.receive_data)
@@ -584,19 +682,26 @@ class MainWindow(QMainWindow):
         self.worker.lrm_data_ready.connect(self.on_lrm_data_received)
         self.worker.start()
 
-    def on_intrinsics_received(self, K):
+    def on_intrinsics_received(self, K: np.ndarray) -> None:
         self.depth_intrinsics = K
 
-    def receive_data(self, depth_data, scale, color_size):
+    def receive_data(self, depth_data, scale, color_size) -> None:
         self.current_depth_data = depth_data
         self.current_depth_scale = scale
         self.current_color_size = color_size
 
-    def on_lrm_data_received(self, dist_mm, dist_m):
+    def on_lrm_data_received(self, dist_mm: int, dist_m: float) -> None:
         self.current_lrm_mm = dist_mm
         self.current_lrm_m = dist_m
 
-    def get_valid_depth_around(self, depth_img, u, v, stem_mask, kernel_size=15):
+    def get_valid_depth_around(
+        self,
+        depth_img: np.ndarray,
+        u: int,
+        v: int,
+        stem_mask: np.ndarray,
+        kernel_size: int = DEPTH_CFG.kernel_size,
+    ) -> float:
         h, w = depth_img.shape
         if stem_mask.shape[:2] != (h, w):
             stem_mask = cv2.resize(stem_mask, (w, h), interpolation=cv2.INTER_NEAREST)
@@ -610,16 +715,72 @@ class MainWindow(QMainWindow):
 
         valid_mask = (mask_roi > 0) & (depth_roi > 0)
         valid_depths = depth_roi[valid_mask]
-
         if len(valid_depths) > 0:
-            return np.median(valid_depths)
+            return float(np.median(valid_depths))
 
         full_mask_valid = (stem_mask > 0) & (depth_img > 0)
         full_valid_depths = depth_img[full_mask_valid]
-        return np.median(full_valid_depths) if len(full_valid_depths) > 0 else 0
+        return (
+            float(np.median(full_valid_depths)) if len(full_valid_depths) > 0 else 0.0
+        )
 
-    def on_roi_selected(self, cutting_pixel, mask):
-        if self.current_depth_data is None or mask is None:
+    def _get_depth_value_mm(self, depth_raw: float) -> Tuple[float, bool]:
+        use_lrm = False
+        if LRM_CFG.valid_min_mm <= self.current_lrm_mm <= LRM_CFG.valid_max_mm:
+            depth_raw = float(self.current_lrm_mm)
+            use_lrm = True
+        return depth_raw, use_lrm
+
+    def _update_info_label(
+        self,
+        u: float,
+        v: float,
+        depth_m: float,
+        use_lrm: bool,
+        cam_xyz: Tuple[float, float, float],
+        flange_xyz: Tuple[float, float, float],
+        tcp_xyz: Tuple[float, float, float],
+    ) -> None:
+        ros_status = "✅ ROS已连接" if self.ros_available else "❌ ROS未连接"
+        lrm_note = " <font color='red'>(LRM激光补盲)</font>" if use_lrm else ""
+        x_cam, y_cam, z_cam = cam_xyz
+        x_flange, y_flange, z_flange = flange_xyz
+        x_tcp, y_tcp, z_tcp = tcp_xyz
+
+        self.info_label.setText(f"""
+            <h3>✅ 目标锁定{lrm_note}</h3>
+            <p><b>ROS状态:</b> {ros_status}</p>
+            <p><b>切割像素:</b> ({u}, {v})</p>
+            <p><b>深度:</b> {depth_m:.3f} m</p>
+            <hr>
+            <p><b>Camera坐标:</b></p>
+            <p><b>X:</b> {x_cam:.4f}</p>
+            <p><b>Y:</b> {y_cam:.4f}</p>
+            <p><b>Z:</b> {z_cam:.4f}</p>
+            <hr>
+            <p><b>Flange坐标:</b></p>
+            <p><b>X:</b> {x_flange:.4f}</p>
+            <p><b>Y:</b> {y_flange:.4f}</p>
+            <p><b>Z:</b> {z_flange:.4f}</p>
+            <hr>
+            <p><b style='color: #9b59b6;'>TCP坐标:</b></p>
+            <p><b>X:</b> {x_tcp:.4f}</p>
+            <p><b>Y:</b> {y_tcp:.4f}</p>
+            <p><b>Z:</b> {z_tcp:.4f}</p>
+            """)
+
+    def manual_send_command(self) -> None:
+        if self.target_tcp_coord is None:
+            return
+        x, y, z = self.target_tcp_coord
+        self.send_arm_command(x, y, z)
+
+    def on_roi_selected(self, cutting_pixel, mask) -> None:
+        if (
+            self.current_depth_data is None
+            or self.current_color_size is None
+            or mask is None
+        ):
             self.btn_send_cmd.setEnabled(False)
             return
 
@@ -628,72 +789,51 @@ class MainWindow(QMainWindow):
         color_w, color_h = self.current_color_size
         depth_h, depth_w = self.current_depth_data.shape
 
-        # 坐标映射
         du = int(np.clip(u * depth_w / color_w, 0, depth_w - 1))
         dv = int(np.clip(v * depth_h / color_h, 0, depth_h - 1))
+
         depth_mask = cv2.resize(
             mask, (depth_w, depth_h), interpolation=cv2.INTER_NEAREST
         )
         depth_raw = self.get_valid_depth_around(
             self.current_depth_data, du, dv, depth_mask
         )
+        depth_raw, use_lrm = self._get_depth_value_mm(depth_raw)
 
-        # 0.4m以内强制使用LRM
-        use_lrm = False
-        if LRM_VALID_MIN <= self.current_lrm_mm <= LRM_VALID_MAX:
-            depth_raw = self.current_lrm_mm
-            use_lrm = True
-        elif depth_raw == 0:
-            self.info_label.setText(f"⚠️ 深度无效，请调整位置")
-            self.target_arm_coord = None
+        if depth_raw == 0:
+            self.info_label.setText("⚠️ 深度无效，请调整位置")
+            self.target_tcp_coord = None
             self.btn_send_cmd.setEnabled(False)
             return
 
-        depth_m = depth_raw / 1000
-        x_cam, y_cam, z_cam = depth_to_pointcloud(
-            du, dv, depth_m, self.depth_intrinsics
-        )
-        # 进行手眼标定转换，得到法兰坐标
-        x_flange, y_flange, z_flange = hand_eye_calibration(x_cam, y_cam, z_cam)
+        depth_m = depth_raw / 1000.0
+        cam_xyz = depth_to_pointcloud(du, dv, depth_m, self.depth_intrinsics)
+        flange_xyz = cam_point_to_flange_point(*cam_xyz)
 
-        # 将法兰坐标转换为TCP坐标
-        x_arm, y_arm, z_arm = self.flange_point_to_tcp_point(
-            x_flange, y_flange, z_flange
-        )
+        try:
+            tcp_xyz = self.flange_point_to_tcp_point(*flange_xyz)
+        except Exception as e:
+            self.info_label.setText(f"⚠️ TF 变换失败: {e}")
+            self.target_tcp_coord = None
+            self.btn_send_cmd.setEnabled(False)
+            return
 
-        # 存储目标坐标并启用发送按钮
-        self.target_arm_coord = (x_arm, y_arm, z_arm)
+        self.last_cam_coord = cam_xyz
+        self.last_flange_coord = flange_xyz
+        self.target_tcp_coord = tcp_xyz
         self.btn_send_cmd.setEnabled(True)
 
-        # ROS状态显示
-        ros_status = "✅ ROS已连接" if self.ros_available else "❌ ROS未连接"
-        lrm_note = " <font color='red'>(LRM激光补盲)</font>" if use_lrm else ""
-
-        self.info_label.setText(f"""
-        <h3>✅ 目标锁定{lrm_note}</h3>
-        <p><b>ROS状态:</b> {ros_status}</p>
-        <p><b>切割像素:</b> ({u}, {v})</p>
-        <p><b>深度:</b> {depth_m:.3f} m</p>
-        <hr>
-        <p><b style="color: #9b59b6;">机械臂坐标:</b></p>
-        <p><b>X:</b> {x_arm:.4f}</p>
-        <p><b>Y:</b> {y_arm:.4f}</p>
-        <p><b>Z:</b> {z_arm:.4f}</p>
-        """)
-
-        # 可选：自动发送指令（注释掉则仅手动发送）
-        # self.send_arm_command(x_arm, y_arm, z_arm)
+        self._update_info_label(u, v, depth_m, use_lrm, cam_xyz, flange_xyz, tcp_xyz)
 
     def closeEvent(self, event):
         if hasattr(self, "worker"):
             self.worker.stop()
-        # 关闭ROS节点
         if self.ros_available:
             rospy.signal_shutdown("GUI Closed")
         event.accept()
 
 
-def main():
+def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
