@@ -45,6 +45,9 @@ MAX_DEPTH = 10000  # 10000mm
 LRM_VALID_MIN = 1  # LRM最小有效距离1mm
 LRM_VALID_MAX = 400  # LRM最大有效距离400mm (核心：0.4m以内强制用LRM)
 
+LINK_FLANGE_NAME = "link6"
+LINK_TCP_NAME = "link_tcp"
+
 
 def frame_to_bgr_image(frame: VideoFrame) -> Union[Optional[np.array], Any]:
     width = frame.get_width()
@@ -472,7 +475,7 @@ class MainWindow(QMainWindow):
 
     def flange_point_to_tcp_point(self, x_flange, y_flange, z_flange):
         pt_flange = PoseStamped()
-        pt_flange.header.frame_id = "link6"
+        pt_flange.header.frame_id = LINK_FLANGE_NAME
         pt_flange.header.stamp = rospy.Time(0)
         pt_flange.pose.position.x = x_flange
         pt_flange.pose.position.y = y_flange
@@ -482,7 +485,7 @@ class MainWindow(QMainWindow):
         pt_flange.pose.orientation.z = 0.0
         pt_flange.pose.orientation.w = 1.0
 
-        pt_tcp = self.tf_buffer.transform(pt_flange, "link_tcp", rospy.Duration(0.2))
+        pt_tcp = self.tf_buffer.transform(pt_flange, LINK_TCP_NAME, rospy.Duration(0.2))
         return pt_tcp.pose.position.x, pt_tcp.pose.position.y, pt_tcp.pose.position.z
 
     def send_arm_command(self, x, y, z):
