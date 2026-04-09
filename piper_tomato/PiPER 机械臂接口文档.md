@@ -1,7 +1,7 @@
 
 # PiPER 机械臂接口文档
 
-`piper_tomato/src/piper_interface` 当前对外控制接口说明（Action / Service）。
+`piper_tomato/src/app/piper_interface` 当前对外控制接口说明（Action / Service）。
 
 ---
 
@@ -16,7 +16,7 @@ source piper_tomato/devel/setup.bash
 roslaunch piper_interface piper_start.launch
 ```
 
-接口节点由 `piper_start` 启动，参数均从私有命名空间 `~start/...` 读取，对应文件为 [piper_tomato/src/piper_interface/config/config.yaml](piper_tomato/src/piper_interface/config/config.yaml)。
+接口节点由 `piper_start` 启动，参数均从私有命名空间 `~start/...` 读取，对应文件为 [piper_tomato/src/app/piper_interface/config/config.yaml](piper_tomato/src/app/piper_interface/config/config.yaml)。
 
 默认接口名如下：
 
@@ -24,6 +24,7 @@ roslaunch piper_interface piper_start.launch
 - `simple_move_arm`
 - `arm_config`
 - `arm_query`
+- `pick_action`
 - `eef_cmd`
 
 当前实现约定：
@@ -70,6 +71,10 @@ start:
     enabled: true
     name: "arm_query"
 
+  pick_action:
+    enabled: true
+    name: "pick_action"
+
   eef_cmd_service:
     enabled: true
     name: "eef_cmd"
@@ -89,12 +94,24 @@ start:
 
 - `/move_arm`：`piper_msgs2/MoveArmAction`
 - `/simple_move_arm`：`piper_msgs2/SimpleMoveArmAction`
+- `/pick_action`：`piper_msgs2/PickTaskAction`（由 `piper_task` 模块提供）
 
 ### 3.2 Service
 
 - `/arm_config`：`piper_msgs2/ConfigArm`
 - `/arm_query`：`piper_msgs2/QueryArm`
 - `/eef_cmd`：`piper_msgs2/CommandEef`
+
+### 3.3 GUI（任务层）
+
+- 可执行脚本：`piper_gui.py`（包：`piper_gui`）
+- 默认动作接口：`/pick_action`（`piper_msgs2/PickTaskAction`）
+- GUI 发送的核心请求类型：
+  - `UPDATE_TASK_GROUP_CONFIG`
+  - `UPSERT_TASK`
+  - `EXECUTE_TASK_GROUP`
+
+说明：GUI 不直接调用 `/move_arm` / `/simple_move_arm`，而是通过任务层 Action 统一管理“写入任务 / 执行任务组 / 取消执行”。
 
 ---
 
@@ -415,6 +432,26 @@ client.send_goal(goal)
 client.wait_for_result()
 print(client.get_result())
 ```
+
+### 7.8 `piper_gui`：图形化下发采摘任务
+
+```bash
+source piper_tomato/devel/setup.bash
+rosrun piper_gui piper_gui.py
+```
+
+推荐启动顺序：
+
+1. 启动 `roslaunch piper_interface piper_start.launch`（确保 `/pick_action` 可用）。
+2. 启动 GUI。
+3. 在图像上左键绘制 ROI，双击闭合区域。
+4. 点击“写入 / 更新当前任务”或“执行当前任务组”。
+
+当前 GUI 关键行为：
+
+- 将 ROI 计算得到的目标点写为 `Point(link_tcp)`。
+- 任务组默认名为 `gui_pick`，可在界面修改。
+- 支持“仅更新任务组配置”“执行当前任务组”“取消当前执行”。
 
 ---
 

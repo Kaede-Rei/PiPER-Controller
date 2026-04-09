@@ -577,17 +577,28 @@ ErrorCode TasksManager::sort_tasks(TaskGroup& task_group) {
     }
 
     std::vector<unsigned int> sortable_ids;
+    std::vector<unsigned int> no_target_ids;
+
     for(auto& [id, task] : task_group.tasks) {
         if(task.target) sortable_ids.push_back(id);
+        else no_target_ids.push_back(id);
     }
 
     if(sortable_ids.empty()) {
-        ROS_WARN("任务组中没有设置目标的任务，无法按距离排序，默认按 ID 排序");
+        ROS_WARN("任务组中没有可排序的任务，已按 ID 顺序执行");
         for(auto& [id, task] : task_group.tasks) {
             task_group.sorted_tasks.push_back(task);
             task_group.sorted_tasks.back().id = id;
         }
         return ErrorCode::SUCCESS;
+    }
+
+    if(!no_target_ids.empty()) {
+        ROS_WARN("任务组中存在 %zu 个没有目标的任务，已自动排在末尾", no_target_ids.size());
+        for(const unsigned int id : no_target_ids) {
+            task_group.sorted_tasks.push_back(task_group.tasks.at(id));
+            task_group.sorted_tasks.back().id = id;
+        }
     }
 
     std::set<unsigned int> visited_ids;
@@ -658,16 +669,23 @@ double TasksManager::calculate_dist(const TargetVariant& base, const TargetVaria
     const geometry_msgs::Pose base_pose = target_to_effective_pose_in_base(base, ref_pose);
     const geometry_msgs::Pose target_pose = target_to_effective_pose_in_base(target, base_pose);
 
+    auto quat_angle_distance = [](const geometry_msgs::Quaternion& a, const geometry_msgs::Quaternion& b) -> double {
+        const double dot =
+            a.x * b.x +
+            a.y * b.y +
+            a.z * b.z +
+            a.w * b.w;
+
+        const double dot_abs = std::min(1.0, std::max(0.0, std::fabs(dot)));
+        return 2.0 * std::acos(dot_abs);
+        };
+
     const double pos_dist = std::sqrt(
         std::pow(base_pose.position.x - target_pose.position.x, 2) +
         std::pow(base_pose.position.y - target_pose.position.y, 2) +
         std::pow(base_pose.position.z - target_pose.position.z, 2));
 
-    const double orient_dist = std::sqrt(
-        std::pow(base_pose.orientation.x - target_pose.orientation.x, 2) +
-        std::pow(base_pose.orientation.y - target_pose.orientation.y, 2) +
-        std::pow(base_pose.orientation.z - target_pose.orientation.z, 2) +
-        std::pow(base_pose.orientation.w - target_pose.orientation.w, 2));
+    const double orient_dist = quat_angle_distance(base_pose.orientation, target_pose.orientation);
 
     return (1.0 - weight_orient) * pos_dist + weight_orient * orient_dist;
 }
@@ -899,7 +917,7 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     auto run_with_retry = [&](const std::function<ErrorCode()>& fn, PickStage stage) -> ErrorCode {
         ErrorCode last = ErrorCode::FAILURE;
         const uint16_t total_attempts = static_cast<uint16_t>(pp.retry_times) + 1;
-        for(uint8_t attempt = 1; attempt <= total_attempts; ++attempt) {
+        for(uint16_t attempt = 1; attempt <= total_attempts; ++attempt) {
             last = fn();
             if(last == ErrorCode::SUCCESS) return ErrorCode::SUCCESS;
             if(last == ErrorCode::CANCELLED) return last;

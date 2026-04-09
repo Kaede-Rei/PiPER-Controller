@@ -34,10 +34,12 @@
 - 操作系统：Ubuntu 20.04 LTS / Ubuntu 22.04 LTS
 - ROS 版本：ROS Noetic
 - 规划执行：MoveIt
-- 控制核心：`piper_tomato/src/piper_controller`
-- 指令分发：`piper_tomato/src/piper_commander`
-- ROS 接口：`piper_tomato/src/piper_interface`
-- 消息定义：`piper_tomato/src/piper_msgs2`
+- 控制核心：`piper_tomato/src/domain/piper_controller`
+- 指令分发：`piper_tomato/src/service/piper_commander`
+- ROS 接口：`piper_tomato/src/app/piper_interface`
+- 任务接口：`piper_tomato/src/app/piper_task`
+- GUI 工具：`piper_tomato/src/app/piper_gui`
+- 消息定义：`piper_tomato/src/device/piper_msgs2`
 
 ---
 
@@ -146,6 +148,20 @@ roslaunch piper_interface piper_start.launch
 
 若只想启动接口层（不拉起额外演示内容），可在 launch 参数中关闭相关开关。
 
+### 5. 启动 GUI（可选）
+
+`piper_gui` 已接入任务层 `PickTaskAction`，可用于图形化 ROI 选点并下发采摘任务：
+
+```bash
+source piper_tomato/devel/setup.bash
+rosrun piper_gui piper_gui.py
+```
+
+说明：
+
+- GUI 默认连接 `/pick_action`。
+- GUI 启动前请确保 `piper_start.launch` 已正常运行。
+
 ---
 
 ## 🔌 ROS 接口
@@ -154,11 +170,15 @@ roslaunch piper_interface piper_start.launch
 
 - `/move_arm`（`piper_msgs2/MoveArmAction`）
 - `/simple_move_arm`（`piper_msgs2/SimpleMoveArmAction`）
+- `/pick_action`（`piper_msgs2/PickTaskAction`）
+
+补充：`piper_gui` 通过 `/pick_action` 进行任务组更新、任务写入与执行，不直接调用 `/move_arm` / `/simple_move_arm`。
 
 ### Service
 
 - `/arm_config`（`piper_msgs2/ConfigArm`）
 - `/arm_query`（`piper_msgs2/QueryArm`）
+- `/eef_cmd`（`piper_msgs2/CommandEef`）
 
 命令编号与字段说明见：
 
@@ -185,21 +205,21 @@ roslaunch piper_interface piper_start.launch
 ### 查询当前关节
 
 ```bash
-rosservice call /arm_query "command_type: 13
+rosservice call /arm_query "command_type: 12
 values: []"
 ```
 
 ### 查询当前位姿
 
 ```bash
-rosservice call /arm_query "command_type: 14
+rosservice call /arm_query "command_type: 13
 values: []"
 ```
 
 ### 设置姿态约束
 
 ```bash
-rosservice call /arm_config "command_type: 10
+rosservice call /arm_config "command_type: 9
 point: {x: 0.0, y: 0.0, z: 0.0}
 quaternion: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
 joint_names: []
@@ -217,7 +237,7 @@ python piper_test.py
 
 ## ⚙️ EEF 配置与 TCP 定义
 
-配置文件：`piper_tomato/src/piper_interface/config/config.yaml`
+配置文件：`piper_tomato/src/app/piper_interface/config/config.yaml`
 
 ```yaml
 start:
@@ -250,10 +270,16 @@ piper-ws/
 ├── piper_ros/                 # 官方 ROS 相关包工作区
 ├── piper_tomato/              # 控制主工作区
 │   ├── src/
-│   │   ├── piper_interface/   # Action/Service 接口层
-│   │   ├── piper_commander/   # 命令分发层
-│   │   ├── piper_controller/  # 运动控制层
-│   │   └── piper_msgs2/       # 消息与服务定义
+│   │   ├── app/
+│   │   │   ├── piper_gui/       # 图形化任务下发工具（ROI + PickTaskAction）
+│   │   │   ├── piper_interface/ # Action/Service 接口层
+│   │   │   └── piper_task/      # 任务 Action（含 pick_action）
+│   │   ├── service/
+│   │   │   └── piper_commander/ # 命令分发层
+│   │   ├── domain/
+│   │   │   └── piper_controller/ # 运动控制层
+│   │   └── device/
+│   │       └── piper_msgs2/      # 消息与服务定义
 │   └── PiPER 机械臂接口文档.md
 ├── piper_sdk/                 # Python SDK
 └── ros_env/                   # 环境与工具脚本
@@ -318,7 +344,7 @@ rostopic list | grep move_arm
 项目内文档：
 
 - `piper_tomato/PiPER 机械臂接口文档.md`
-- `piper_tomato/src/piper_interface/config/config.yaml`
+- `piper_tomato/src/app/piper_interface/config/config.yaml`
 - `piper_sdk/README.MD`
 
 ---

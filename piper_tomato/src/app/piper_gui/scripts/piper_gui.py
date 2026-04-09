@@ -956,6 +956,7 @@ class MainWindow(QMainWindow):
         goal.use_eef = self.chk_use_eef.isChecked()
         goal.go_safe_after_cancel = self.chk_go_safe_after_cancel.isChecked()
         goal.retry_times = max(0, self._parse_int(self.retry_times_edit, 0))
+        goal.retry_times = min(goal.retry_times, 255)
 
         if goal.task_type == PickTaskGoal.TASK_PICK and goal.use_place_pose:
             place_target_type = int(self.place_target_type_box.currentData())
