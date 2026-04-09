@@ -236,47 +236,7 @@ ErrorCode ArmController::set_target(const TargetVariant& target) {
  * @return 错误码
  */
 ErrorCode ArmController::set_target_in_eef_frame(const TargetVariant& target) {
-    if(_is_planning_or_executing_) {
-        ROS_WARN("当前已有异步任务正在执行，无法设置新目标");
-        return ErrorCode::ASYNC_TASK_RUNNING;
-    }
-
-    auto code_opt = std::visit(variant_visitor{
-        [this](const std::monostate&) -> tl::optional<ErrorCode> {
-            ROS_WARN("目标未设置");
-            return tl::nullopt;
-        },
-        [this](const geometry_msgs::Pose& pose) -> tl::optional<ErrorCode> {
-            geometry_msgs::Pose transformed_pose;
-            const ErrorCode tf_code = end_to_base_tf(pose, transformed_pose);
-            if(tf_code != ErrorCode::SUCCESS) return tf_code;
-            return this->set_target(transformed_pose);
-        },
-        [this](const geometry_msgs::Point& point) -> tl::optional<ErrorCode> {
-            geometry_msgs::Point transformed_point;
-            const ErrorCode tf_code = end_to_base_tf(point, transformed_point);
-            if(tf_code != ErrorCode::SUCCESS) return tf_code;
-            return this->set_target(transformed_point);
-        },
-        [this](const geometry_msgs::Quaternion& quat) -> tl::optional<ErrorCode> {
-            geometry_msgs::Quaternion transformed_quat;
-            const ErrorCode tf_code = end_to_base_tf(quat, transformed_quat);
-            if(tf_code != ErrorCode::SUCCESS) return tf_code;
-            return this->set_target(transformed_quat);
-        },
-        [this](const geometry_msgs::PoseStamped& pose_stamped) -> tl::optional<ErrorCode> {
-            geometry_msgs::PoseStamped transformed_pose_stamped;
-            const ErrorCode tf_code = end_to_base_tf(pose_stamped, transformed_pose_stamped);
-            if(tf_code != ErrorCode::SUCCESS) return tf_code;
-            return this->set_target(transformed_pose_stamped.pose);
-        }
-        }, target);
-
-    if(!code_opt) {
-        return ErrorCode::INVALID_TARGET_TYPE;
-    }
-
-    return *code_opt;
+    return set_target_in_frame(target, _eef_link_);
 }
 
 /**
@@ -896,41 +856,172 @@ geometry_msgs::Pose ArmController::rpy_to_pose(double roll, double pitch, double
 }
 
 /**
- * @brief 将目标位姿从末端坐标系转换到底座坐标系
- * @param target 目标位姿（Pose/PoseStamped/Point/Quaternion）
- * @param out_base_pose 转换后的位姿输出
- * @param default_source_frame 当目标不包含坐标系信息时使用的默认源坐标系
+ * @brief 将 PoseStamped 从任意源坐标系转换到底座坐标系
+ * @param pose_in 输入位姿
+ * @param pose_out 输出位姿（底座坐标系）
  * @return 错误码
  */
-ErrorCode ArmController::resolve_target_to_base(const TargetVariant& target, geometry_msgs::PoseStamped& out_base_pose, const std::string& default_source_frame) {
-
-    auto pose_opt = normalize_target_to_pose_stamped(target, default_source_frame);
-    if(!pose_opt) {
-        ROS_WARN("目标无法归一化为 PoseStamped");
+ErrorCode ArmController::transform_pose_to_base(const geometry_msgs::PoseStamped& pose_in, geometry_msgs::PoseStamped& pose_out) {
+    geometry_msgs::PoseStamped normalized = pose_in;
+    if(normalized.header.frame_id.empty()) {
+        ROS_WARN("输入位姿未指定坐标系，无法进行坐标变换");
         return ErrorCode::INVALID_TARGET_TYPE;
     }
+    if(normalized.header.stamp == ros::Time()) {
+        normalized.header.stamp = ros::Time(0);
+    }
 
-    const auto& src = *pose_opt;
+    if(normalized.header.frame_id == _base_link_) {
+        pose_out = normalized;
+        pose_out.header.frame_id = _base_link_;
+        return ErrorCode::SUCCESS;
+    }
 
     try {
-        if(src.header.frame_id == _base_link_) {
-            out_base_pose = src;
-            return ErrorCode::SUCCESS;
-        }
-
-        out_base_pose = _tf_buffer_.transform(src, _base_link_, ros::Duration(0.2));
-        out_base_pose.header.frame_id = _base_link_;
+        pose_out = _tf_buffer_.transform(normalized, _base_link_, ros::Duration(0.2));
+        pose_out.header.frame_id = _base_link_;
         return ErrorCode::SUCCESS;
     }
     catch(const tf2::TransformException& e) {
-        ROS_WARN("resolve_target_to_base 失败: %s", e.what());
+        ROS_WARN("坐标变换失败：%s", e.what());
         return ErrorCode::TF_TRANSFORM_FAILED;
     }
 }
 
 /**
- * @brief 设置末端目标（底座坐标系）
- * @param target 目标位姿/位置/姿态
+ * @brief 将 TargetVariant 解析并转换为底座坐标系下的目标
+ * @param target 输入目标
+ * @param target_in_base 输出目标（底座坐标系）
+ * @param source_frame 输出源坐标系
+ * @return 错误码
+ * @note 对于不带 frame 的 Pose / Point / Quaternion，默认认为其坐标系为末端坐标系
+ */
+ErrorCode ArmController::resolve_target_to_base(const TargetVariant& target, TargetVariant& target_in_base, std::string* source_frame) {
+    return resolve_target_to_base(target, _eef_link_, target_in_base, source_frame);
+}
+
+/**
+ * @brief 将 TargetVariant 按指定源坐标系解析并转换为底座坐标系下的目标
+ * @param target 输入目标
+ * @param default_source_frame 当目标本身不带 frame 信息时使用的默认源坐标系
+ * @param target_in_base 输出目标（底座坐标系）
+ * @param source_frame 输出实际使用的源坐标系
+ * @return 错误码
+ */
+ErrorCode ArmController::resolve_target_to_base(const TargetVariant& target, const std::string& default_source_frame, TargetVariant& target_in_base, std::string* source_frame) {
+
+    auto normalize_pose_stamped = [&](const geometry_msgs::PoseStamped& in_pose,
+        geometry_msgs::PoseStamped& normalized_pose,
+        std::string& used_frame) -> ErrorCode {
+            normalized_pose = in_pose;
+            used_frame = in_pose.header.frame_id.empty() ? default_source_frame : in_pose.header.frame_id;
+            if(used_frame.empty()) {
+                ROS_WARN("目标位姿未指定坐标系，且默认源坐标系也未设置，无法解析目标");
+                return ErrorCode::INVALID_TARGET_TYPE;
+            }
+            normalized_pose.header.frame_id = used_frame;
+            if(normalized_pose.header.stamp == ros::Time()) {
+                normalized_pose.header.stamp = ros::Time(0);
+            }
+            return ErrorCode::SUCCESS;
+        };
+
+    return std::visit(variant_visitor{
+        [&](const std::monostate&) -> ErrorCode {
+            return ErrorCode::INVALID_TARGET_TYPE;
+        },
+        [&](const geometry_msgs::Pose& pose) -> ErrorCode {
+            const std::string used_frame = default_source_frame;
+            if(used_frame.empty()) {
+                ROS_WARN("目标位姿未指定坐标系，且默认源坐标系也未设置，无法解析目标");
+                return ErrorCode::INVALID_TARGET_TYPE;
+            }
+            if(source_frame) *source_frame = used_frame;
+
+            if(used_frame == _base_link_) {
+                target_in_base = pose;
+                return ErrorCode::SUCCESS;
+            }
+
+            geometry_msgs::PoseStamped pose_in;
+            pose_in.header.frame_id = used_frame;
+            pose_in.header.stamp = ros::Time(0);
+            pose_in.pose = pose;
+
+            geometry_msgs::PoseStamped pose_out;
+            const ErrorCode code = transform_pose_to_base(pose_in, pose_out);
+            if(code != ErrorCode::SUCCESS) return code;
+            target_in_base = pose_out.pose;
+            return ErrorCode::SUCCESS;
+        },
+        [&](const geometry_msgs::Point& point) -> ErrorCode {
+            const std::string used_frame = default_source_frame;
+            if(used_frame.empty()) {
+                ROS_WARN("目标位置未指定坐标系，且默认源坐标系也未设置，无法解析目标");
+                return ErrorCode::INVALID_TARGET_TYPE;
+            }
+            if(source_frame) *source_frame = used_frame;
+
+            if(used_frame == _base_link_) {
+                target_in_base = point;
+                return ErrorCode::SUCCESS;
+            }
+
+            geometry_msgs::PoseStamped pose_in;
+            pose_in.header.frame_id = used_frame;
+            pose_in.header.stamp = ros::Time(0);
+            pose_in.pose.position = point;
+            pose_in.pose.orientation.w = 1.0;
+
+            geometry_msgs::PoseStamped pose_out;
+            const ErrorCode code = transform_pose_to_base(pose_in, pose_out);
+            if(code != ErrorCode::SUCCESS) return code;
+            target_in_base = pose_out.pose.position;
+            return ErrorCode::SUCCESS;
+        },
+        [&](const geometry_msgs::Quaternion& quat) -> ErrorCode {
+            const std::string used_frame = default_source_frame;
+            if(used_frame.empty()) {
+                ROS_WARN("目标方向未指定坐标系，且默认源坐标系也未设置，无法解析目标");
+                return ErrorCode::INVALID_TARGET_TYPE;
+            }
+            if(source_frame) *source_frame = used_frame;
+
+            if(used_frame == _base_link_) {
+                target_in_base = quat;
+                return ErrorCode::SUCCESS;
+            }
+
+            geometry_msgs::PoseStamped pose_in;
+            pose_in.header.frame_id = used_frame;
+            pose_in.header.stamp = ros::Time(0);
+            pose_in.pose.orientation = quat;
+
+            geometry_msgs::PoseStamped pose_out;
+            const ErrorCode code = transform_pose_to_base(pose_in, pose_out);
+            if(code != ErrorCode::SUCCESS) return code;
+            target_in_base = pose_out.pose.orientation;
+            return ErrorCode::SUCCESS;
+        },
+        [&](const geometry_msgs::PoseStamped& pose_stamped) -> ErrorCode {
+            geometry_msgs::PoseStamped normalized;
+            std::string used_frame;
+            const ErrorCode code = normalize_pose_stamped(pose_stamped, normalized, used_frame);
+            if(code != ErrorCode::SUCCESS) return code;
+            if(source_frame) *source_frame = used_frame;
+
+            geometry_msgs::PoseStamped transformed;
+            const ErrorCode tf_code = transform_pose_to_base(normalized, transformed);
+            if(tf_code != ErrorCode::SUCCESS) return tf_code;
+            target_in_base = transformed;
+            return ErrorCode::SUCCESS;
+        }
+        }, target);
+}
+
+/**
+ * @brief 按指定源坐标系设置目标
+ * @param target 输入目标
  * @param source_frame 当目标不包含坐标系信息时使用的默认源坐标系
  * @return 错误码
  */
@@ -941,13 +1032,13 @@ ErrorCode ArmController::set_target_in_frame(const TargetVariant& target, const 
         return ErrorCode::ASYNC_TASK_RUNNING;
     }
 
-    geometry_msgs::PoseStamped base_pose;
-    ErrorCode code = resolve_target_to_base(target, base_pose, source_frame);
+    TargetVariant base_pose;
+    ErrorCode code = resolve_target_to_base(target, source_frame, base_pose, nullptr);
     if(code != ErrorCode::SUCCESS) {
         return code;
     }
 
-    return set_target(base_pose.pose);
+    return set_target(base_pose);
 }
 
 /**

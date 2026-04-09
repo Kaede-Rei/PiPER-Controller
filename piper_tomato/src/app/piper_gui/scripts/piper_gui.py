@@ -10,6 +10,7 @@ import rospy
 import actionlib
 import tf2_ros
 import tf2_geometry_msgs
+from tf.transformations import quaternion_from_euler
 from geometry_msgs.msg import PoseStamped
 from piper_msgs2.msg import PickTaskAction, PickTaskGoal
 from pyorbbecsdk import (
@@ -35,6 +36,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFormLayout,
     QHBoxLayout,
     QGroupBox,
@@ -542,6 +544,7 @@ class MainWindow(QMainWindow):
         self.ros_available = False
         self.pick_client = None
         self.depth_intrinsics = DEFAULT_DEPTH_INTRINSICS.copy()
+        self.last_request_type = None
 
         # 先初始化 ROS
         self.init_ros()
@@ -604,7 +607,7 @@ class MainWindow(QMainWindow):
 
     def send_arm_command(self, x: float, y: float, z: float) -> bool:
         del x, y, z
-        self.send_pick_task()
+        self.upsert_current_task()
         return True
 
     def init_ui(self) -> None:
@@ -616,20 +619,67 @@ class MainWindow(QMainWindow):
         self.video_label.selection_changed.connect(self.on_roi_selected)
         main_layout.addWidget(self.video_label, stretch=3)
 
-        panel_layout = QVBoxLayout()
-        main_layout.addLayout(panel_layout, stretch=1)
+        panel_layout = QHBoxLayout()
+        main_layout.addLayout(panel_layout, stretch=2)
+
+        info_column = QVBoxLayout()
+        control_column = QVBoxLayout()
+        panel_layout.addLayout(info_column, stretch=1)
+        panel_layout.addLayout(control_column, stretch=1)
+
+        info_group = QGroupBox("目标锁定 / 坐标信息")
+        info_group_layout = QVBoxLayout(info_group)
+        self.info_label = QLabel(
+            "系统初始化中...\n\n操作说明：\n1. 左键：添加轮廓点\n2. 右键：撤销上一个点\n3. 双击：闭合多边形"
+        )
+        self.info_label.setWordWrap(True)
+        self.info_label.setFont(QFont(UI_CFG.info_font_name, UI_CFG.info_font_size))
+        self.info_label.setTextFormat(Qt.RichText)
+        self.info_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        info_group_layout.addWidget(self.info_label)
+        info_group.setMinimumWidth(300)
+        info_column.addWidget(info_group)
+        info_column.addStretch()
 
         self.task_status_label = QLabel("采摘任务状态：未发送")
         self.task_status_label.setWordWrap(True)
         self.task_status_label.setFont(
             QFont(UI_CFG.info_font_name, UI_CFG.info_font_size)
         )
-        panel_layout.addWidget(self.task_status_label)
+        control_column.addWidget(self.task_status_label)
+
+        task_group = QGroupBox("任务组配置")
+        task_layout = QFormLayout(task_group)
+        self.group_name_edit = QLineEdit(ROS_CFG.pick_group_name)
+        self.task_id_edit = QLineEdit("1")
+        self.task_desc_edit = QLineEdit("GUI采摘任务")
+        self.task_type_box = QComboBox()
+        self.task_type_box.addItem("PICK", PickTaskGoal.TASK_PICK)
+        self.task_type_box.addItem("MOVE_ONLY", PickTaskGoal.TASK_MOVE_ONLY)
+        self.retry_times_edit = QLineEdit("0")
+        self.chk_use_eef = QCheckBox("执行夹爪动作")
+        self.chk_use_eef.setChecked(True)
+        self.chk_go_home_after_finish = QCheckBox("任务完成后回到初始位")
+        self.chk_go_home_after_finish.setChecked(True)
+        self.chk_go_safe_after_cancel = QCheckBox("取消后自动回安全位")
+        self.chk_go_safe_after_cancel.setChecked(True)
+        task_layout.addRow("任务组", self.group_name_edit)
+        task_layout.addRow("任务 ID", self.task_id_edit)
+        task_layout.addRow("任务类型", self.task_type_box)
+        task_layout.addRow("描述", self.task_desc_edit)
+        task_layout.addRow("重试次数", self.retry_times_edit)
+        task_layout.addRow(self.chk_use_eef)
+        task_layout.addRow(self.chk_go_home_after_finish)
+        task_layout.addRow(self.chk_go_safe_after_cancel)
+        control_column.addWidget(task_group)
 
         place_group = QGroupBox("放置区配置（base_link）")
         place_layout = QFormLayout(place_group)
         self.chk_use_place_pose = QCheckBox("启用放置动作")
         self.chk_use_place_pose.setChecked(True)
+        self.place_target_type_box = QComboBox()
+        self.place_target_type_box.addItem("Point(base_link)", PickTaskGoal.PLACE_TARGET_POINT)
+        self.place_target_type_box.addItem("Pose(base_link)", PickTaskGoal.PLACE_TARGET_POSE)
         self.place_x_edit = QLineEdit("0.25")
         self.place_y_edit = QLineEdit("0.00")
         self.place_z_edit = QLineEdit("0.10")
@@ -637,20 +687,14 @@ class MainWindow(QMainWindow):
         self.place_pitch_edit = QLineEdit("0.00")
         self.place_yaw_edit = QLineEdit("0.00")
         place_layout.addRow(self.chk_use_place_pose)
+        place_layout.addRow("放置目标类型", self.place_target_type_box)
         place_layout.addRow("X", self.place_x_edit)
         place_layout.addRow("Y", self.place_y_edit)
         place_layout.addRow("Z", self.place_z_edit)
         place_layout.addRow("Roll", self.place_roll_edit)
         place_layout.addRow("Pitch", self.place_pitch_edit)
         place_layout.addRow("Yaw", self.place_yaw_edit)
-        panel_layout.addWidget(place_group)
-
-        self.info_label = QLabel(
-            "系统初始化中...\n\n操作说明：\n1. 左键：添加轮廓点\n2. 右键：撤销上一个点\n3. 双击：闭合多边形"
-        )
-        self.info_label.setWordWrap(True)
-        self.info_label.setFont(QFont(UI_CFG.info_font_name, UI_CFG.info_font_size))
-        panel_layout.addWidget(self.info_label)
+        control_column.addWidget(place_group)
 
         self.btn_reset = QPushButton("重置选择")
         self.btn_reset.clicked.connect(self.video_label.clear_selection)
@@ -658,26 +702,35 @@ class MainWindow(QMainWindow):
         self.btn_reset.setStyleSheet(
             "background-color: #3498db; color: white; font-size:14px; font-weight:bold;"
         )
-        panel_layout.addWidget(self.btn_reset)
+        control_column.addWidget(self.btn_reset)
 
-        self.btn_send_cmd = QPushButton("发送采摘任务")
-        self.btn_send_cmd.clicked.connect(self.manual_send_command)
-        self.btn_send_cmd.setMinimumHeight(40)
-        self.btn_send_cmd.setStyleSheet(
+        self.btn_upsert_task = QPushButton("写入 / 更新当前任务")
+        self.btn_upsert_task.clicked.connect(self.manual_send_command)
+        self.btn_upsert_task.setMinimumHeight(40)
+        self.btn_upsert_task.setStyleSheet(
             "background-color: #27ae60; color: white; font-size:14px; font-weight:bold;"
         )
-        self.btn_send_cmd.setEnabled(False)
-        panel_layout.addWidget(self.btn_send_cmd)
+        self.btn_upsert_task.setEnabled(False)
+        control_column.addWidget(self.btn_upsert_task)
 
-        self.btn_cancel_cmd = QPushButton("取消采摘任务")
+        self.btn_execute_group = QPushButton("执行当前任务组")
+        self.btn_execute_group.clicked.connect(self.execute_current_group)
+        self.btn_execute_group.setMinimumHeight(40)
+        self.btn_execute_group.setStyleSheet(
+            "background-color: #8e44ad; color: white; font-size:14px; font-weight:bold;"
+        )
+        self.btn_execute_group.setEnabled(self.ros_available)
+        control_column.addWidget(self.btn_execute_group)
+
+        self.btn_cancel_cmd = QPushButton("取消当前执行")
         self.btn_cancel_cmd.clicked.connect(self.cancel_pick_task)
         self.btn_cancel_cmd.setMinimumHeight(40)
         self.btn_cancel_cmd.setStyleSheet(
             "background-color: #c0392b; color: white; font-size:14px; font-weight:bold;"
         )
-        panel_layout.addWidget(self.btn_cancel_cmd)
+        control_column.addWidget(self.btn_cancel_cmd)
 
-        panel_layout.addStretch()
+        control_column.addStretch()
 
     def init_thread(self) -> None:
         self.worker = WorkerThread()
@@ -769,18 +822,25 @@ class MainWindow(QMainWindow):
             <p><b>Y:</b> {y_flange:.4f}</p>
             <p><b>Z:</b> {z_flange:.4f}</p>
             <hr>
-            <p><b style='color: #9b59b6;'>TCP相对坐标（提交给任务层后会冻结到底座坐标系）:</b></p>
+            <p><b style='color: #9b59b6;'>TCP相对坐标</b></p>
+            <p style='color: #9b59b6;'>将以 Point(link_tcp) 写入任务层，并在设置任务时冻结到底座坐标系。</p>
             <p><b>X:</b> {x_tcp:.4f}</p>
             <p><b>Y:</b> {y_tcp:.4f}</p>
             <p><b>Z:</b> {z_tcp:.4f}</p>
             """)
 
     def manual_send_command(self) -> None:
-        self.send_pick_task()
+        self.upsert_current_task()
 
     def _parse_float(self, edit: QLineEdit, default: float = 0.0) -> float:
         try:
             return float(edit.text().strip())
+        except Exception:
+            return default
+
+    def _parse_int(self, edit: QLineEdit, default: int = 0) -> int:
+        try:
+            return int(edit.text().strip())
         except Exception:
             return default
 
@@ -796,7 +856,39 @@ class MainWindow(QMainWindow):
         pose.pose.orientation.w = 1.0
         return pose
 
-    def send_pick_task(self) -> None:
+    def _fill_point_msg(self, point_msg, x: float, y: float, z: float) -> None:
+        point_msg.x = x
+        point_msg.y = y
+        point_msg.z = z
+
+    def _fill_pose_msg(
+        self,
+        pose_msg,
+        x: float,
+        y: float,
+        z: float,
+        roll: float = 0.0,
+        pitch: float = 0.0,
+        yaw: float = 0.0,
+    ) -> None:
+        qx, qy, qz, qw = quaternion_from_euler(roll, pitch, yaw)
+        pose_msg.position.x = x
+        pose_msg.position.y = y
+        pose_msg.position.z = z
+        pose_msg.orientation.x = qx
+        pose_msg.orientation.y = qy
+        pose_msg.orientation.z = qz
+        pose_msg.orientation.w = qw
+
+    def _send_goal(self, goal: PickTaskGoal) -> None:
+        self.pick_client.send_goal(
+            goal,
+            done_cb=self._on_pick_done,
+            active_cb=self._on_pick_active,
+            feedback_cb=self._on_pick_feedback,
+        )
+
+    def upsert_current_task(self) -> None:
         if not self.ros_available or self.pick_client is None:
             self.task_status_label.setText("采摘任务状态：ROS 未连接")
             return
@@ -807,32 +899,64 @@ class MainWindow(QMainWindow):
 
         x, y, z = self.target_tcp_coord
         goal = PickTaskGoal()
-        goal.group_name = ROS_CFG.pick_group_name
-        goal.id = 0
-        goal.target_pose = self._build_pose_stamped(ROS_CFG.tcp_frame, x, y, z)
-        goal.use_place_pose = self.chk_use_place_pose.isChecked()
-        goal.place_pose = self._build_pose_stamped(
-            ROS_CFG.place_frame,
-            self._parse_float(self.place_x_edit, 0.0),
-            self._parse_float(self.place_y_edit, 0.0),
-            self._parse_float(self.place_z_edit, 0.0),
-        )
-        goal.use_eef = True
-        goal.go_home_after_finish = True
-        goal.go_safe_after_cancel = True
-        goal.retry_times = 0
-        goal.start_group = ROS_CFG.pick_group_name
-        goal.description = "GUI采摘任务"
+        goal.request_type = PickTaskGoal.UPSERT_TASK
+        goal.group_name = self.group_name_edit.text().strip() or ROS_CFG.pick_group_name
+        goal.id = max(0, self._parse_int(self.task_id_edit, 1))
+        goal.task_type = int(self.task_type_box.currentData())
+        goal.description = self.task_desc_edit.text().strip() or "GUI采摘任务"
+        goal.target_type = PickTaskGoal.TARGET_POINT
+        self._fill_point_msg(goal.target_point, x, y, z)
+        goal.target_frame_id = ROS_CFG.tcp_frame
 
+        goal.use_place_pose = self.chk_use_place_pose.isChecked()
+        goal.use_eef = self.chk_use_eef.isChecked()
+        goal.go_home_after_finish = self.chk_go_home_after_finish.isChecked()
+        goal.go_safe_after_cancel = self.chk_go_safe_after_cancel.isChecked()
+        goal.retry_times = max(0, self._parse_int(self.retry_times_edit, 0))
+
+        if goal.task_type == PickTaskGoal.TASK_PICK and goal.use_place_pose:
+            place_target_type = int(self.place_target_type_box.currentData())
+            goal.place_target_type = place_target_type
+            goal.place_frame_id = ROS_CFG.place_frame
+
+            px = self._parse_float(self.place_x_edit, 0.0)
+            py = self._parse_float(self.place_y_edit, 0.0)
+            pz = self._parse_float(self.place_z_edit, 0.0)
+            proll = self._parse_float(self.place_roll_edit, 0.0)
+            ppitch = self._parse_float(self.place_pitch_edit, 0.0)
+            pyaw = self._parse_float(self.place_yaw_edit, 0.0)
+
+            if place_target_type == PickTaskGoal.PLACE_TARGET_POSE:
+                self._fill_pose_msg(goal.place_pose, px, py, pz, proll, ppitch, pyaw)
+            else:
+                goal.place_target_type = PickTaskGoal.PLACE_TARGET_POINT
+                self._fill_point_msg(goal.place_point, px, py, pz)
+        else:
+            goal.use_place_pose = False
+            goal.place_target_type = PickTaskGoal.PLACE_TARGET_NONE
+
+        self.last_request_type = goal.request_type
         self.task_status_label.setText(
-            f"采摘任务状态：已发送，目标=({x:.3f}, {y:.3f}, {z:.3f})"
+            f"采摘任务状态：正在写入任务组 '{goal.group_name}'，任务 ID={goal.id}，目标=({x:.3f}, {y:.3f}, {z:.3f})"
         )
-        self.pick_client.send_goal(
-            goal,
-            done_cb=self._on_pick_done,
-            active_cb=self._on_pick_active,
-            feedback_cb=self._on_pick_feedback,
+        self._send_goal(goal)
+
+    def execute_current_group(self) -> None:
+        if not self.ros_available or self.pick_client is None:
+            self.task_status_label.setText("采摘任务状态：ROS 未连接")
+            return
+
+        goal = PickTaskGoal()
+        goal.request_type = PickTaskGoal.EXECUTE_TASK_GROUP
+        goal.group_name = self.group_name_edit.text().strip() or ROS_CFG.pick_group_name
+        self.last_request_type = goal.request_type
+        self.task_status_label.setText(
+            f"采摘任务状态：已发送任务组执行请求，任务组='{goal.group_name}'"
         )
+        self._send_goal(goal)
+
+    def send_pick_task(self) -> None:
+        self.upsert_current_task()
 
     def cancel_pick_task(self) -> None:
         if self.ros_available and self.pick_client is not None:
@@ -840,13 +964,17 @@ class MainWindow(QMainWindow):
             self.task_status_label.setText("采摘任务状态：已请求取消")
 
     def _on_pick_active(self) -> None:
-        self.task_status_label.setText("采摘任务状态：执行中")
+        if self.last_request_type == PickTaskGoal.UPSERT_TASK:
+            self.task_status_label.setText("采摘任务状态：写入任务中")
+        else:
+            self.task_status_label.setText("采摘任务状态：执行任务组中")
 
     def _on_pick_feedback(self, feedback) -> None:
         try:
-            self.task_status_label.setText(
-                f"采摘任务状态：{feedback.stage_text} | step {feedback.current_step_index}/{feedback.total_steps}"
-            )
+            if self.last_request_type == PickTaskGoal.EXECUTE_TASK_GROUP:
+                self.task_status_label.setText(
+                    f"采摘任务状态：{feedback.stage_text} | step {feedback.current_step_index}/{feedback.total_steps}"
+                )
         except Exception:
             pass
 
@@ -854,11 +982,17 @@ class MainWindow(QMainWindow):
         try:
             msg = getattr(result, "message", "")
             if getattr(result, "success", False):
-                self.task_status_label.setText(f"采摘任务状态：完成 - {msg}")
+                if self.last_request_type == PickTaskGoal.UPSERT_TASK:
+                    self.task_status_label.setText(f"采摘任务状态：任务写入成功 - {msg}")
+                else:
+                    self.task_status_label.setText(f"采摘任务状态：任务组执行完成 - {msg}")
             elif getattr(result, "canceled", False):
                 self.task_status_label.setText(f"采摘任务状态：已取消 - {msg}")
             else:
-                self.task_status_label.setText(f"采摘任务状态：失败 - {msg}")
+                if self.last_request_type == PickTaskGoal.UPSERT_TASK:
+                    self.task_status_label.setText(f"采摘任务状态：任务写入失败 - {msg}")
+                else:
+                    self.task_status_label.setText(f"采摘任务状态：任务组执行失败 - {msg}")
         except Exception:
             self.task_status_label.setText(f"采摘任务状态：结束，state={state}")
 
@@ -868,7 +1002,7 @@ class MainWindow(QMainWindow):
             or self.current_color_size is None
             or mask is None
         ):
-            self.btn_send_cmd.setEnabled(False)
+            self.btn_upsert_task.setEnabled(False)
             return
 
         self.current_cutting_pixel = cutting_pixel
@@ -890,7 +1024,7 @@ class MainWindow(QMainWindow):
         if depth_raw == 0:
             self.info_label.setText("⚠️ 深度无效，请调整位置")
             self.target_tcp_coord = None
-            self.btn_send_cmd.setEnabled(False)
+            self.btn_upsert_task.setEnabled(False)
             return
 
         depth_m = depth_raw / 1000.0
@@ -902,13 +1036,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.info_label.setText(f"⚠️ TF 变换失败: {e}")
             self.target_tcp_coord = None
-            self.btn_send_cmd.setEnabled(False)
+            self.btn_upsert_task.setEnabled(False)
             return
 
         self.last_cam_coord = cam_xyz
         self.last_flange_coord = flange_xyz
         self.target_tcp_coord = tcp_xyz
-        self.btn_send_cmd.setEnabled(True)
+        self.btn_upsert_task.setEnabled(True)
 
         self._update_info_label(u, v, depth_m, use_lrm, cam_xyz, flange_xyz, tcp_xyz)
 

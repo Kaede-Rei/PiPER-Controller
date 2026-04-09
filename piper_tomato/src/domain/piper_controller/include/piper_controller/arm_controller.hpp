@@ -130,8 +130,9 @@ public:
     ErrorCode base_to_end_tf(const T& in, T& out);
     template<class T>
     ErrorCode end_to_base_tf(const T& in, T& out);
-
-    ErrorCode resolve_target_to_base(const TargetVariant& target, geometry_msgs::PoseStamped& out_base_pose, const std::string& default_source_frame = "");
+    ErrorCode resolve_target_to_base(const TargetVariant& target, TargetVariant& target_in_base, std::string* source_frame = nullptr);
+    ErrorCode resolve_target_to_base(const TargetVariant& target, const std::string& default_source_frame, TargetVariant& target_in_base, std::string* source_frame = nullptr);
+    ErrorCode transform_pose_to_base(const geometry_msgs::PoseStamped& pose_in, geometry_msgs::PoseStamped& pose_out);
     ErrorCode set_target_in_frame(const TargetVariant& target, const std::string& source_frame);
     const std::string& get_base_link() const { return _base_link_; }
     const std::string& get_eef_link() const { return _eef_link_; }

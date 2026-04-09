@@ -9,8 +9,13 @@
 
 namespace piper {
 
+// ! ========================= 私 有 函 数 实 现 ========================= ! //
+
 namespace {
 
+/**
+ * @brief 转字符串工具函数
+ */
 #define X(name, desc) case PickStage::PICK_##name: return desc;
 const char* pick_stage_to_string(PickStage stage) {
     switch(stage) {
@@ -20,32 +25,45 @@ const char* pick_stage_to_string(PickStage stage) {
 }
 #undef X
 
-tl::optional<geometry_msgs::PoseStamped> to_pose_stamped(const TargetVariant& target) {
+/**
+ * @brief 将底座坐标系下的目标补全为 Pose 以便用于距离计算
+ * @param target 输入目标（已在底座坐标系）
+ * @param reference_pose 缺失位置或姿态时使用的参考位姿
+ * @return 补全后的 Pose
+ */
+geometry_msgs::Pose target_to_effective_pose_in_base(const TargetVariant& target, const geometry_msgs::Pose& reference_pose) {
     return std::visit(variant_visitor{
-        [](const std::monostate&) -> tl::optional<geometry_msgs::PoseStamped> {
-            return tl::nullopt;
+        [&](const std::monostate&) -> geometry_msgs::Pose {
+            return reference_pose;
         },
-        [](const geometry_msgs::Pose& pose) -> tl::optional<geometry_msgs::PoseStamped> {
-            geometry_msgs::PoseStamped pose_stamped;
-            pose_stamped.header.frame_id = "base_link";
-            pose_stamped.header.stamp = ros::Time::now();
-            pose_stamped.pose = pose;
-            return pose_stamped;
+        [&](const geometry_msgs::Pose& pose) -> geometry_msgs::Pose {
+            return pose;
         },
-        [](const geometry_msgs::Point&) -> tl::optional<geometry_msgs::PoseStamped> {
-            return tl::nullopt;
+        [&](const geometry_msgs::Point& point) -> geometry_msgs::Pose {
+            geometry_msgs::Pose pose = reference_pose;
+            pose.position = point;
+            return pose;
         },
-        [](const geometry_msgs::Quaternion&) -> tl::optional<geometry_msgs::PoseStamped> {
-            return tl::nullopt;
+        [&](const geometry_msgs::Quaternion& quat) -> geometry_msgs::Pose {
+            geometry_msgs::Pose pose = reference_pose;
+            pose.orientation = quat;
+            return pose;
         },
-        [](const geometry_msgs::PoseStamped& pose_stamped) -> tl::optional<geometry_msgs::PoseStamped> {
-            return pose_stamped;
+        [&](const geometry_msgs::PoseStamped& pose_stamped) -> geometry_msgs::Pose {
+            return pose_stamped.pose;
         }
         }, target);
 }
 
 }  // namespace
 
+// ! ========================= 接 口 类 / 函 数 实 现 ========================= ! //
+
+/**
+ * @brief TasksManager 构造函数
+ * @param arm 机械臂控制器
+ * @param eef 末端执行器
+ */
 TasksManager::TasksManager(std::shared_ptr<ArmController> arm, std::shared_ptr<EndEffector> eef)
     : _arm_(std::move(arm)), _eef_(std::move(eef)) {
     if(!_arm_) {
@@ -57,6 +75,12 @@ TasksManager::TasksManager(std::shared_ptr<ArmController> arm, std::shared_ptr<E
     if(_eef_) _eef_name_ = _eef_->get_eef_name();
 }
 
+/**
+ * @brief 创建任务组
+ * @param group_name 任务组名称
+ * @param sort_type 排序方式
+ * @return 错误码
+ */
 ErrorCode TasksManager::create_task_group(const std::string& group_name, SortType sort_type) {
     auto group = find_task_group(group_name);
     if(group) {
@@ -71,6 +95,11 @@ ErrorCode TasksManager::create_task_group(const std::string& group_name, SortTyp
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 删除任务组
+ * @param group_name 任务组名称
+ * @return 错误码
+ */
 ErrorCode TasksManager::delete_task_group(const std::string& group_name) {
     auto group = find_task_group(group_name);
     if(!group) return group.error();
@@ -80,6 +109,11 @@ ErrorCode TasksManager::delete_task_group(const std::string& group_name) {
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 清空任务组
+ * @param group_name 任务组名称
+ * @return 错误码
+ */
 ErrorCode TasksManager::clear_task_group(const std::string& group_name) {
     auto group = find_task_group(group_name);
     if(!group) return group.error();
@@ -90,6 +124,12 @@ ErrorCode TasksManager::clear_task_group(const std::string& group_name) {
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 设置 DIST 排序姿态权重
+ * @param group_name 任务组名称
+ * @param weight_orient 姿态权重
+ * @return 错误码
+ */
 ErrorCode TasksManager::set_dist_sort_weight_orient(const std::string& group_name, float weight_orient) {
     auto group = find_task_group(group_name);
     if(!group) return group.error();
@@ -104,6 +144,14 @@ ErrorCode TasksManager::set_dist_sort_weight_orient(const std::string& group_nam
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 添加任务
+ * @param group_name 任务组名称
+ * @param id 任务 ID
+ * @param task_type 任务类型
+ * @param task_description 任务描述
+ * @return 错误码
+ */
 ErrorCode TasksManager::add_task(const std::string& group_name, unsigned int id, TaskType task_type, const std::string& task_description) {
     auto group = find_task_group(group_name);
     if(!group) return group.error();
@@ -117,12 +165,19 @@ ErrorCode TasksManager::add_task(const std::string& group_name, unsigned int id,
     new_task.id = id;
     new_task.desc = task_description;
     new_task.type = task_type;
+    new_task.target_frame = _arm_->get_base_link();
     group.value()->tasks[id] = std::move(new_task);
 
     ROS_INFO("成功向任务组 '%s' 添加任务 ID %u", group_name.c_str(), id);
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 删除任务
+ * @param group_name 任务组名称
+ * @param id 任务 ID
+ * @return 错误码
+ */
 ErrorCode TasksManager::delete_task(const std::string& group_name, unsigned int id) {
     auto group = find_task_group(group_name);
     if(!group) return group.error();
@@ -134,76 +189,125 @@ ErrorCode TasksManager::delete_task(const std::string& group_name, unsigned int 
     return ErrorCode::SUCCESS;
 }
 
-ErrorCode TasksManager::set_task_target(const std::string& group_name, unsigned int id, const tl::optional<TargetVariant>& target) {
+/**
+ * @brief 设置任务目标，并冻结到底座坐标系
+ * @param group_name 任务组名称
+ * @param id 任务 ID
+ * @param target 任务目标
+ * @param target_frame 任务目标所属坐标系（当 target 不带 frame 信息时生效）
+ * @return 错误码
+ */
+ErrorCode TasksManager::set_task_target(const std::string& group_name, unsigned int id, const tl::optional<TargetVariant>& target, const std::string& target_frame) {
     auto task = find_task(group_name, id);
     if(!task) return task.error();
 
-    task.value()->raw_target = target;
-    if(!target) {
-        task.value()->target = tl::nullopt;
-        if(task.value()->pick_params) {
-            task.value()->pick_params->resolved_pick_pose = tl::nullopt;
-            task.value()->pick_params->resolved_pre_pick_pose = tl::nullopt;
-            task.value()->pick_params->resolved_retreat_pose = tl::nullopt;
-            task.value()->pick_params->target_source_frame.clear();
-        }
-        ROS_INFO("成功清除任务组 '%s' 中任务 ID %u 的目标", group_name.c_str(), id);
-        return ErrorCode::SUCCESS;
-    }
-
-    TargetVariant resolved;
-    ErrorCode code = resolve_target_to_base(target.value(), resolved,
-        task.value()->pick_params ? &task.value()->pick_params->target_source_frame : nullptr);
+    tl::optional<TargetVariant> frozen_target;
+    std::string frozen_frame;
+    const ErrorCode code = freeze_target_to_base(target, target_frame, frozen_target, frozen_frame);
     if(code != ErrorCode::SUCCESS) {
-        ROS_WARN("任务组 '%s' 中任务 ID %u 目标解析失败，错误码：%s", group_name.c_str(), id, err_to_string(code).c_str());
+        ROS_WARN("任务组 '%s' 中任务 ID %u 的目标冻结失败，错误码：%s", group_name.c_str(), id, err_to_string(code).c_str());
         return code;
     }
 
-    task.value()->target = resolved;
-
-    if(task.value()->type == TaskType::PICK && task.value()->pick_params) {
-        code = rebuild_pick_task_cache(*task.value());
-        if(code != ErrorCode::SUCCESS) return code;
+    task.value()->target = frozen_target;
+    task.value()->target_frame = frozen_frame;
+    if(!frozen_target) {
+        ROS_INFO("成功清除任务组 '%s' 中任务 ID %u 的目标", group_name.c_str(), id);
     }
-
-    ROS_INFO("成功设置任务组 '%s' 中任务 ID %u 的目标（已冻结到 base frame）", group_name.c_str(), id);
+    else {
+        ROS_INFO("成功设置任务组 '%s' 中任务 ID %u 的目标，并冻结到 '%s'",
+            group_name.c_str(), id, task.value()->target_frame.c_str());
+    }
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 设置任务采摘参数
+ * @param group_name 任务组名称
+ * @param id 任务 ID
+ * @param pick_params 采摘参数
+ * @return 错误码
+ */
 ErrorCode TasksManager::set_task_pick_params(const std::string& group_name, unsigned int id, const PickTaskParams& pick_params) {
     auto task = find_task(group_name, id);
     if(!task) return task.error();
-
-    task.value()->pick_params = pick_params;
-    if(!task.value()->raw_target && task.value()->target) {
-        task.value()->raw_target = task.value()->target;
+    if(pick_params.use_place_pose && !pick_params.place_target) {
+        ROS_WARN("任务组 '%s' 中任务 ID %u 启用了放置动作，但未设置放置目标", group_name.c_str(), id);
+        return ErrorCode::INVALID_PARAMETER;
     }
 
-    if(task.value()->type == TaskType::PICK) {
-        ErrorCode code = rebuild_pick_task_cache(*task.value());
-        if(code != ErrorCode::SUCCESS) return code;
+    PickTaskParams normalized_pick_params = pick_params;
+    if(!normalized_pick_params.use_place_pose) {
+        normalized_pick_params.place_target = tl::nullopt;
+        normalized_pick_params.place_frame = _arm_->get_base_link();
+        task.value()->pick_params = normalized_pick_params;
+        ROS_INFO("成功设置任务组 '%s' 中任务 ID %u 的采摘参数", group_name.c_str(), id);
+        return ErrorCode::SUCCESS;
     }
+
+    tl::optional<TargetVariant> frozen_place_target;
+    std::string frozen_place_frame;
+    const ErrorCode code = freeze_target_to_base(
+        normalized_pick_params.place_target,
+        normalized_pick_params.place_frame,
+        frozen_place_target,
+        frozen_place_frame);
+    if(code != ErrorCode::SUCCESS) {
+        ROS_WARN("任务组 '%s' 中任务 ID %u 的放置目标冻结失败，错误码：%s",
+            group_name.c_str(),
+            id,
+            err_to_string(code).c_str());
+        return code;
+    }
+
+    normalized_pick_params.place_target = frozen_place_target;
+    normalized_pick_params.place_frame = frozen_place_frame;
+    task.value()->pick_params = normalized_pick_params;
 
     ROS_INFO("成功设置任务组 '%s' 中任务 ID %u 的采摘参数", group_name.c_str(), id);
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 执行任务组中的指定任务
+ * @param group_name 任务组名称
+ * @param id 任务 ID
+ * @return 错误码
+ */
 ErrorCode TasksManager::execute_task(const std::string& group_name, unsigned int id) {
     auto task = find_task(group_name, id);
     if(!task) return task.error();
     return execute_task(*task.value(), nullptr);
 }
 
+/**
+ * @brief 执行任务组中的指定任务（带上下文）
+ * @param group_name 任务组名称
+ * @param id 任务 ID
+ * @param ctx 执行上下文
+ * @return 错误码
+ */
 ErrorCode TasksManager::execute_task(const std::string& group_name, unsigned int id, ExecutionContext* ctx) {
     auto task = find_task(group_name, id);
     if(!task) return task.error();
     return execute_task(*task.value(), ctx);
 }
 
+/**
+ * @brief 执行任务对象
+ * @param task 任务对象
+ * @return 错误码
+ */
 ErrorCode TasksManager::execute_task(Task& task) {
     return execute_task(task, nullptr);
 }
 
+/**
+ * @brief 执行任务对象（带上下文）
+ * @param task 任务对象
+ * @param ctx 执行上下文
+ * @return 错误码
+ */
 ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
     ROS_INFO("开始执行任务 ID %u: %s", task.id, task.desc.c_str());
 
@@ -213,16 +317,22 @@ ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
             return ErrorCode::INVALID_PARAMETER;
         }
 
-        ErrorCode code = _arm_->set_target(task.target.value());
+        TargetVariant target_in_base;
+        ErrorCode code = get_frozen_place_target_in_base(task, target_in_base);
+        if(code != ErrorCode::SUCCESS) {
+            ROS_WARN("执行任务 ID %u 失败，无法获取冻结放置目标，错误码：%s", task.id, err_to_string(code).c_str());
+            return code;
+        }
+        code = _arm_->set_target(target_in_base);
         if(code != ErrorCode::SUCCESS) {
             ROS_WARN("执行任务 ID %u 失败，无法设置目标，错误码：%s", task.id, err_to_string(code).c_str());
             return code;
         }
 
-        code = _arm_->plan_and_execute();
-        if(code != ErrorCode::SUCCESS) {
-            ROS_WARN("执行任务 ID %u 失败，无法规划执行，错误码：%s", task.id, err_to_string(code).c_str());
-            return code;
+        const ErrorCode exec_code = _arm_->plan_and_execute();
+        if(exec_code != ErrorCode::SUCCESS) {
+            ROS_WARN("执行任务 ID %u 失败，无法规划执行，错误码：%s", task.id, err_to_string(exec_code).c_str());
+            return exec_code;
         }
 
         ROS_INFO("成功执行任务 ID %u", task.id);
@@ -236,10 +346,21 @@ ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
     return ErrorCode::INVALID_PARAMETER;
 }
 
+/**
+ * @brief 执行整个任务组
+ * @param group_name 任务组名称
+ * @return 错误码
+ */
 ErrorCode TasksManager::execute_task_group(const std::string& group_name) {
     return execute_task_group(group_name, nullptr);
 }
 
+/**
+ * @brief 执行整个任务组（带上下文）
+ * @param group_name 任务组名称
+ * @param ctx 执行上下文
+ * @return 错误码
+ */
 ErrorCode TasksManager::execute_task_group(const std::string& group_name, ExecutionContext* ctx) {
     auto group = find_task_group(group_name);
     if(!group) {
@@ -255,10 +376,19 @@ ErrorCode TasksManager::execute_task_group(const std::string& group_name, Execut
         return code;
     }
 
-    for(auto& task : group.value()->sorted_tasks) {
-        ErrorCode err_code = execute_task(task, ctx);
+    for(const auto& task_snapshot : group.value()->sorted_tasks) {
+        auto task = find_task(group_name, task_snapshot.id);
+        if(!task) {
+            ROS_WARN("执行任务组 '%s' 失败，任务 ID %u 已不存在", group_name.c_str(), task_snapshot.id);
+            return task.error();
+        }
+
+        const ErrorCode err_code = execute_task(*task.value(), ctx);
         if(err_code != ErrorCode::SUCCESS) {
-            ROS_WARN("执行任务组 '%s' 中任务 ID %u 失败，错误码：%s", group_name.c_str(), task.id, err_to_string(err_code).c_str());
+            ROS_WARN("执行任务组 '%s' 中任务 ID %u 失败，错误码：%s",
+                group_name.c_str(),
+                task_snapshot.id,
+                err_to_string(err_code).c_str());
             return err_code;
         }
     }
@@ -266,8 +396,30 @@ ErrorCode TasksManager::execute_task_group(const std::string& group_name, Execut
     return ErrorCode::SUCCESS;
 }
 
-// ========================= private ========================= //
+/**
+ * @brief 估算任务组总步骤数
+ * @param group_name 任务组名称
+ * @return 预计步骤数量
+ */
+uint32_t TasksManager::estimate_task_group_steps(const std::string& group_name) const {
+    auto group_it = _task_groups_.find(group_name);
+    if(group_it == _task_groups_.end()) return 0;
 
+    uint32_t total_steps = 0;
+    for(const auto& [id, task] : group_it->second.tasks) {
+        (void)id;
+        total_steps += estimate_task_steps(task);
+    }
+    return total_steps;
+}
+
+// ! ========================= 私 有 类 方 法 实 现 ========================= ! //
+
+/**
+ * @brief 查找任务组对象
+ * @param group_name 任务组名称
+ * @return 任务组指针，失败返回错误码
+ */
 tl::expected<TaskGroup*, ErrorCode> TasksManager::find_task_group(const std::string& group_name) {
     auto task_group = _task_groups_.find(group_name);
     if(task_group == _task_groups_.end()) {
@@ -277,6 +429,12 @@ tl::expected<TaskGroup*, ErrorCode> TasksManager::find_task_group(const std::str
     return &task_group->second;
 }
 
+/**
+ * @brief 查找任务对象
+ * @param group_name 任务组名称
+ * @param id 任务 ID
+ * @return 任务指针，失败返回错误码
+ */
 tl::expected<Task*, ErrorCode> TasksManager::find_task(const std::string& group_name, unsigned int id) {
     auto group = find_task_group(group_name);
     if(!group) return tl::make_unexpected(group.error());
@@ -289,6 +447,12 @@ tl::expected<Task*, ErrorCode> TasksManager::find_task(const std::string& group_
     return &task->second;
 }
 
+/**
+ * @brief 查找任务对象（const 版本）
+ * @param group_name 任务组名称
+ * @param id 任务 ID
+ * @return 任务指针，失败返回错误码
+ */
 tl::expected<const Task*, ErrorCode> TasksManager::find_task(const std::string& group_name, unsigned int id) const {
     auto task_group = _task_groups_.find(group_name);
     if(task_group == _task_groups_.end()) {
@@ -301,9 +465,49 @@ tl::expected<const Task*, ErrorCode> TasksManager::find_task(const std::string& 
         ROS_WARN("任务组 '%s' 中不存在任务 ID %u", group_name.c_str(), id);
         return tl::make_unexpected(ErrorCode::TASK_NOT_FOUND);
     }
+
     return &task->second;
 }
 
+/**
+ * @brief 获取任务目标在底座坐标系下的冻结目标
+ * @param task 任务对象
+ * @param target_in_base 输出目标（底座坐标系）
+ * @return 错误码
+ */
+ErrorCode TasksManager::get_frozen_task_target_in_base(const Task& task, TargetVariant& target_in_base) const {
+    if(!task.target) return ErrorCode::INVALID_PARAMETER;
+    if(task.target_frame != _arm_->get_base_link()) {
+        ROS_WARN("任务 ID %u 的目标坐标系 '%s' 与机械臂底座坐标系 '%s' 不一致，无法获取冻结目标",
+            task.id, task.target_frame.c_str(), _arm_->get_base_link().c_str());
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    target_in_base = task.target.value();
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 获取采摘任务放置目标在底座坐标系下的冻结目标
+ * @param task 任务对象
+ * @param place_in_base 输出放置目标（底座坐标系）
+ * @return 错误码
+ */
+ErrorCode TasksManager::get_frozen_place_target_in_base(const Task& task, TargetVariant& place_in_base) const {
+    if(!task.pick_params || !task.pick_params->place_target) return ErrorCode::INVALID_PARAMETER;
+    if(task.pick_params->place_frame != _arm_->get_base_link()) {
+        ROS_WARN("任务 ID %u 的放置目标坐标系 '%s' 与机械臂底座坐标系 '%s' 不一致，无法获取冻结放置目标",
+            task.id, task.pick_params->place_frame.c_str(), _arm_->get_base_link().c_str());
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    place_in_base = task.pick_params->place_target.value();
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 对任务组进行排序
+ * @param task_group 任务组对象
+ * @return 错误码
+ */
 ErrorCode TasksManager::sort_tasks(TaskGroup& task_group) {
     task_group.sorted_tasks.clear();
 
@@ -316,122 +520,111 @@ ErrorCode TasksManager::sort_tasks(TaskGroup& task_group) {
         return ErrorCode::SUCCESS;
     }
 
-    if(task_group.sort_type == SortType::DIST) {
-        std::vector<std::reference_wrapper<const Task>> sortable_tasks;
-        for(auto& [id, task] : task_group.tasks) {
-            if(task.target) sortable_tasks.push_back(std::cref(task));
-        }
-
-        if(sortable_tasks.empty()) {
-            ROS_WARN("任务组中没有设置目标的任务，无法按距离排序，默认按 ID 排序");
-            for(auto& [id, task] : task_group.tasks) {
-                task_group.sorted_tasks.push_back(task);
-                task_group.sorted_tasks.back().id = id;
-            }
-            return ErrorCode::SUCCESS;
-        }
-
-        std::set<unsigned int> visited_ids;
-        unsigned int cur_id = 0;
-        double min_dist = -1.0;
-        for(auto& [id, task] : task_group.tasks) {
-            if(!task.target) continue;
-            double dist = calculate_dist(_arm_->get_current_pose(), task.target.value(), task_group.weight_orient);
-            if(min_dist < 0 || dist < min_dist) {
-                min_dist = dist;
-                cur_id = id;
-            }
-        }
-
-        while(task_group.sorted_tasks.size() < sortable_tasks.size()) {
-            auto cur_task = task_group.tasks.find(cur_id);
-            task_group.sorted_tasks.push_back(cur_task->second);
-            task_group.sorted_tasks.back().id = cur_id;
-            visited_ids.insert(cur_id);
-
-            double min_dist_local = -1.0;
-            bool found_next = false;
-            for(const auto& [id, task] : task_group.tasks) {
-                if(visited_ids.count(id) > 0 || !task.target) continue;
-                double dist = calculate_dist(task_group.sorted_tasks.back().target.value(), task.target.value(), task_group.weight_orient);
-                if(min_dist_local < 0 || dist < min_dist_local) {
-                    min_dist_local = dist;
-                    cur_id = id;
-                    found_next = true;
-                }
-            }
-            if(!found_next) break;
-        }
-
-        optimize_with_2opt(task_group.sorted_tasks, task_group.weight_orient);
-        ROS_INFO("任务组已按加权距离排序");
+    if(task_group.sort_type != SortType::DIST) {
         return ErrorCode::SUCCESS;
     }
 
+    std::vector<unsigned int> sortable_ids;
+    for(auto& [id, task] : task_group.tasks) {
+        if(task.target) sortable_ids.push_back(id);
+    }
+
+    if(sortable_ids.empty()) {
+        ROS_WARN("任务组中没有设置目标的任务，无法按距离排序，默认按 ID 排序");
+        for(auto& [id, task] : task_group.tasks) {
+            task_group.sorted_tasks.push_back(task);
+            task_group.sorted_tasks.back().id = id;
+        }
+        return ErrorCode::SUCCESS;
+    }
+
+    std::set<unsigned int> visited_ids;
+
+    const geometry_msgs::Pose current_pose = _arm_->get_current_pose();
+    unsigned int cur_id = sortable_ids.front();
+    double min_dist = -1.0;
+    for(const unsigned int id : sortable_ids) {
+        TargetVariant target_in_base;
+        const ErrorCode code = get_frozen_task_target_in_base(task_group.tasks.at(id), target_in_base);
+        if(code != ErrorCode::SUCCESS) return code;
+
+        const geometry_msgs::Pose target_pose = target_to_effective_pose_in_base(target_in_base, current_pose);
+        const double pos_dist = std::sqrt(
+            std::pow(current_pose.position.x - target_pose.position.x, 2) +
+            std::pow(current_pose.position.y - target_pose.position.y, 2) +
+            std::pow(current_pose.position.z - target_pose.position.z, 2));
+        if(min_dist < 0.0 || pos_dist < min_dist) {
+            min_dist = pos_dist;
+            cur_id = id;
+        }
+    }
+
+    while(task_group.sorted_tasks.size() < sortable_ids.size()) {
+        const auto cur_task_it = task_group.tasks.find(cur_id);
+        if(cur_task_it == task_group.tasks.end()) return ErrorCode::TASK_NOT_FOUND;
+
+        task_group.sorted_tasks.push_back(cur_task_it->second);
+        task_group.sorted_tasks.back().id = cur_id;
+        visited_ids.insert(cur_id);
+
+        if(visited_ids.size() == sortable_ids.size()) break;
+
+        TargetVariant current_target_in_base;
+        ErrorCode code = get_frozen_task_target_in_base(cur_task_it->second, current_target_in_base);
+        if(code != ErrorCode::SUCCESS) return code;
+
+        double min_dist_local = -1.0;
+        for(const unsigned int id : sortable_ids) {
+            if(visited_ids.count(id) > 0) continue;
+
+            TargetVariant candidate_target_in_base;
+            code = get_frozen_task_target_in_base(task_group.tasks.at(id), candidate_target_in_base);
+            if(code != ErrorCode::SUCCESS) return code;
+
+            const double dist = calculate_dist(current_target_in_base, candidate_target_in_base, task_group.weight_orient);
+            if(min_dist_local < 0.0 || dist < min_dist_local) {
+                min_dist_local = dist;
+                cur_id = id;
+            }
+        }
+    }
+
+    optimize_with_2opt(task_group.sorted_tasks, task_group.weight_orient);
+    ROS_INFO("任务组已按加权距离排序");
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 计算两个目标之间的加权距离
+ * @param base 基准目标（已在底座坐标系）
+ * @param target 目标（已在底座坐标系）
+ * @param weight_orient 姿态权重
+ * @return 加权距离
+ */
 double TasksManager::calculate_dist(const TargetVariant& base, const TargetVariant& target, float weight_orient) {
-    auto get_position = variant_visitor{
-        [](std::monostate) {
-            geometry_msgs::Point zero_point;
-            zero_point.x = 0.0;
-            zero_point.y = 0.0;
-            zero_point.z = 0.0;
-            return zero_point;
-        },
-        [](const geometry_msgs::Pose& pose) { return pose.position; },
-        [](const geometry_msgs::Point& point) { return point; },
-        [](const geometry_msgs::Quaternion&) {
-            geometry_msgs::Point zero_point;
-            zero_point.x = 0.0;
-            zero_point.y = 0.0;
-            zero_point.z = 0.0;
-            return zero_point;
-        },
-        [](const geometry_msgs::PoseStamped& pose_stamped) { return pose_stamped.pose.position; }
-    };
+    const geometry_msgs::Pose ref_pose = _arm_->get_current_pose();
+    const geometry_msgs::Pose base_pose = target_to_effective_pose_in_base(base, ref_pose);
+    const geometry_msgs::Pose target_pose = target_to_effective_pose_in_base(target, base_pose);
 
-    geometry_msgs::Point base_pos = std::visit(get_position, base);
-    geometry_msgs::Point target_pos = std::visit(get_position, target);
     const double pos_dist = std::sqrt(
-        std::pow(base_pos.x - target_pos.x, 2) +
-        std::pow(base_pos.y - target_pos.y, 2) +
-        std::pow(base_pos.z - target_pos.z, 2));
+        std::pow(base_pose.position.x - target_pose.position.x, 2) +
+        std::pow(base_pose.position.y - target_pose.position.y, 2) +
+        std::pow(base_pose.position.z - target_pose.position.z, 2));
 
-    auto get_orientation = variant_visitor{
-        [](std::monostate) {
-            geometry_msgs::Quaternion zero_quat;
-            zero_quat.x = 0.0;
-            zero_quat.y = 0.0;
-            zero_quat.z = 0.0;
-            zero_quat.w = 1.0;
-            return zero_quat;
-        },
-        [](const geometry_msgs::Pose& pose) { return pose.orientation; },
-        [](const geometry_msgs::Point&) {
-            geometry_msgs::Quaternion zero_quat;
-            zero_quat.x = 0.0;
-            zero_quat.y = 0.0;
-            zero_quat.z = 0.0;
-            zero_quat.w = 1.0;
-            return zero_quat;
-        },
-        [](const geometry_msgs::Quaternion& quat) { return quat; },
-        [](const geometry_msgs::PoseStamped& pose_stamped) { return pose_stamped.pose.orientation; }
-    };
-
-    geometry_msgs::Quaternion base_orient = std::visit(get_orientation, base);
-    geometry_msgs::Quaternion target_orient = std::visit(get_orientation, target);
     const double orient_dist = std::sqrt(
-        std::pow(base_orient.x - target_orient.x, 2) +
-        std::pow(base_orient.y - target_orient.y, 2) +
-        std::pow(base_orient.z - target_orient.z, 2) +
-        std::pow(base_orient.w - target_orient.w, 2));
+        std::pow(base_pose.orientation.x - target_pose.orientation.x, 2) +
+        std::pow(base_pose.orientation.y - target_pose.orientation.y, 2) +
+        std::pow(base_pose.orientation.z - target_pose.orientation.z, 2) +
+        std::pow(base_pose.orientation.w - target_pose.orientation.w, 2));
 
     return (1.0 - weight_orient) * pos_dist + weight_orient * orient_dist;
 }
 
+/**
+ * @brief 使用 2-opt 算法优化任务路径
+ * @param path 任务路径
+ * @param weight_orient 姿态权重
+ */
 void TasksManager::optimize_with_2opt(std::vector<Task>& path, float weight_orient) {
     bool improved = true;
     const int n = static_cast<int>(path.size());
@@ -441,12 +634,16 @@ void TasksManager::optimize_with_2opt(std::vector<Task>& path, float weight_orie
         improved = false;
         for(int i = 0; i < n - 3; ++i) {
             for(int j = i + 2; j < n - 1; ++j) {
-                if(!path[i].target || !path[i + 1].target || !path[j].target || !path[j + 1].target) continue;
+                TargetVariant base_i, base_i1, base_j, base_j1;
+                if(get_frozen_task_target_in_base(path[i], base_i) != ErrorCode::SUCCESS) continue;
+                if(get_frozen_task_target_in_base(path[i + 1], base_i1) != ErrorCode::SUCCESS) continue;
+                if(get_frozen_task_target_in_base(path[j], base_j) != ErrorCode::SUCCESS) continue;
+                if(get_frozen_task_target_in_base(path[j + 1], base_j1) != ErrorCode::SUCCESS) continue;
 
-                const double dist1 = calculate_dist(path[i].target.value(), path[i + 1].target.value(), weight_orient);
-                const double dist2 = calculate_dist(path[j].target.value(), path[j + 1].target.value(), weight_orient);
-                const double dist3 = calculate_dist(path[i].target.value(), path[j].target.value(), weight_orient);
-                const double dist4 = calculate_dist(path[i + 1].target.value(), path[j + 1].target.value(), weight_orient);
+                const double dist1 = calculate_dist(base_i, base_i1, weight_orient);
+                const double dist2 = calculate_dist(base_j, base_j1, weight_orient);
+                const double dist3 = calculate_dist(base_i, base_j, weight_orient);
+                const double dist4 = calculate_dist(base_i1, base_j1, weight_orient);
 
                 if(dist3 + dist4 < dist1 + dist2) {
                     std::reverse(path.begin() + i + 1, path.begin() + j + 1);
@@ -457,18 +654,28 @@ void TasksManager::optimize_with_2opt(std::vector<Task>& path, float weight_orie
     }
 }
 
+/**
+ * @brief 判断任务是否收到取消请求
+ * @param task 任务对象
+ * @param ctx 执行上下文
+ * @return 若已取消则返回 true
+ */
 bool TasksManager::is_cancel_requested(Task& task, ExecutionContext* ctx) {
     if(task.pick_params && task.pick_params->canceled) return true;
     if(ctx && ctx->cancel_requested && ctx->cancel_requested->load()) return true;
     return false;
 }
 
-void TasksManager::report_pick_feedback(Task& task,
-    PickStage stage,
-    bool ok,
-    ErrorCode code,
-    const std::string& text,
-    ExecutionContext* ctx) {
+/**
+ * @brief 上报采摘任务反馈
+ * @param task 任务对象
+ * @param stage 当前阶段
+ * @param ok 最近一次子步骤是否成功
+ * @param code 最近一次子步骤返回码
+ * @param text 反馈文本
+ * @param ctx 执行上下文
+ */
+void TasksManager::report_pick_feedback(Task& task, PickStage stage, bool ok, ErrorCode code, const std::string& text, ExecutionContext* ctx) {
     if(task.pick_params) {
         task.pick_params->current_stage = stage;
     }
@@ -478,148 +685,132 @@ void TasksManager::report_pick_feedback(Task& task,
     }
 }
 
-ErrorCode TasksManager::resolve_target_to_base(const TargetVariant& input, TargetVariant& resolved, std::string* source_frame) {
-    return std::visit(variant_visitor{
+/**
+ * @brief 将目标冻结到底座坐标系下
+ * @param target 输入目标
+ * @param target_frame 输入目标所属坐标系（当目标不带 frame 信息时必须显式提供）
+ * @param frozen_target 输出冻结后的目标
+ * @param frozen_frame 输出冻结后的坐标系
+ * @return 错误码
+ */
+ErrorCode TasksManager::freeze_target_to_base(const TargetVariant& target,
+    const std::string& target_frame,
+    TargetVariant& frozen_target,
+    std::string& frozen_frame) const {
+
+    std::string source_frame;
+    const ErrorCode code = std::visit(variant_visitor{
         [&](const std::monostate&) -> ErrorCode {
+            ROS_WARN("目标为空，无法冻结到底座坐标系");
             return ErrorCode::INVALID_TARGET_TYPE;
         },
         [&](const geometry_msgs::Pose& pose) -> ErrorCode {
-            if(source_frame) *source_frame = "base_link";
-            resolved = pose;
-            return ErrorCode::SUCCESS;
+            if(target_frame.empty()) {
+                ROS_WARN("Pose 目标必须显式提供 frame_id，无法冻结到底座坐标系");
+                return ErrorCode::INVALID_PARAMETER;
+            }
+            source_frame = target_frame;
+            return _arm_->resolve_target_to_base(pose, target_frame, frozen_target, nullptr);
         },
         [&](const geometry_msgs::Point& point) -> ErrorCode {
-            if(source_frame) *source_frame = "base_link";
-            resolved = point;
-            return ErrorCode::SUCCESS;
+            if(target_frame.empty()) {
+                ROS_WARN("Point 目标必须显式提供 frame_id，无法冻结到底座坐标系");
+                return ErrorCode::INVALID_PARAMETER;
+            }
+            source_frame = target_frame;
+            return _arm_->resolve_target_to_base(point, target_frame, frozen_target, nullptr);
         },
         [&](const geometry_msgs::Quaternion& quat) -> ErrorCode {
-            if(source_frame) *source_frame = "base_link";
-            resolved = quat;
-            return ErrorCode::SUCCESS;
+            if(target_frame.empty()) {
+                ROS_WARN("Quaternion 目标必须显式提供 frame_id，无法冻结到底座坐标系");
+                return ErrorCode::INVALID_PARAMETER;
+            }
+            source_frame = target_frame;
+            return _arm_->resolve_target_to_base(quat, target_frame, frozen_target, nullptr);
         },
         [&](const geometry_msgs::PoseStamped& pose_stamped) -> ErrorCode {
-            if(source_frame) *source_frame = pose_stamped.header.frame_id;
-            if(pose_stamped.header.frame_id.empty() || pose_stamped.header.frame_id == "base_link") {
-                geometry_msgs::PoseStamped out = pose_stamped;
-                out.header.frame_id = "base_link";
-                if(out.header.stamp == ros::Time()) out.header.stamp = ros::Time::now();
-                resolved = out;
-                return ErrorCode::SUCCESS;
+            if(pose_stamped.header.frame_id.empty()) {
+                ROS_WARN("PoseStamped 目标必须显式提供 header.frame_id，无法冻结到底座坐标系");
+                return ErrorCode::INVALID_PARAMETER;
             }
-
-            geometry_msgs::PoseStamped transformed;
-            const ErrorCode code = _arm_->end_to_base_tf(pose_stamped, transformed);
-            if(code != ErrorCode::SUCCESS) return code;
-            transformed.header.frame_id = "base_link";
-            resolved = transformed;
-            return ErrorCode::SUCCESS;
+            source_frame = pose_stamped.header.frame_id;
+            return _arm_->resolve_target_to_base(pose_stamped, pose_stamped.header.frame_id, frozen_target, nullptr);
         }
-        }, input);
-}
+        }, target);
 
-ErrorCode TasksManager::resolve_pose_target_to_base(const TargetVariant& input, geometry_msgs::PoseStamped& resolved, std::string* source_frame) {
-    TargetVariant tmp;
-    const ErrorCode code = resolve_target_to_base(input, tmp, source_frame);
     if(code != ErrorCode::SUCCESS) return code;
 
-    auto pose_opt = to_pose_stamped(tmp);
-    if(!pose_opt) return ErrorCode::INVALID_TARGET_TYPE;
-
-    resolved = *pose_opt;
-    resolved.header.frame_id = "base_link";
-    if(resolved.header.stamp == ros::Time()) resolved.header.stamp = ros::Time::now();
+    frozen_frame = _arm_->get_base_link();
+    ROS_INFO("目标已从 '%s' 冻结到 '%s'", source_frame.c_str(), frozen_frame.c_str());
     return ErrorCode::SUCCESS;
 }
 
-tl::optional<TargetVariant> TasksManager::clone_target_with_offset_z(const TargetVariant& input, double dz) const {
-    return std::visit(variant_visitor{
-        [](const std::monostate&) -> tl::optional<TargetVariant> {
-            return tl::nullopt;
-        },
-        [dz](const geometry_msgs::Pose& pose) -> tl::optional<TargetVariant> {
-            geometry_msgs::Pose out = pose;
-            out.position.z += dz;
-            return TargetVariant{ out };
-        },
-        [](const geometry_msgs::Point&) -> tl::optional<TargetVariant> {
-            return tl::nullopt;
-        },
-        [](const geometry_msgs::Quaternion&) -> tl::optional<TargetVariant> {
-            return tl::nullopt;
-        },
-        [dz](const geometry_msgs::PoseStamped& pose_stamped) -> tl::optional<TargetVariant> {
-            geometry_msgs::PoseStamped out = pose_stamped;
-            out.pose.position.z += dz;
-            return TargetVariant{ out };
-        }
-        }, input);
-}
-
-ErrorCode TasksManager::rebuild_pick_task_cache(Task& task) {
-    if(task.type != TaskType::PICK || !task.pick_params) return ErrorCode::SUCCESS;
-    auto& pp = *task.pick_params;
-
-    pp.resolved_pick_pose = tl::nullopt;
-    pp.resolved_pre_pick_pose = tl::nullopt;
-    pp.resolved_retreat_pose = tl::nullopt;
-    pp.resolved_place_pose = tl::nullopt;
-
-    if(!task.raw_target) return ErrorCode::SUCCESS;
-
-    geometry_msgs::PoseStamped pick_pose;
-    ErrorCode code = resolve_pose_target_to_base(task.raw_target.value(), pick_pose, &pp.target_source_frame);
-    if(code != ErrorCode::SUCCESS) {
-        ROS_WARN("任务 ID %u 采摘目标解析到 base frame 失败，错误码：%s", task.id, err_to_string(code).c_str());
-        return code;
-    }
-    pp.resolved_pick_pose = pick_pose;
-    task.target = pick_pose;  // 用于排序 / 执行
-
-    if(auto pre_raw = clone_target_with_offset_z(task.raw_target.value(), pp.pre_approach_offset_z)) {
-        geometry_msgs::PoseStamped pre_pose;
-        code = resolve_pose_target_to_base(pre_raw.value(), pre_pose);
-        if(code != ErrorCode::SUCCESS) return code;
-        pp.resolved_pre_pick_pose = pre_pose;
-    }
-    else {
-        geometry_msgs::PoseStamped pre_pose = pick_pose;
-        pre_pose.pose.position.z += pp.pre_approach_offset_z;
-        pp.resolved_pre_pick_pose = pre_pose;
+/**
+ * @brief 将可选目标冻结到底座坐标系下
+ * @param target 输入目标
+ * @param target_frame 输入目标所属坐标系（当目标不带 frame 信息时必须显式提供）
+ * @param frozen_target 输出冻结后的目标
+ * @param frozen_frame 输出冻结后的坐标系
+ * @return 错误码
+ */
+ErrorCode TasksManager::freeze_target_to_base(const tl::optional<TargetVariant>& target,
+    const std::string& target_frame,
+    tl::optional<TargetVariant>& frozen_target,
+    std::string& frozen_frame) const {
+    frozen_frame = _arm_->get_base_link();
+    if(!target) {
+        frozen_target = tl::nullopt;
+        return ErrorCode::SUCCESS;
     }
 
-    if(auto retreat_raw = clone_target_with_offset_z(task.raw_target.value(), pp.retreat_offset_z)) {
-        geometry_msgs::PoseStamped retreat_pose;
-        code = resolve_pose_target_to_base(retreat_raw.value(), retreat_pose);
-        if(code != ErrorCode::SUCCESS) return code;
-        pp.resolved_retreat_pose = retreat_pose;
-    }
-    else {
-        geometry_msgs::PoseStamped retreat_pose = pick_pose;
-        retreat_pose.pose.position.z += pp.retreat_offset_z;
-        pp.resolved_retreat_pose = retreat_pose;
-    }
+    TargetVariant frozen_target_value;
+    const ErrorCode code = freeze_target_to_base(target.value(), target_frame, frozen_target_value, frozen_frame);
+    if(code != ErrorCode::SUCCESS) return code;
 
-    if(pp.use_place_pose && pp.place_target) {
-        geometry_msgs::PoseStamped place_pose;
-        code = resolve_pose_target_to_base(pp.place_target.value(), place_pose, &pp.place_source_frame);
-        if(code != ErrorCode::SUCCESS) {
-            ROS_WARN("任务 ID %u 放置目标解析到 base frame 失败，错误码：%s", task.id, err_to_string(code).c_str());
-            return code;
-        }
-        pp.resolved_place_pose = place_pose;
-    }
-
+    frozen_target = frozen_target_value;
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 估算单个任务的步骤数量
+ * @param task 任务对象
+ * @return 预计步骤数量
+ */
+uint32_t TasksManager::estimate_task_steps(const Task& task) const {
+    if(task.type == TaskType::MOVE_ONLY) return 1;
+
+    if(task.type == TaskType::PICK) {
+        uint32_t steps = 4;  // START / MOVE_TO_PICK / PICKING / FINISH
+        if(task.pick_params && task.pick_params->use_place_pose) steps += 2;  // MOVE_TO_PLACE / PLACING
+        if(task.pick_params && task.pick_params->go_home_after_finish) steps += 1;  // GO_HOME
+        return steps;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 执行采摘任务
+ * @param task 任务对象
+ * @return 错误码
+ */
 ErrorCode TasksManager::execute_pick_task(Task& task) {
     return execute_pick_task(task, nullptr);
 }
 
+/**
+ * @brief 执行采摘任务（带上下文）
+ * @param task 任务对象
+ * @param ctx 执行上下文
+ * @return 错误码
+ */
 ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     ROS_INFO("正在执行 PICK 任务（ID = %u）...", task.id);
 
+    if(!task.target) {
+        ROS_WARN("任务 ID %u 没有设置目标，无法执行 PICK 任务", task.id);
+        return ErrorCode::INVALID_PARAMETER;
+    }
     if(!task.pick_params) {
         ROS_WARN("任务 ID %u 没有设置采摘参数，无法执行 PICK 任务", task.id);
         return ErrorCode::INVALID_PARAMETER;
@@ -627,68 +818,49 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
 
     auto& pp = *task.pick_params;
     pp.completed = false;
-
-    ErrorCode code = rebuild_pick_task_cache(task);
-    if(code != ErrorCode::SUCCESS) {
-        report_pick_feedback(task, PickStage::PICK_FAILED, false, code, "重建采摘缓存失败", ctx);
-        return code;
-    }
-
-    if(!pp.resolved_pick_pose || !pp.resolved_pre_pick_pose || !pp.resolved_retreat_pose) {
-        ROS_WARN("任务 ID %u 缺少解析后的采摘位姿缓存", task.id);
-        report_pick_feedback(task, PickStage::PICK_FAILED, false, ErrorCode::INVALID_TARGET_TYPE, "采摘位姿缓存无效", ctx);
-        return ErrorCode::INVALID_TARGET_TYPE;
-    }
+    pp.canceled = false;
+    pp.current_stage = PickStage::PICK_IDLE;
 
     auto check_cancel = [&]() -> ErrorCode {
         if(!is_cancel_requested(task, ctx)) return ErrorCode::SUCCESS;
 
-        ROS_INFO("任务 ID %u 已取消", task.id);
+        pp.canceled = true;
+        pp.completed = false;
+        report_pick_feedback(task, PickStage::PICK_CANCELED, false, ErrorCode::CANCELLED, "任务已取消", ctx);
+
         if(pp.go_safe_after_cancel) {
-            ROS_INFO("任务 ID %u 取消后回安全位", task.id);
             const ErrorCode safe_code = _arm_->home();
             if(safe_code != ErrorCode::SUCCESS) {
                 ROS_WARN("任务 ID %u 取消后回安全位失败，错误码：%s", task.id, err_to_string(safe_code).c_str());
             }
         }
-
-        pp.completed = false;
-        report_pick_feedback(task, PickStage::PICK_CANCELED, false, ErrorCode::CANCELLED, "任务已取消", ctx);
         return ErrorCode::CANCELLED;
         };
 
     auto fail_stage = [&](PickStage stage, ErrorCode ec, const std::string& text) -> ErrorCode {
+        pp.current_stage = PickStage::PICK_FAILED;
         pp.completed = false;
         report_pick_feedback(task, PickStage::PICK_FAILED, false, ec, text, ctx);
-        ROS_WARN("任务 ID %u 在阶段[%s]失败：%s (%s)",
-            task.id,
-            pick_stage_to_string(stage),
-            text.c_str(),
-            err_to_string(ec).c_str());
+        ROS_WARN("任务 ID %u 在阶段[%s]失败：%s (%s)", task.id, pick_stage_to_string(stage), text.c_str(), err_to_string(ec).c_str());
         return ec;
         };
 
-    auto run_with_retry = [&](const std::function<ErrorCode()>& fn, PickStage stage, const std::string& text) -> ErrorCode {
+    auto run_with_retry = [&](const std::function<ErrorCode()>& fn, PickStage stage) -> ErrorCode {
         ErrorCode last = ErrorCode::FAILURE;
-        for(uint8_t attempt = 0; attempt <= pp.retry_times; ++attempt) {
+        for(uint8_t attempt = 1; attempt <= pp.retry_times; ++attempt) {
             last = fn();
             if(last == ErrorCode::SUCCESS) return ErrorCode::SUCCESS;
             if(last == ErrorCode::CANCELLED) return last;
-            ROS_WARN("任务 ID %u 阶段[%s] 第 %u/%u 次尝试失败：%s",
-                task.id,
-                pick_stage_to_string(stage),
-                static_cast<unsigned int>(attempt + 1),
-                static_cast<unsigned int>(pp.retry_times + 1),
-                err_to_string(last).c_str());
+            ROS_WARN("任务 ID %u 阶段[%s] 第 %u/%u 次尝试失败：%s", task.id, pick_stage_to_string(stage), static_cast<unsigned int>(attempt), static_cast<unsigned int>(pp.retry_times), err_to_string(last).c_str());
         }
         return last;
         };
 
-    auto exec_arm_pose = [&](const geometry_msgs::PoseStamped& pose,
+    auto exec_move = [&](const TargetVariant& target,
         PickStage stage,
         const std::string& text) -> ErrorCode {
-            report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text, ctx);
-            ErrorCode ec = _arm_->set_target(pose);
+            report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
+            ErrorCode ec = _arm_->set_target(target);
             if(ec != ErrorCode::SUCCESS) return fail_stage(stage, ec, text + "：设置目标失败");
             ec = _arm_->plan_and_execute();
             if(ec != ErrorCode::SUCCESS) return fail_stage(stage, ec, text + "：执行失败");
@@ -698,79 +870,64 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
 
     auto exec_eef = [&](bool open, PickStage stage, const std::string& text) -> ErrorCode {
         if(!_eef_) return fail_stage(stage, ErrorCode::INVALID_INTERFACE, text + "：末端执行器未初始化");
-
         auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
         if(!gripper_if) {
             return fail_stage(stage, ErrorCode::INVALID_INTERFACE, text + "：末端执行器不支持夹爪接口");
         }
 
-        report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text, ctx);
-        ErrorCode ec = open ? gripper_if->open() : gripper_if->close();
+        report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
+        ErrorCode ec = open ? gripper_if.value().open() : gripper_if.value().close();
         if(ec != ErrorCode::SUCCESS) return fail_stage(stage, ec, text + "：执行失败");
         report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text + "：完成", ctx);
         return ErrorCode::SUCCESS;
         };
 
-    report_pick_feedback(task, PickStage::PICK_START, true, ErrorCode::SUCCESS, "开始采摘", ctx);
+    report_pick_feedback(task, PickStage::PICK_START, true, ErrorCode::SUCCESS, "开始", ctx);
 
-    code = check_cancel();
+    ErrorCode code = check_cancel();
     if(code != ErrorCode::SUCCESS) return code;
 
-    if(pp.use_eef) {
-        code = run_with_retry([&]() { return exec_eef(true, PickStage::PICK_START, "打开夹爪"); }, PickStage::PICK_START, "打开夹爪");
-        if(code != ErrorCode::SUCCESS) return code;
-    }
-
-    code = check_cancel();
-    if(code != ErrorCode::SUCCESS) return code;
-
-    code = run_with_retry([&]() { return exec_arm_pose(*pp.resolved_pre_pick_pose, PickStage::PICK_MOVE_TO_PICK, "移动到预抓取位"); },
-        PickStage::PICK_MOVE_TO_PICK, "移动到预抓取位");
-    if(code != ErrorCode::SUCCESS) return code;
-
-    code = check_cancel();
-    if(code != ErrorCode::SUCCESS) return code;
-
-    code = run_with_retry([&]() { return exec_arm_pose(*pp.resolved_pick_pose, PickStage::PICK_MOVE_TO_PICK, "移动到抓取位"); },
-        PickStage::PICK_MOVE_TO_PICK, "移动到抓取位");
+    TargetVariant target_in_base;
+    code = get_frozen_task_target_in_base(task, target_in_base);
+    if(code != ErrorCode::SUCCESS) return fail_stage(PickStage::PICK_MOVE_TO_PICK, code, "获取冻结目标失败");
+    code = run_with_retry([&]() { return exec_move(target_in_base, PickStage::PICK_MOVE_TO_PICK, "移动到采摘位"); }, PickStage::PICK_MOVE_TO_PICK);
     if(code != ErrorCode::SUCCESS) return code;
 
     code = check_cancel();
     if(code != ErrorCode::SUCCESS) return code;
 
     if(pp.use_eef) {
-        code = run_with_retry([&]() { return exec_eef(false, PickStage::PICK_PICKING, "闭合夹爪"); },
-            PickStage::PICK_PICKING, "闭合夹爪");
+        code = run_with_retry([&]() { return exec_eef(false, PickStage::PICK_PICKING, "采摘中"); }, PickStage::PICK_PICKING);
         if(code != ErrorCode::SUCCESS) return code;
+    }
+    else {
+        report_pick_feedback(task, PickStage::PICK_PICKING, true, ErrorCode::SUCCESS, "采摘中：跳过末端动作", ctx);
     }
 
     code = check_cancel();
     if(code != ErrorCode::SUCCESS) return code;
 
-    code = run_with_retry([&]() { return exec_arm_pose(*pp.resolved_retreat_pose, PickStage::PICK_MOVE_TO_PICK, "回撤到安全位"); },
-        PickStage::PICK_MOVE_TO_PICK, "回撤到安全位");
-    if(code != ErrorCode::SUCCESS) return code;
-
-    code = check_cancel();
-    if(code != ErrorCode::SUCCESS) return code;
-
-    if(pp.use_place_pose && pp.resolved_place_pose) {
-        code = run_with_retry([&]() { return exec_arm_pose(*pp.resolved_place_pose, PickStage::PICK_MOVE_TO_PLACE, "移动到放置位"); },
-            PickStage::PICK_MOVE_TO_PLACE, "移动到放置位");
+    if(pp.use_place_pose && pp.place_target) {
+        TargetVariant place_target_in_base;
+        code = get_frozen_place_target_in_base(task, place_target_in_base);
+        if(code != ErrorCode::SUCCESS) return fail_stage(PickStage::PICK_MOVE_TO_PLACE, code, "获取冻结放置目标失败");
+        code = run_with_retry([&]() { return exec_move(place_target_in_base, PickStage::PICK_MOVE_TO_PLACE, "移动到放置位"); }, PickStage::PICK_MOVE_TO_PLACE);
         if(code != ErrorCode::SUCCESS) return code;
 
         code = check_cancel();
         if(code != ErrorCode::SUCCESS) return code;
 
         if(pp.use_eef) {
-            code = run_with_retry([&]() { return exec_eef(true, PickStage::PICK_PLACING, "释放目标"); },
-                PickStage::PICK_PLACING, "释放目标");
+            code = run_with_retry([&]() { return exec_eef(true, PickStage::PICK_PLACING, "放置中"); }, PickStage::PICK_PLACING);
             if(code != ErrorCode::SUCCESS) return code;
+        }
+        else {
+            report_pick_feedback(task, PickStage::PICK_PLACING, true, ErrorCode::SUCCESS, "放置中：跳过末端动作", ctx);
         }
     }
 
-    code = check_cancel();
-    if(code != ErrorCode::SUCCESS) return code;
+    pp.completed = true;
+    report_pick_feedback(task, PickStage::PICK_FINISH, true, ErrorCode::SUCCESS, "完成", ctx);
 
     if(pp.go_home_after_finish) {
         report_pick_feedback(task, PickStage::PICK_GO_HOME, true, ErrorCode::SUCCESS, "回到初始位", ctx);
@@ -779,8 +936,6 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         report_pick_feedback(task, PickStage::PICK_GO_HOME, true, ErrorCode::SUCCESS, "回到初始位：完成", ctx);
     }
 
-    pp.completed = true;
-    report_pick_feedback(task, PickStage::PICK_FINISH, true, ErrorCode::SUCCESS, "采摘任务完成", ctx);
     return ErrorCode::SUCCESS;
 }
 

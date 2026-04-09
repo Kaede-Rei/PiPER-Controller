@@ -2,6 +2,7 @@
 #define _tasks_manager_hpp_
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -16,6 +17,8 @@
 #include "piper_controller/eef_controller.hpp"  // IWYU pragma: keep
 
 namespace piper {
+
+// ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
 
 /**
  * @brief 任务类型枚举
@@ -53,68 +56,82 @@ enum class PickStage {
 
 /**
  * @brief 单果采摘任务参数
- * @note raw 输入保留在 target / place_target 中；resolved_* 为在“加入任务时”冻结到底座坐标系的执行缓存。
  */
 struct PickTaskParams {
+    /// @brief 是否启用放置动作
     bool use_place_pose{ false };
-    tl::optional<TargetVariant> place_target;  ///< 原始输入，可为 base / eef frame
+    /// @brief 放置目标（设置时已冻结到底座坐标系）
+    tl::optional<TargetVariant> place_target;
+    /// @brief 放置目标所属坐标系（冻结后固定为 base_link）
+    std::string place_frame{ "base_link" };
 
+    /// @brief 是否执行夹爪动作
     bool use_eef{ true };
+    /// @brief 任务结束后是否回到初始位
     bool go_home_after_finish{ false };
+    /// @brief 取消后是否自动回到安全位
     bool go_safe_after_cancel{ true };
+    /// @brief 最大重试次数
     uint8_t retry_times{ 0 };
 
+    /// @brief 当前阶段
     PickStage current_stage{ PickStage::PICK_IDLE };
+    /// @brief 是否已完成
     bool completed{ false };
+    /// @brief 是否已取消
     bool canceled{ false };
-
-    double pre_approach_offset_z{ 0.05 };
-    double retreat_offset_z{ 0.05 };
-
-    // ==== 运行缓存：统一冻结到 base_link ==== //
-    tl::optional<geometry_msgs::PoseStamped> resolved_pick_pose;
-    tl::optional<geometry_msgs::PoseStamped> resolved_pre_pick_pose;
-    tl::optional<geometry_msgs::PoseStamped> resolved_retreat_pose;
-    tl::optional<geometry_msgs::PoseStamped> resolved_place_pose;
-
-    std::string target_source_frame;
-    std::string place_source_frame;
 };
 
 /**
  * @brief 单个任务描述结构体
- * @note target 为“规范化后”的执行目标（默认冻结到底座坐标系），raw_target 保留原始输入用于重建缓存。
  */
 struct Task {
+    /// @brief 任务 ID
     unsigned int id{};
+    /// @brief 任务描述
     std::string desc;
+    /// @brief 任务类型
     TaskType type{ TaskType::MOVE_ONLY };
 
-    tl::optional<TargetVariant> target;      ///< 规范化后的目标，供排序 / 执行使用
-    tl::optional<TargetVariant> raw_target;  ///< 原始输入目标，供调试 / 重新解析使用
+    /// @brief 任务目标（设置时已冻结到底座坐标系）
+    tl::optional<TargetVariant> target;
+    /// @brief 任务目标所属坐标系（冻结后固定为 base_link）
+    std::string target_frame{ "base_link" };
 
+    /// @brief 采摘参数（仅 PICK 任务使用）
     tl::optional<PickTaskParams> pick_params;
 };
 
+/**
+ * @brief 任务组结构体
+ */
 struct TaskGroup {
+    /// @brief 原始任务集合，key 为任务 ID
     std::map<unsigned int, Task> tasks;
+    /// @brief 排序后的任务序列
     std::vector<Task> sorted_tasks;
 
+    /// @brief 排序方式
     SortType sort_type{ SortType::ID };
+    /// @brief 姿态权重，仅 DIST 排序方式使用
     float weight_orient{ 0.3f };
 };
 
+// ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
+
 class TasksManager {
 public:
+    /**
+     * @brief 执行上下文
+     */
     struct ExecutionContext {
+        /// @brief 取消标志
         std::atomic<bool>* cancel_requested{ nullptr };
-        std::function<void(const Task& task,
-            PickStage stage,
-            bool last_success,
-            ErrorCode code,
-            const std::string& text)> feedback_cb;
+        /// @brief 反馈回调
+        std::function<void(const Task& task, PickStage stage, bool last_success, ErrorCode code, const std::string& text)> feedback_cb;
     };
 
+public:
     TasksManager(std::shared_ptr<ArmController> arm, std::shared_ptr<EndEffector> eef);
     ~TasksManager() = default;
 
@@ -129,11 +146,12 @@ public:
     ErrorCode execute_task_group(const std::string& group_name);
     ErrorCode execute_task_group(const std::string& group_name, ExecutionContext* ctx);
 
+    uint32_t estimate_task_group_steps(const std::string& group_name) const;
     ErrorCode set_dist_sort_weight_orient(const std::string& group_name, float weight_orient);
 
     ErrorCode add_task(const std::string& group_name, unsigned int id, TaskType task_type = TaskType::MOVE_ONLY, const std::string& task_description = "");
     ErrorCode delete_task(const std::string& group_name, unsigned int id);
-    ErrorCode set_task_target(const std::string& group_name, unsigned int id, const tl::optional<TargetVariant>& target);
+    ErrorCode set_task_target(const std::string& group_name, unsigned int id, const tl::optional<TargetVariant>& target, const std::string& target_frame = "");
     ErrorCode set_task_pick_params(const std::string& group_name, unsigned int id, const PickTaskParams& pick_params);
     ErrorCode execute_task(const std::string& group_name, unsigned int id);
     ErrorCode execute_task(const std::string& group_name, unsigned int id, ExecutionContext* ctx);
@@ -150,26 +168,28 @@ private:
     void optimize_with_2opt(std::vector<Task>& path, float weight_orient = 0.3f);
 
     bool is_cancel_requested(Task& task, ExecutionContext* ctx);
-    void report_pick_feedback(Task& task,
-        PickStage stage,
-        bool ok,
-        ErrorCode code,
-        const std::string& text,
-        ExecutionContext* ctx);
+    void report_pick_feedback(Task& task, PickStage stage, bool ok, ErrorCode code, const std::string& text, ExecutionContext* ctx);
+
+    ErrorCode get_frozen_task_target_in_base(const Task& task, TargetVariant& target_in_base) const;
+    ErrorCode get_frozen_place_target_in_base(const Task& task, TargetVariant& place_in_base) const;
+    ErrorCode freeze_target_to_base(const TargetVariant& target, const std::string& target_frame, TargetVariant& frozen_target, std::string& frozen_frame) const;
+    ErrorCode freeze_target_to_base(const tl::optional<TargetVariant>& target, const std::string& target_frame, tl::optional<TargetVariant>& frozen_target, std::string& frozen_frame) const;
+
+    uint32_t estimate_task_steps(const Task& task) const;
     ErrorCode execute_pick_task(Task& task);
     ErrorCode execute_pick_task(Task& task, ExecutionContext* ctx);
 
-    ErrorCode resolve_target_to_base(const TargetVariant& input, TargetVariant& resolved, std::string* source_frame = nullptr);
-    ErrorCode resolve_pose_target_to_base(const TargetVariant& input, geometry_msgs::PoseStamped& resolved, std::string* source_frame = nullptr);
-    tl::optional<TargetVariant> clone_target_with_offset_z(const TargetVariant& input, double dz) const;
-    ErrorCode rebuild_pick_task_cache(Task& task);
-
 private:
+    /// @brief 机械臂控制器
     std::shared_ptr<ArmController> _arm_;
+    /// @brief 末端执行器
     std::shared_ptr<EndEffector> _eef_;
+    /// @brief 机械臂名称
     std::string _arm_name_;
+    /// @brief 末端执行器名称
     std::string _eef_name_;
 
+    /// @brief 任务组集合
     std::map<std::string, TaskGroup> _task_groups_;
 };
 
