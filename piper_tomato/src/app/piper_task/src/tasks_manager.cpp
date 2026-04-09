@@ -82,9 +82,7 @@ TasksManager::TasksManager(std::shared_ptr<ArmController> arm, std::shared_ptr<E
  * @return 错误码
  */
 ErrorCode TasksManager::create_task_group(const std::string& group_name, SortType sort_type) {
-    auto group = find_task_group(group_name);
-    if(group) {
-        ROS_WARN("任务组 '%s' 已存在，无法创建", group_name.c_str());
+    if(_task_groups_.find(group_name) != _task_groups_.end()) {
         return ErrorCode::TASK_GROUP_EXISTS;
     }
 
@@ -145,6 +143,40 @@ ErrorCode TasksManager::set_dist_sort_weight_orient(const std::string& group_nam
 }
 
 /**
+ * @brief 设置任务组排序方式
+ * @param group_name 任务组名称
+ * @param sort_type 排序方式
+ * @return 错误码
+ */
+ErrorCode TasksManager::set_task_group_sort_type(const std::string& group_name, SortType sort_type) {
+    auto group = find_task_group(group_name);
+    if(!group) return group.error();
+
+    group.value()->sort_type = sort_type;
+    ROS_INFO("成功设置任务组 '%s' 的排序方式为 %s",
+        group_name.c_str(),
+        sort_type == SortType::ID ? "ID" : "DIST");
+    return ErrorCode::SUCCESS;
+}
+
+/**
+ * @brief 设置任务组完成后是否回到初始位
+ * @param group_name 任务组名称
+ * @param go_home_after_finish 是否回到初始位
+ * @return 错误码
+ */
+ErrorCode TasksManager::set_task_group_go_home_after_finish(const std::string& group_name, bool go_home_after_finish) {
+    auto group = find_task_group(group_name);
+    if(!group) return group.error();
+
+    group.value()->go_home_after_finish = go_home_after_finish;
+    ROS_INFO("成功设置任务组 '%s' 的完成后回原点选项为 %s",
+        group_name.c_str(),
+        go_home_after_finish ? "true" : "false");
+    return ErrorCode::SUCCESS;
+}
+
+/**
  * @brief 添加任务
  * @param group_name 任务组名称
  * @param id 任务 ID
@@ -179,12 +211,13 @@ ErrorCode TasksManager::add_task(const std::string& group_name, unsigned int id,
  * @return 错误码
  */
 ErrorCode TasksManager::delete_task(const std::string& group_name, unsigned int id) {
-    auto group = find_task_group(group_name);
-    if(!group) return group.error();
-    auto task = find_task(group_name, id);
-    if(!task) return task.error();
+    auto group = _task_groups_.find(group_name);
+    if(group == _task_groups_.end()) return ErrorCode::TASK_GROUP_NOT_FOUND;
 
-    group.value()->tasks.erase(id);
+    auto task = group->second.tasks.find(id);
+    if(task == group->second.tasks.end()) return ErrorCode::TASK_NOT_FOUND;
+
+    group->second.tasks.erase(id);
     ROS_INFO("成功从任务组 '%s' 删除任务 ID %u", group_name.c_str(), id);
     return ErrorCode::SUCCESS;
 }
@@ -318,9 +351,9 @@ ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
         }
 
         TargetVariant target_in_base;
-        ErrorCode code = get_frozen_place_target_in_base(task, target_in_base);
+        ErrorCode code = get_frozen_task_target_in_base(task, target_in_base);
         if(code != ErrorCode::SUCCESS) {
-            ROS_WARN("执行任务 ID %u 失败，无法获取冻结放置目标，错误码：%s", task.id, err_to_string(code).c_str());
+            ROS_WARN("执行任务 ID %u 失败，无法获取冻结任务目标，错误码：%s", task.id, err_to_string(code).c_str());
             return code;
         }
         code = _arm_->set_target(target_in_base);
@@ -393,6 +426,24 @@ ErrorCode TasksManager::execute_task_group(const std::string& group_name, Execut
         }
     }
 
+    if(group.value()->go_home_after_finish) {
+        ROS_INFO("任务组 '%s' 执行完成，回到初始位", group_name.c_str());
+
+        Task feedback_task;
+        feedback_task.id = 0;
+        feedback_task.desc = "任务组收尾";
+        report_pick_feedback(feedback_task, PickStage::PICK_GO_HOME, false, ErrorCode::SUCCESS, "任务组完成后回到初始位", ctx);
+
+        code = _arm_->home();
+        if(code != ErrorCode::SUCCESS) {
+            report_pick_feedback(feedback_task, PickStage::PICK_GO_HOME, false, code, "任务组完成后回到初始位失败", ctx);
+            ROS_WARN("任务组 '%s' 执行完成，但回到初始位失败，错误码：%s", group_name.c_str(), err_to_string(code).c_str());
+            return code;
+        }
+
+        report_pick_feedback(feedback_task, PickStage::PICK_GO_HOME, true, ErrorCode::SUCCESS, "任务组完成后回到初始位：完成", ctx);
+    }
+
     return ErrorCode::SUCCESS;
 }
 
@@ -410,6 +461,7 @@ uint32_t TasksManager::estimate_task_group_steps(const std::string& group_name) 
         (void)id;
         total_steps += estimate_task_steps(task);
     }
+    if(group_it->second.go_home_after_finish) total_steps += 1;
     return total_steps;
 }
 
@@ -780,9 +832,8 @@ uint32_t TasksManager::estimate_task_steps(const Task& task) const {
     if(task.type == TaskType::MOVE_ONLY) return 1;
 
     if(task.type == TaskType::PICK) {
-        uint32_t steps = 4;  // START / MOVE_TO_PICK / PICKING / FINISH
-        if(task.pick_params && task.pick_params->use_place_pose) steps += 2;  // MOVE_TO_PLACE / PLACING
-        if(task.pick_params && task.pick_params->go_home_after_finish) steps += 1;  // GO_HOME
+        uint32_t steps = 4;
+        if(task.pick_params && task.pick_params->use_place_pose) steps += 2;
         return steps;
     }
 
@@ -847,11 +898,12 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
 
     auto run_with_retry = [&](const std::function<ErrorCode()>& fn, PickStage stage) -> ErrorCode {
         ErrorCode last = ErrorCode::FAILURE;
-        for(uint8_t attempt = 1; attempt <= pp.retry_times; ++attempt) {
+        const uint16_t total_attempts = static_cast<uint16_t>(pp.retry_times) + 1;
+        for(uint8_t attempt = 1; attempt <= total_attempts; ++attempt) {
             last = fn();
             if(last == ErrorCode::SUCCESS) return ErrorCode::SUCCESS;
             if(last == ErrorCode::CANCELLED) return last;
-            ROS_WARN("任务 ID %u 阶段[%s] 第 %u/%u 次尝试失败：%s", task.id, pick_stage_to_string(stage), static_cast<unsigned int>(attempt), static_cast<unsigned int>(pp.retry_times), err_to_string(last).c_str());
+            ROS_WARN("任务 ID %u 阶段[%s] 第 %u/%u 次尝试失败：%s", task.id, pick_stage_to_string(stage), static_cast<unsigned int>(attempt), static_cast<unsigned int>(total_attempts), err_to_string(last).c_str());
         }
         return last;
         };
@@ -928,13 +980,6 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
 
     pp.completed = true;
     report_pick_feedback(task, PickStage::PICK_FINISH, true, ErrorCode::SUCCESS, "完成", ctx);
-
-    if(pp.go_home_after_finish) {
-        report_pick_feedback(task, PickStage::PICK_GO_HOME, true, ErrorCode::SUCCESS, "回到初始位", ctx);
-        code = _arm_->home();
-        if(code != ErrorCode::SUCCESS) return fail_stage(PickStage::PICK_GO_HOME, code, "回到初始位失败");
-        report_pick_feedback(task, PickStage::PICK_GO_HOME, true, ErrorCode::SUCCESS, "回到初始位：完成", ctx);
-    }
 
     return ErrorCode::SUCCESS;
 }

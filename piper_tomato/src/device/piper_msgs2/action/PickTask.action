@@ -4,12 +4,25 @@
 uint8 request_type
 uint8 UPSERT_TASK=0
 uint8 EXECUTE_TASK_GROUP=1
+uint8 UPDATE_TASK_GROUP_CONFIG=2
 
 # 任务组名称
 string group_name
 
 # 任务 ID，可由 GUI 生成，也可传 0 让服务端自生成
 uint32 id
+
+# 任务组排序方式
+uint8 group_sort_type
+uint8 GROUP_SORT_ID=0
+uint8 GROUP_SORT_DIST=1
+
+# 距离排序中的姿态权重，仅在 GROUP_SORT_DIST 下生效
+float32 group_dist_weight_orient
+
+# 任务组执行完成后是否回到初始位
+bool group_go_home_after_finish
+
 
 # 任务类型
 uint8 task_type
@@ -56,9 +69,6 @@ string place_frame_id
 
 # 是否执行夹爪动作
 bool use_eef
-
-# 是否在任务结束后回到 home / standby 位
-bool go_home_after_finish
 
 # 是否在取消后自动回安全位
 bool go_safe_after_cancel

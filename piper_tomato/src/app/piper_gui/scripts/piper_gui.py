@@ -656,20 +656,27 @@ class MainWindow(QMainWindow):
         self.task_type_box = QComboBox()
         self.task_type_box.addItem("PICK", PickTaskGoal.TASK_PICK)
         self.task_type_box.addItem("MOVE_ONLY", PickTaskGoal.TASK_MOVE_ONLY)
+        self.group_sort_type_box = QComboBox()
+        self.group_sort_type_box.addItem("按任务 ID 排序", PickTaskGoal.GROUP_SORT_ID)
+        self.group_sort_type_box.addItem("按距离排序", PickTaskGoal.GROUP_SORT_DIST)
+        self.group_weight_orient_edit = QLineEdit("0.30")
+        self.group_weight_orient_edit.setPlaceholderText("0.0 ~ 1.0")
         self.retry_times_edit = QLineEdit("0")
         self.chk_use_eef = QCheckBox("执行夹爪动作")
         self.chk_use_eef.setChecked(True)
-        self.chk_go_home_after_finish = QCheckBox("任务完成后回到初始位")
+        self.chk_go_home_after_finish = QCheckBox("任务组完成后回到初始位")
         self.chk_go_home_after_finish.setChecked(True)
         self.chk_go_safe_after_cancel = QCheckBox("取消后自动回安全位")
         self.chk_go_safe_after_cancel.setChecked(True)
         task_layout.addRow("任务组", self.group_name_edit)
+        task_layout.addRow("任务组排序", self.group_sort_type_box)
+        task_layout.addRow("姿态权重", self.group_weight_orient_edit)
+        task_layout.addRow(self.chk_go_home_after_finish)
         task_layout.addRow("任务 ID", self.task_id_edit)
         task_layout.addRow("任务类型", self.task_type_box)
         task_layout.addRow("描述", self.task_desc_edit)
-        task_layout.addRow("重试次数", self.retry_times_edit)
+        task_layout.addRow("重试次数（不含第一次执行）", self.retry_times_edit)
         task_layout.addRow(self.chk_use_eef)
-        task_layout.addRow(self.chk_go_home_after_finish)
         task_layout.addRow(self.chk_go_safe_after_cancel)
         control_column.addWidget(task_group)
 
@@ -678,8 +685,12 @@ class MainWindow(QMainWindow):
         self.chk_use_place_pose = QCheckBox("启用放置动作")
         self.chk_use_place_pose.setChecked(True)
         self.place_target_type_box = QComboBox()
-        self.place_target_type_box.addItem("Point(base_link)", PickTaskGoal.PLACE_TARGET_POINT)
-        self.place_target_type_box.addItem("Pose(base_link)", PickTaskGoal.PLACE_TARGET_POSE)
+        self.place_target_type_box.addItem(
+            "Point(base_link)", PickTaskGoal.PLACE_TARGET_POINT
+        )
+        self.place_target_type_box.addItem(
+            "Pose(base_link)", PickTaskGoal.PLACE_TARGET_POSE
+        )
         self.place_x_edit = QLineEdit("0.25")
         self.place_y_edit = QLineEdit("0.00")
         self.place_z_edit = QLineEdit("0.10")
@@ -703,6 +714,15 @@ class MainWindow(QMainWindow):
             "background-color: #3498db; color: white; font-size:14px; font-weight:bold;"
         )
         control_column.addWidget(self.btn_reset)
+
+        self.btn_update_group_config = QPushButton("仅更新任务组配置")
+        self.btn_update_group_config.clicked.connect(self.update_task_group_config)
+        self.btn_update_group_config.setMinimumHeight(40)
+        self.btn_update_group_config.setStyleSheet(
+            "background-color: #16a085; color: white; font-size:14px; font-weight:bold;"
+        )
+        self.btn_update_group_config.setEnabled(self.ros_available)
+        control_column.addWidget(self.btn_update_group_config)
 
         self.btn_upsert_task = QPushButton("写入 / 更新当前任务")
         self.btn_upsert_task.clicked.connect(self.manual_send_command)
@@ -888,6 +908,29 @@ class MainWindow(QMainWindow):
             feedback_cb=self._on_pick_feedback,
         )
 
+    def _fill_group_config(self, goal: PickTaskGoal) -> None:
+        goal.group_sort_type = int(self.group_sort_type_box.currentData())
+        goal.group_dist_weight_orient = float(
+            max(0.0, min(1.0, self._parse_float(self.group_weight_orient_edit, 0.3)))
+        )
+        goal.group_go_home_after_finish = self.chk_go_home_after_finish.isChecked()
+
+    def update_task_group_config(self) -> None:
+        if not self.ros_available or self.pick_client is None:
+            self.task_status_label.setText("采摘任务状态：ROS 未连接")
+            return
+
+        goal = PickTaskGoal()
+        goal.request_type = PickTaskGoal.UPDATE_TASK_GROUP_CONFIG
+        goal.group_name = self.group_name_edit.text().strip() or ROS_CFG.pick_group_name
+        self._fill_group_config(goal)
+
+        self.last_request_type = goal.request_type
+        self.task_status_label.setText(
+            f"采摘任务状态：正在更新任务组 '{goal.group_name}' 的配置"
+        )
+        self._send_goal(goal)
+
     def upsert_current_task(self) -> None:
         if not self.ros_available or self.pick_client is None:
             self.task_status_label.setText("采摘任务状态：ROS 未连接")
@@ -904,13 +947,13 @@ class MainWindow(QMainWindow):
         goal.id = max(0, self._parse_int(self.task_id_edit, 1))
         goal.task_type = int(self.task_type_box.currentData())
         goal.description = self.task_desc_edit.text().strip() or "GUI采摘任务"
+        self._fill_group_config(goal)
         goal.target_type = PickTaskGoal.TARGET_POINT
         self._fill_point_msg(goal.target_point, x, y, z)
         goal.target_frame_id = ROS_CFG.tcp_frame
 
         goal.use_place_pose = self.chk_use_place_pose.isChecked()
         goal.use_eef = self.chk_use_eef.isChecked()
-        goal.go_home_after_finish = self.chk_go_home_after_finish.isChecked()
         goal.go_safe_after_cancel = self.chk_go_safe_after_cancel.isChecked()
         goal.retry_times = max(0, self._parse_int(self.retry_times_edit, 0))
 
@@ -949,6 +992,7 @@ class MainWindow(QMainWindow):
         goal = PickTaskGoal()
         goal.request_type = PickTaskGoal.EXECUTE_TASK_GROUP
         goal.group_name = self.group_name_edit.text().strip() or ROS_CFG.pick_group_name
+        self._fill_group_config(goal)
         self.last_request_type = goal.request_type
         self.task_status_label.setText(
             f"采摘任务状态：已发送任务组执行请求，任务组='{goal.group_name}'"
@@ -966,6 +1010,8 @@ class MainWindow(QMainWindow):
     def _on_pick_active(self) -> None:
         if self.last_request_type == PickTaskGoal.UPSERT_TASK:
             self.task_status_label.setText("采摘任务状态：写入任务中")
+        elif self.last_request_type == PickTaskGoal.UPDATE_TASK_GROUP_CONFIG:
+            self.task_status_label.setText("采摘任务状态：更新任务组配置中")
         else:
             self.task_status_label.setText("采摘任务状态：执行任务组中")
 
@@ -983,16 +1029,32 @@ class MainWindow(QMainWindow):
             msg = getattr(result, "message", "")
             if getattr(result, "success", False):
                 if self.last_request_type == PickTaskGoal.UPSERT_TASK:
-                    self.task_status_label.setText(f"采摘任务状态：任务写入成功 - {msg}")
+                    self.task_status_label.setText(
+                        f"采摘任务状态：任务写入成功 - {msg}"
+                    )
+                elif self.last_request_type == PickTaskGoal.UPDATE_TASK_GROUP_CONFIG:
+                    self.task_status_label.setText(
+                        f"采摘任务状态：任务组配置更新成功 - {msg}"
+                    )
                 else:
-                    self.task_status_label.setText(f"采摘任务状态：任务组执行完成 - {msg}")
+                    self.task_status_label.setText(
+                        f"采摘任务状态：任务组执行完成 - {msg}"
+                    )
             elif getattr(result, "canceled", False):
                 self.task_status_label.setText(f"采摘任务状态：已取消 - {msg}")
             else:
                 if self.last_request_type == PickTaskGoal.UPSERT_TASK:
-                    self.task_status_label.setText(f"采摘任务状态：任务写入失败 - {msg}")
+                    self.task_status_label.setText(
+                        f"采摘任务状态：任务写入失败 - {msg}"
+                    )
+                elif self.last_request_type == PickTaskGoal.UPDATE_TASK_GROUP_CONFIG:
+                    self.task_status_label.setText(
+                        f"采摘任务状态：任务组配置更新失败 - {msg}"
+                    )
                 else:
-                    self.task_status_label.setText(f"采摘任务状态：任务组执行失败 - {msg}")
+                    self.task_status_label.setText(
+                        f"采摘任务状态：任务组执行失败 - {msg}"
+                    )
         except Exception:
             self.task_status_label.setText(f"采摘任务状态：结束，state={state}")
 

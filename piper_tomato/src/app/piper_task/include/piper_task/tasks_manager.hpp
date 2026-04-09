@@ -67,11 +67,9 @@ struct PickTaskParams {
 
     /// @brief 是否执行夹爪动作
     bool use_eef{ true };
-    /// @brief 任务结束后是否回到初始位
-    bool go_home_after_finish{ false };
     /// @brief 取消后是否自动回到安全位
     bool go_safe_after_cancel{ true };
-    /// @brief 最大重试次数
+    /// @brief 最大重试次数（不含第一次执行）
     uint8_t retry_times{ 0 };
 
     /// @brief 当前阶段
@@ -110,6 +108,8 @@ struct TaskGroup {
     std::map<unsigned int, Task> tasks;
     /// @brief 排序后的任务序列
     std::vector<Task> sorted_tasks;
+    /// @brief 任务结束后是否回到初始位
+    bool go_home_after_finish{ false };
 
     /// @brief 排序方式
     SortType sort_type{ SortType::ID };
@@ -148,6 +148,8 @@ public:
 
     uint32_t estimate_task_group_steps(const std::string& group_name) const;
     ErrorCode set_dist_sort_weight_orient(const std::string& group_name, float weight_orient);
+    ErrorCode set_task_group_sort_type(const std::string& group_name, SortType sort_type);
+    ErrorCode set_task_group_go_home_after_finish(const std::string& group_name, bool go_home_after_finish);
 
     ErrorCode add_task(const std::string& group_name, unsigned int id, TaskType task_type = TaskType::MOVE_ONLY, const std::string& task_description = "");
     ErrorCode delete_task(const std::string& group_name, unsigned int id);

@@ -63,6 +63,7 @@ private:
      * @param goal Goal 请求
      */
     void handle_execute_task_group_request(const piper_msgs2::PickTaskGoal& goal);
+    void handle_update_task_group_config_request(const piper_msgs2::PickTaskGoal& goal);
 
     /**
      * @brief 从 Goal 中解析任务目标
@@ -83,6 +84,8 @@ private:
      */
     ErrorCode resolve_goal_pick_params(const piper_msgs2::PickTaskGoal& goal,
         PickTaskParams& pick_params) const;
+    ErrorCode apply_goal_task_group_config(const piper_msgs2::PickTaskGoal& goal,
+        const std::string& group_name);
 
     /**
      * @brief 获取当前机械臂位姿

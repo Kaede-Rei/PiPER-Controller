@@ -71,6 +71,9 @@ void PickTaskAction::on_goal() {
         case piper_msgs2::PickTaskGoal::EXECUTE_TASK_GROUP:
             handle_execute_task_group_request(*goal);
             return;
+        case piper_msgs2::PickTaskGoal::UPDATE_TASK_GROUP_CONFIG:
+            handle_update_task_group_config_request(*goal);
+            return;
         default: {
             piper_msgs2::PickTaskResult res;
             res.success = false;
@@ -89,6 +92,38 @@ void PickTaskAction::on_goal() {
  */
 void PickTaskAction::on_preempt() {
     _cancel_requested_.store(true);
+}
+
+/**
+ * @brief 应用 Goal 中的任务组配置
+ * @param goal Goal 请求
+ * @param group_name 任务组名称
+ * @return 错误码
+ */
+ErrorCode PickTaskAction::apply_goal_task_group_config(const piper_msgs2::PickTaskGoal& goal,
+    const std::string& group_name) {
+    SortType sort_type = SortType::ID;
+    switch(goal.group_sort_type) {
+        case piper_msgs2::PickTaskGoal::GROUP_SORT_ID:
+            sort_type = SortType::ID;
+            break;
+        case piper_msgs2::PickTaskGoal::GROUP_SORT_DIST:
+            sort_type = SortType::DIST;
+            break;
+        default:
+            return ErrorCode::INVALID_PARAMETER;
+    }
+
+    ErrorCode code = _tasks_manager_->set_task_group_sort_type(group_name, sort_type);
+    if(code != ErrorCode::SUCCESS) return code;
+
+    code = _tasks_manager_->set_dist_sort_weight_orient(group_name, goal.group_dist_weight_orient);
+    if(code != ErrorCode::SUCCESS) return code;
+
+    code = _tasks_manager_->set_task_group_go_home_after_finish(group_name, goal.group_go_home_after_finish);
+    if(code != ErrorCode::SUCCESS) return code;
+
+    return ErrorCode::SUCCESS;
 }
 
 /**
@@ -118,6 +153,18 @@ void PickTaskAction::handle_upsert_task_request(const piper_msgs2::PickTaskGoal&
         res.success = false;
         res.error_code = static_cast<int32_t>(code);
         res.message = "创建任务组失败";
+        res.canceled = false;
+        res.final_pose = get_current_pose_stamped();
+        _as_->setAborted(res, res.message);
+        return;
+    }
+
+    code = apply_goal_task_group_config(goal, group_name);
+    if(code != ErrorCode::SUCCESS) {
+        piper_msgs2::PickTaskResult res;
+        res.success = false;
+        res.error_code = static_cast<int32_t>(code);
+        res.message = "设置任务组配置失败";
         res.canceled = false;
         res.final_pose = get_current_pose_stamped();
         _as_->setAborted(res, res.message);
@@ -212,6 +259,47 @@ void PickTaskAction::handle_upsert_task_request(const piper_msgs2::PickTaskGoal&
 }
 
 /**
+ * @brief 处理“仅更新任务组配置”请求
+ * @param goal Goal 请求
+ */
+void PickTaskAction::handle_update_task_group_config_request(const piper_msgs2::PickTaskGoal& goal) {
+    const std::string group_name = resolve_group_name(goal);
+
+    ErrorCode code = _tasks_manager_->create_task_group(group_name, SortType::ID);
+    if(code != ErrorCode::SUCCESS && code != ErrorCode::TASK_GROUP_EXISTS) {
+        piper_msgs2::PickTaskResult res;
+        res.success = false;
+        res.error_code = static_cast<int32_t>(code);
+        res.message = "创建任务组失败";
+        res.canceled = false;
+        res.final_pose = get_current_pose_stamped();
+        _as_->setAborted(res, res.message);
+        return;
+    }
+
+    code = apply_goal_task_group_config(goal, group_name);
+    if(code != ErrorCode::SUCCESS) {
+        piper_msgs2::PickTaskResult res;
+        res.success = false;
+        res.error_code = static_cast<int32_t>(code);
+        res.message = "更新任务组配置失败";
+        res.canceled = false;
+        res.final_pose = get_current_pose_stamped();
+        _as_->setAborted(res, res.message);
+        return;
+    }
+
+    piper_msgs2::PickTaskResult res;
+    res.success = true;
+    res.error_code = static_cast<int32_t>(ErrorCode::SUCCESS);
+    res.message = "任务组 '" + group_name + "' 配置已更新";
+    res.canceled = false;
+    res.completed_steps = 0;
+    res.final_pose = get_current_pose_stamped();
+    _as_->setSucceeded(res, res.message);
+}
+
+/**
  * @brief 处理“执行任务组”请求
  * @param goal Goal 请求
  */
@@ -219,6 +307,19 @@ void PickTaskAction::handle_execute_task_group_request(const piper_msgs2::PickTa
     _cancel_requested_.store(false);
 
     const std::string group_name = resolve_group_name(goal);
+
+    ErrorCode code = apply_goal_task_group_config(goal, group_name);
+    if(code != ErrorCode::SUCCESS && code != ErrorCode::TASK_GROUP_NOT_FOUND) {
+        piper_msgs2::PickTaskResult res;
+        res.success = false;
+        res.error_code = static_cast<int32_t>(code);
+        res.message = "设置任务组配置失败";
+        res.canceled = false;
+        res.final_pose = get_current_pose_stamped();
+        _as_->setAborted(res, res.message);
+        return;
+    }
+
     uint32_t completed_steps = 0;
     PickStage last_stage = PickStage::PICK_IDLE;
     unsigned int last_task_id = 0;
@@ -250,7 +351,7 @@ void PickTaskAction::handle_execute_task_group_request(const piper_msgs2::PickTa
         }
         };
 
-    const ErrorCode code = _tasks_manager_->execute_task_group(group_name, &ctx);
+    code = _tasks_manager_->execute_task_group(group_name, &ctx);
 
     piper_msgs2::PickTaskResult res;
     res.error_code = static_cast<int32_t>(code);
@@ -344,7 +445,6 @@ ErrorCode PickTaskAction::resolve_goal_pick_params(const piper_msgs2::PickTaskGo
     PickTaskParams& pick_params) const {
     pick_params.use_place_pose = goal.use_place_pose;
     pick_params.use_eef = goal.use_eef;
-    pick_params.go_home_after_finish = goal.go_home_after_finish;
     pick_params.go_safe_after_cancel = goal.go_safe_after_cancel;
     pick_params.retry_times = goal.retry_times;
     pick_params.place_frame = _arm_->get_base_link();
@@ -358,10 +458,6 @@ ErrorCode PickTaskAction::resolve_goal_pick_params(const piper_msgs2::PickTaskGo
                 ROS_WARN("放置 Pose 目标必须显式提供 place_frame_id");
                 return ErrorCode::INVALID_PARAMETER;
             }
-            if(goal.place_frame_id != _arm_->get_base_link()) {
-                ROS_WARN("放置 Pose 目标必须位于 base_link 坐标系，当前为 '%s'", goal.place_frame_id.c_str());
-                return ErrorCode::INVALID_PARAMETER;
-            }
             pick_params.place_target = goal.place_pose;
             pick_params.place_frame = goal.place_frame_id;
             return ErrorCode::SUCCESS;
@@ -370,20 +466,12 @@ ErrorCode PickTaskAction::resolve_goal_pick_params(const piper_msgs2::PickTaskGo
                 ROS_WARN("放置 Point 目标必须显式提供 place_frame_id");
                 return ErrorCode::INVALID_PARAMETER;
             }
-            if(goal.place_frame_id != _arm_->get_base_link()) {
-                ROS_WARN("放置 Point 目标必须位于 base_link 坐标系，当前为 '%s'", goal.place_frame_id.c_str());
-                return ErrorCode::INVALID_PARAMETER;
-            }
             pick_params.place_target = goal.place_point;
             pick_params.place_frame = goal.place_frame_id;
             return ErrorCode::SUCCESS;
         case piper_msgs2::PickTaskGoal::PLACE_TARGET_POSE_STAMPED:
             if(goal.place_pose_stamped.header.frame_id.empty()) {
                 ROS_WARN("放置 PoseStamped 目标必须显式提供 header.frame_id");
-                return ErrorCode::INVALID_PARAMETER;
-            }
-            if(goal.place_pose_stamped.header.frame_id != _arm_->get_base_link()) {
-                ROS_WARN("放置 PoseStamped 目标必须位于 base_link 坐标系，当前为 '%s'", goal.place_pose_stamped.header.frame_id.c_str());
                 return ErrorCode::INVALID_PARAMETER;
             }
             pick_params.place_target = goal.place_pose_stamped;
