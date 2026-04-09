@@ -40,6 +40,11 @@ micromamba create -n ros_env -c conda-forge -c robostack-noetic \
     ros-noetic-rosserial-python \
     compilers cxx-compiler c-compiler binutils sysroot_linux-64
 
+# if you want to install others
+micromamba activate ros_env
+micromamba install -c conda-forge -c robostack-noetic \
+    ros-noetic-<package-name>
+
 # install the OrbbecSDK and add the udev rules
 cd ./ros_env/pyorbbecsdk && sudo chmod +x ./install_udev_rules.sh && sudo ./install_udev_rules.sh && sudo udevadm control --reload && sudo udevadm trigger && pip install pyorbbecsdk2 && cd ../../
 # install Can and PiPER-SDK
