@@ -67,25 +67,56 @@ function cleanup() {
         exit 1
     fi
 
-    # TODO: FIX: 这是旧版本
-    # echo "检测到中断，令机械臂回到零点 ..."
-    # for i in {1..5}; do
-    #     if rosservice list | grep -q "/stop_srv"; then
-    #         # 回零
-    #         rosservice call /piper_server/eef_cmd "command: 'zero'"
+    echo "检测到中断，令机械臂回到零点 ..."
+    python3 - <<'PY' || true
+import sys
 
-    #         # 等待自定义时间
-    #         sleep "$DELAY_SEC"
+import actionlib
+import rospy
 
-    #         # 可选：失能
-    #         if [[ "$DISABLE_ON_EXIT" == true ]]; then
-    #             rosservice call /enable_srv "enable_request: false" || true
-    #         fi
+from piper_msgs2.msg import SimpleMoveArmAction, SimpleMoveArmGoal
 
-    #         break
-    #     fi
-    #     sleep 1
-    # done
+
+def main() -> int:
+    rospy.init_node("piper_exit_zero", anonymous=True, disable_signals=True)
+    client = actionlib.SimpleActionClient("/simple_move_arm", SimpleMoveArmAction)
+
+    if not client.wait_for_server(rospy.Duration(5.0)):
+        print("[WARN] 未找到 /simple_move_arm action server")
+        return 1
+
+    goal = SimpleMoveArmGoal()
+    goal.command_type = SimpleMoveArmGoal.MOVE_TO_ZERO
+    goal.target_type = SimpleMoveArmGoal.TARGET_POSE
+    goal.x = [0.0]
+    goal.y = [0.0]
+    goal.z = [0.0]
+    goal.roll = [0.0]
+    goal.pitch = [0.0]
+    goal.yaw = [0.0]
+
+    client.send_goal(goal)
+
+    if not client.wait_for_result(rospy.Duration(15.0)):
+        client.cancel_goal()
+        print("[WARN] 回零动作等待超时")
+        return 1
+
+    result = client.get_result()
+    print(result)
+    return 0
+
+
+sys.exit(main())
+PY
+
+    # 等待自定义时间
+    sleep "$DELAY_SEC"
+
+    # 可选：失能
+    if [[ "$DISABLE_ON_EXIT" == true ]]; then
+        rosservice call /enable_srv "enable_request: false" || true
+    fi
 
     echo "正在关闭 roslaunch ..."
     kill $ROSLAUNCH_PID 2>/dev/null || true
