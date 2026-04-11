@@ -249,10 +249,15 @@ class ImageDisplayWidget(QLabel):
 
         self._pixmap = None
         self._latest_cv_image = None
-        self._screen_points = []
-        self._cutting_point_screen = None
+        self._img_points = []
+        self._cutting_point_img = None
         self._is_polygon_closed = False
         self._last_render_ts = 0.0
+        self._zoom = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
+        self._is_panning = False
+        self._last_pan_pos = None
 
     def set_image(self, cv_img: np.ndarray) -> None:
         if cv_img is None:
@@ -275,93 +280,149 @@ class ImageDisplayWidget(QLabel):
         painter.setRenderHint(QPainter.Antialiasing)
 
         if self._pixmap:
+            x, y, disp_w, disp_h = self._get_view_transform()
             scaled_pix = self._pixmap.scaled(
-                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                int(disp_w), int(disp_h), Qt.IgnoreAspectRatio, Qt.SmoothTransformation
             )
-            x = (self.width() - scaled_pix.width()) // 2
-            y = (self.height() - scaled_pix.height()) // 2
-            painter.drawPixmap(x, y, scaled_pix)
+            painter.drawPixmap(int(x), int(y), scaled_pix)
             self._pixmap_offset = (x, y)
-            self._scale_x = scaled_pix.width() / self._pixmap.width()
-            self._scale_y = scaled_pix.height() / self._pixmap.height()
+            self._scale_x = disp_w / self._pixmap.width()
+            self._scale_y = disp_h / self._pixmap.height()
 
-        if len(self._screen_points) > 0:
+        if len(self._img_points) > 0:
+            screen_points = [self._img_to_screen(x, y) for x, y in self._img_points]
             pen = QPen(QColor(0, 255, 0), 3, Qt.SolidLine)
             painter.setPen(pen)
-            for i in range(len(self._screen_points) - 1):
-                painter.drawLine(self._screen_points[i], self._screen_points[i + 1])
+            for i in range(len(screen_points) - 1):
+                painter.drawLine(screen_points[i], screen_points[i + 1])
 
-            if len(self._screen_points) >= 3 or self._is_polygon_closed:
-                if len(self._screen_points) >= 3:
-                    painter.drawLine(self._screen_points[-1], self._screen_points[0])
+            if len(screen_points) >= 3 or self._is_polygon_closed:
+                if len(screen_points) >= 3:
+                    painter.drawLine(screen_points[-1], screen_points[0])
                     brush = QBrush(QColor(0, 255, 0, 80))
                     painter.setBrush(brush)
-                    painter.drawPolygon(QPolygonF(self._screen_points))
+                    painter.drawPolygon(QPolygonF(screen_points))
                     painter.setBrush(Qt.NoBrush)
 
             pen_point = QPen(QColor(255, 0, 0), 12, Qt.SolidLine)
             pen_point.setCapStyle(Qt.RoundCap)
             painter.setPen(pen_point)
-            for p in self._screen_points:
+            for p in screen_points:
                 painter.drawPoint(p)
 
-        if self._cutting_point_screen:
+        if self._cutting_point_img:
+            cut_pt = self._img_to_screen(
+                self._cutting_point_img[0], self._cutting_point_img[1]
+            )
             pen_cut = QPen(QColor(255, 0, 255), 15, Qt.SolidLine)
             pen_cut.setCapStyle(Qt.RoundCap)
             painter.setPen(pen_cut)
-            painter.drawPoint(self._cutting_point_screen)
+            painter.drawPoint(cut_pt)
+
+    def _get_view_transform(self, zoom=None, pan_x=None, pan_y=None):
+        if not self._pixmap:
+            return 0.0, 0.0, 1.0, 1.0
+        zoom = self._zoom if zoom is None else zoom
+        pan_x = self._pan_x if pan_x is None else pan_x
+        pan_y = self._pan_y if pan_y is None else pan_y
+
+        base_scale = min(
+            self.width() / max(1, self._pixmap.width()),
+            self.height() / max(1, self._pixmap.height()),
+        )
+        disp_w = max(1.0, self._pixmap.width() * base_scale * zoom)
+        disp_h = max(1.0, self._pixmap.height() * base_scale * zoom)
+        x = (self.width() - disp_w) / 2.0 + pan_x
+        y = (self.height() - disp_h) / 2.0 + pan_y
+        return x, y, disp_w, disp_h
 
     def _screen_to_img(self, pt: QPoint) -> Tuple[float, float]:
+        if self._pixmap is None:
+            return 0.0, 0.0
+        x, y, disp_w, disp_h = self._get_view_transform()
         img_x = np.clip(
-            (pt.x() - self._pixmap_offset[0]) / self._scale_x,
-            0,
-            self._pixmap.width() - 1,
+            (pt.x() - x) / disp_w * self._pixmap.width(), 0, self._pixmap.width() - 1
         )
         img_y = np.clip(
-            (pt.y() - self._pixmap_offset[1]) / self._scale_y,
-            0,
-            self._pixmap.height() - 1,
+            (pt.y() - y) / disp_h * self._pixmap.height(), 0, self._pixmap.height() - 1
         )
         return img_x, img_y
 
     def _img_to_screen(self, x: float, y: float) -> QPoint:
-        if not hasattr(self, "_scale_x"):
+        if self._pixmap is None:
             return QPoint()
+        view_x, view_y, disp_w, disp_h = self._get_view_transform()
         return QPoint(
-            int(x * self._scale_x + self._pixmap_offset[0]),
-            int(y * self._scale_y + self._pixmap_offset[1]),
+            int(x / self._pixmap.width() * disp_w + view_x),
+            int(y / self._pixmap.height() * disp_h + view_y),
         )
 
+    def wheelEvent(self, event):
+        if self._pixmap is None:
+            return
+        angle = event.angleDelta().y()
+        if angle == 0:
+            return
+
+        factor = 1.1 if angle > 0 else 1 / 1.1
+        old_zoom = self._zoom
+        new_zoom = max(1.0, min(8.0, old_zoom * factor))
+        if abs(new_zoom - old_zoom) < 1e-6:
+            return
+
+        cursor_pos = event.pos()
+        img_x, img_y = self._screen_to_img(cursor_pos)
+        self._zoom = new_zoom
+        mapped_pos = self._img_to_screen(img_x, img_y)
+        self._pan_x += cursor_pos.x() - mapped_pos.x()
+        self._pan_y += cursor_pos.y() - mapped_pos.y()
+        self.update()
+        event.accept()
+
     def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self._is_panning = True
+            self._last_pan_pos = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            return
+
         if self._is_polygon_closed:
             self.clear_selection()
 
         if event.button() == Qt.LeftButton:
-            self._screen_points.append(event.pos())
-            self._cutting_point_screen = None
+            self._img_points.append(self._screen_to_img(event.pos()))
+            self._cutting_point_img = None
             self.update()
-            if len(self._screen_points) >= 3:
-                self._update_mask_and_calculate()
-        elif event.button() == Qt.RightButton and len(self._screen_points) > 0:
-            self._screen_points.pop()
-            self._cutting_point_screen = None
-            self._is_polygon_closed = False
-            self.update()
-            if len(self._screen_points) >= 3:
+            if len(self._img_points) >= 3:
                 self._update_mask_and_calculate()
 
+    def mouseMoveEvent(self, event):
+        if self._is_panning and self._last_pan_pos is not None:
+            delta = event.pos() - self._last_pan_pos
+            self._pan_x += delta.x()
+            self._pan_y += delta.y()
+            self._last_pan_pos = event.pos()
+            self.update()
+            return
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self._is_panning = False
+            self._last_pan_pos = None
+            self.unsetCursor()
+            return
+
     def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton and len(self._screen_points) >= 3:
+        if event.button() == Qt.LeftButton and len(self._img_points) >= 3:
             self._is_polygon_closed = True
             self.update()
             self._update_mask_and_calculate()
 
     def _update_mask_and_calculate(self) -> None:
-        if len(self._screen_points) < 3 or self._latest_cv_image is None:
+        if len(self._img_points) < 3 or self._latest_cv_image is None:
             return
 
-        img_pts = [self._screen_to_img(p) for p in self._screen_points]
-        img_pts_np = np.array(img_pts, dtype=np.int32)
+        img_pts_np = np.array(self._img_points, dtype=np.int32)
         h, w = self._latest_cv_image.shape[:2]
         mask = np.zeros((h, w), dtype=np.uint8)
         cv2.fillPoly(mask, [img_pts_np], 255)
@@ -374,16 +435,23 @@ class ImageDisplayWidget(QLabel):
         if cutting_point is None:
             return
 
-        self._cutting_point_screen = self._img_to_screen(
-            cutting_point[0], cutting_point[1]
-        )
+        self._cutting_point_img = cutting_point
         self.update()
         self.selection_changed.emit(cutting_point, mask)
 
     def clear_selection(self) -> None:
-        self._screen_points = []
-        self._cutting_point_screen = None
+        self._img_points = []
+        self._cutting_point_img = None
         self._is_polygon_closed = False
+        self.update()
+
+    def reset_view(self) -> None:
+        self._zoom = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
+        self._is_panning = False
+        self._last_pan_pos = None
+        self.unsetCursor()
         self.update()
 
 
@@ -574,6 +642,8 @@ class MainWindow(QMainWindow):
 
         self._toggle_window_shortcut = QShortcut(QKeySequence("F11"), self)
         self._toggle_window_shortcut.activated.connect(self.toggle_window_state)
+        self._reset_view_shortcut = QShortcut(QKeySequence("R"), self)
+        self._reset_view_shortcut.activated.connect(self.video_label.reset_view)
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -660,7 +730,7 @@ class MainWindow(QMainWindow):
         info_group = QGroupBox("目标锁定 / 坐标信息")
         info_group_layout = QVBoxLayout(info_group)
         self.info_label = QLabel(
-            "系统初始化中...\n\n操作说明：\n1. 左键：添加轮廓点\n2. 右键：撤销上一个点\n3. 双击：闭合多边形"
+            "系统初始化中...\n\n操作说明：\n1. 左键：添加轮廓点\n2. 鼠标滚轮：缩放画面\n3. 右键拖拽：平移画面\n4. R 键：重置视图\n"
         )
         self.info_label.setWordWrap(True)
         self.info_label.setFont(QFont(UI_CFG.info_font_name, UI_CFG.info_font_size))
