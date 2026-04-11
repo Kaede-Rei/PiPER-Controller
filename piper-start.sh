@@ -67,24 +67,25 @@ function cleanup() {
         exit 1
     fi
 
-    echo "检测到中断，令机械臂回到零点 ..."
-    for i in {1..5}; do
-        if rosservice list | grep -q "/stop_srv"; then
-            # 回零
-            rosservice call /piper_server/eef_cmd "command: 'zero'"
+    # TODO: FIX: 这是旧版本
+    # echo "检测到中断，令机械臂回到零点 ..."
+    # for i in {1..5}; do
+    #     if rosservice list | grep -q "/stop_srv"; then
+    #         # 回零
+    #         rosservice call /piper_server/eef_cmd "command: 'zero'"
 
-            # 等待自定义时间
-            sleep "$DELAY_SEC"
+    #         # 等待自定义时间
+    #         sleep "$DELAY_SEC"
 
-            # 可选：失能
-            if [[ "$DISABLE_ON_EXIT" == true ]]; then
-                rosservice call /enable_srv "enable_request: false" || true
-            fi
+    #         # 可选：失能
+    #         if [[ "$DISABLE_ON_EXIT" == true ]]; then
+    #             rosservice call /enable_srv "enable_request: false" || true
+    #         fi
 
-            break
-        fi
-        sleep 1
-    done
+    #         break
+    #     fi
+    #     sleep 1
+    # done
 
     echo "正在关闭 roslaunch ..."
     kill $ROSLAUNCH_PID 2>/dev/null || true

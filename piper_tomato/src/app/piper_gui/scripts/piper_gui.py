@@ -691,8 +691,8 @@ class MainWindow(QMainWindow):
         self.place_target_type_box.addItem(
             "Pose(base_link)", PickTaskGoal.PLACE_TARGET_POSE
         )
-        self.place_x_edit = QLineEdit("0.25")
-        self.place_y_edit = QLineEdit("0.00")
+        self.place_x_edit = QLineEdit("0.00")
+        self.place_y_edit = QLineEdit("0.20")
         self.place_z_edit = QLineEdit("0.10")
         self.place_roll_edit = QLineEdit("0.00")
         self.place_pitch_edit = QLineEdit("0.00")

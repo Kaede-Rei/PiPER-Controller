@@ -441,6 +441,10 @@ ErrorCode TasksManager::execute_task_group(const std::string& group_name, Execut
             return code;
         }
 
+        auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
+        if(!gripper_if) ROS_WARN("末端执行器不支持夹爪接口，无法执行任务组完成后的夹爪复位");
+        else gripper_if.value().close();
+
         report_pick_feedback(feedback_task, PickStage::PICK_GO_HOME, true, ErrorCode::SUCCESS, "任务组完成后回到初始位：完成", ctx);
     }
 

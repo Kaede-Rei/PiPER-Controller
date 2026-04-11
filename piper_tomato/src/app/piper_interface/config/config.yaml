@@ -4,7 +4,7 @@ start:
     enabled: true
     type: "servo_gripper" # two_finger_gripper | servo_gripper
     name: "gripper"
-    serial_port: "/dev/ttyACM0"
+    serial_port: "/dev/com-1.4-tty"
     baud_rate: 115200
 
   arm_move_action:
