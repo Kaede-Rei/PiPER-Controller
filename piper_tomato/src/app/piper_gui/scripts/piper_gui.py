@@ -22,7 +22,7 @@ from pyorbbecsdk import (
     Pipeline,
     VideoFrame,
 )
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QEvent, QPoint, pyqtSignal, QThread
 from PyQt5.QtGui import (
     QBrush,
     QColor,
@@ -32,6 +32,7 @@ from PyQt5.QtGui import (
     QPen,
     QPixmap,
     QPolygonF,
+    QKeySequence,
 )
 from PyQt5.QtWidgets import (
     QApplication,
@@ -44,6 +45,7 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QLineEdit,
     QPushButton,
+    QShortcut,
     QVBoxLayout,
     QWidget,
 )
@@ -529,6 +531,7 @@ class MainWindow(QMainWindow):
             UI_CFG.window_w,
             UI_CFG.window_h,
         )
+        self._normal_geometry = self.geometry()
 
         self.current_depth_data = None
         self.current_depth_scale = None
@@ -558,6 +561,26 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.init_thread()
+
+        self._toggle_window_shortcut = QShortcut(QKeySequence("F11"), self)
+        self._toggle_window_shortcut.activated.connect(self.toggle_window_state)
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.WindowStateChange:
+            if self.isMaximized() or self.isFullScreen():
+                self._normal_geometry = self.geometry()
+        super().changeEvent(event)
+
+    def toggle_window_state(self) -> None:
+        if self.isMaximized() or self.isFullScreen():
+            if self._normal_geometry is not None:
+                self.showNormal()
+                self.setGeometry(self._normal_geometry)
+            else:
+                self.showNormal()
+        else:
+            self._normal_geometry = self.geometry()
+            self.showMaximized()
 
     def init_ros(self) -> None:
         try:
@@ -1005,7 +1028,7 @@ class MainWindow(QMainWindow):
 
     def cancel_pick_task(self) -> None:
         if self.ros_available and self.pick_client is not None:
-            self.pick_client.cancel_goal()
+            self.pick_client.cancel_all_goals()
             self.task_status_label.setText("采摘任务状态：已请求取消")
 
     def _on_pick_active(self) -> None:

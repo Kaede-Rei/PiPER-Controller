@@ -1,5 +1,7 @@
 #include "piper_task/pick_action.hpp"
 
+#include <chrono>
+
 namespace piper {
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
@@ -351,7 +353,20 @@ void PickTaskAction::handle_execute_task_group_request(const piper_msgs2::PickTa
         }
         };
 
+    std::atomic<bool> execution_finished{ false };
+    std::thread cancel_watcher([this, &execution_finished]() {
+        while(!execution_finished.load()) {
+            if(_as_ && _as_->isPreemptRequested()) {
+                _cancel_requested_.store(true);
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        });
+
     code = _tasks_manager_->execute_task_group(group_name, &ctx);
+    execution_finished.store(true);
+    if(cancel_watcher.joinable()) cancel_watcher.join();
 
     piper_msgs2::PickTaskResult res;
     res.error_code = static_cast<int32_t>(code);

@@ -403,6 +403,10 @@ ErrorCode TasksManager::execute_task_group(const std::string& group_name, Execut
 
     ROS_INFO("开始执行任务组 '%s'", group_name.c_str());
 
+    auto is_group_cancel_requested = [&]() -> bool {
+        return ctx && ctx->cancel_requested && ctx->cancel_requested->load();
+        };
+
     ErrorCode code = sort_tasks(*group.value());
     if(code != ErrorCode::SUCCESS) {
         ROS_WARN("执行任务组 '%s' 失败，无法排序任务，错误码：%s", group_name.c_str(), err_to_string(code).c_str());
@@ -410,6 +414,11 @@ ErrorCode TasksManager::execute_task_group(const std::string& group_name, Execut
     }
 
     for(const auto& task_snapshot : group.value()->sorted_tasks) {
+        if(is_group_cancel_requested()) {
+            ROS_INFO("任务组 '%s' 在执行任务 ID %u 前收到取消请求", group_name.c_str(), task_snapshot.id);
+            return ErrorCode::CANCELLED;
+        }
+
         auto task = find_task(group_name, task_snapshot.id);
         if(!task) {
             ROS_WARN("执行任务组 '%s' 失败，任务 ID %u 已不存在", group_name.c_str(), task_snapshot.id);
@@ -427,6 +436,11 @@ ErrorCode TasksManager::execute_task_group(const std::string& group_name, Execut
     }
 
     if(group.value()->go_home_after_finish) {
+        if(is_group_cancel_requested()) {
+            ROS_INFO("任务组 '%s' 在收尾回零前收到取消请求", group_name.c_str());
+            return ErrorCode::CANCELLED;
+        }
+
         ROS_INFO("任务组 '%s' 执行完成，回到初始位", group_name.c_str());
 
         Task feedback_task;
