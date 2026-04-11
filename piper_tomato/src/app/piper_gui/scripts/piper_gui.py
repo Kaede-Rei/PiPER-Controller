@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple, Union
 
@@ -22,7 +23,7 @@ from pyorbbecsdk import (
     Pipeline,
     VideoFrame,
 )
-from PyQt5.QtCore import Qt, QEvent, QPoint, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import (
     QBrush,
     QColor,
@@ -46,6 +47,8 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QPushButton,
     QShortcut,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -101,6 +104,7 @@ class UiConfig:
     image_min_h: int = 480
     info_font_name: str = "Arial"
     info_font_size: int = 10
+    render_fps_limit: int = 20
 
 
 @dataclass(frozen=True)
@@ -239,6 +243,7 @@ class ImageDisplayWidget(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(UI_CFG.image_min_w, UI_CFG.image_min_h)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setStyleSheet("background-color: black;")
         self.setAlignment(Qt.AlignCenter)
 
@@ -247,10 +252,16 @@ class ImageDisplayWidget(QLabel):
         self._screen_points = []
         self._cutting_point_screen = None
         self._is_polygon_closed = False
+        self._last_render_ts = 0.0
 
     def set_image(self, cv_img: np.ndarray) -> None:
         if cv_img is None:
             return
+        now = time.monotonic()
+        min_interval = 1.0 / max(1, UI_CFG.render_fps_limit)
+        if (now - self._last_render_ts) < min_interval:
+            return
+        self._last_render_ts = now
         self._latest_cv_image = cv_img
         rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_img.shape
@@ -531,7 +542,6 @@ class MainWindow(QMainWindow):
             UI_CFG.window_w,
             UI_CFG.window_h,
         )
-        self._normal_geometry = self.geometry()
 
         self.current_depth_data = None
         self.current_depth_scale = None
@@ -566,20 +576,12 @@ class MainWindow(QMainWindow):
         self._toggle_window_shortcut.activated.connect(self.toggle_window_state)
 
     def changeEvent(self, event):
-        if event.type() == QEvent.WindowStateChange:
-            if self.isMaximized() or self.isFullScreen():
-                self._normal_geometry = self.geometry()
         super().changeEvent(event)
 
     def toggle_window_state(self) -> None:
         if self.isMaximized() or self.isFullScreen():
-            if self._normal_geometry is not None:
-                self.showNormal()
-                self.setGeometry(self._normal_geometry)
-            else:
-                self.showNormal()
+            self.showNormal()
         else:
-            self._normal_geometry = self.geometry()
             self.showMaximized()
 
     def init_ros(self) -> None:
@@ -642,8 +644,13 @@ class MainWindow(QMainWindow):
         self.video_label.selection_changed.connect(self.on_roi_selected)
         main_layout.addWidget(self.video_label, stretch=3)
 
-        panel_layout = QHBoxLayout()
-        main_layout.addLayout(panel_layout, stretch=2)
+        self.side_scroll = QScrollArea()
+        self.side_scroll.setWidgetResizable(True)
+        self.side_panel = QWidget()
+        panel_layout = QHBoxLayout(self.side_panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        self.side_scroll.setWidget(self.side_panel)
+        main_layout.addWidget(self.side_scroll, stretch=2)
 
         info_column = QVBoxLayout()
         control_column = QVBoxLayout()
@@ -1144,6 +1151,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
+    QTimer.singleShot(0, window.showMaximized)
     sys.exit(app.exec_())
 
 
