@@ -263,6 +263,7 @@ ErrorCode ServoGripper::open() {
     if(!_serialer_.sendData(data)) {
         return ErrorCode::FAILURE;
     }
+    ros::Duration(1.5).sleep();
 
     return ErrorCode::SUCCESS;
 }
@@ -276,6 +277,8 @@ ErrorCode ServoGripper::close() {
     if(!_serialer_.sendData(data)) {
         return ErrorCode::FAILURE;
     }
+    ros::Duration(1.5).sleep();
+
     return ErrorCode::SUCCESS;
 }
 

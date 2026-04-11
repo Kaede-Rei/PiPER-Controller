@@ -941,9 +941,7 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     auto exec_eef = [&](bool open, PickStage stage, const std::string& text) -> ErrorCode {
         if(!_eef_) return fail_stage(stage, ErrorCode::INVALID_INTERFACE, text + "：末端执行器未初始化");
         auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
-        if(!gripper_if) {
-            return fail_stage(stage, ErrorCode::INVALID_INTERFACE, text + "：末端执行器不支持夹爪接口");
-        }
+        if(!gripper_if) return fail_stage(stage, ErrorCode::INVALID_INTERFACE, text + "：末端执行器不支持夹爪接口");
 
         report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
         ErrorCode ec = open ? gripper_if.value().open() : gripper_if.value().close();
@@ -952,6 +950,10 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         return ErrorCode::SUCCESS;
         };
 
+    if(!_eef_) return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_INTERFACE, "末端执行器未初始化，无法执行采摘任务");
+    auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
+    if(!gripper_if) return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_INTERFACE, "末端执行器不支持夹爪接口，无法执行采摘任务");
+    gripper_if.value().open();
     report_pick_feedback(task, PickStage::PICK_START, true, ErrorCode::SUCCESS, "开始", ctx);
 
     ErrorCode code = check_cancel();
