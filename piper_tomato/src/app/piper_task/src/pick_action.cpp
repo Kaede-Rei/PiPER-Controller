@@ -94,6 +94,18 @@ void PickTaskAction::on_goal() {
  */
 void PickTaskAction::on_preempt() {
     _cancel_requested_.store(true);
+    if(_arm_) {
+        try {
+            _arm_->stop();
+            ROS_INFO("收到取消请求，已触发机械臂停止");
+        }
+        catch(const std::exception& e) {
+            ROS_WARN("取消时停止机械臂异常：%s", e.what());
+        }
+        catch(...) {
+            ROS_WARN("取消时停止机械臂发生未知异常");
+        }
+    }
 }
 
 /**

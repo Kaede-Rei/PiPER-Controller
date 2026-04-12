@@ -344,7 +344,16 @@ ErrorCode TasksManager::execute_task(Task& task) {
 ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
     ROS_INFO("开始执行任务 ID %u: %s", task.id, task.desc.c_str());
 
+    auto is_task_cancel_requested = [&]() -> bool {
+        return ctx && ctx->cancel_requested && ctx->cancel_requested->load();
+        };
+
     if(task.type == TaskType::MOVE_ONLY) {
+        if(is_task_cancel_requested()) {
+            ROS_INFO("任务 ID %u 执行前收到取消请求", task.id);
+            return ErrorCode::CANCELLED;
+        }
+
         if(!task.target) {
             ROS_WARN("任务 ID %u 没有设置目标，无法执行", task.id);
             return ErrorCode::INVALID_PARAMETER;
@@ -356,16 +365,36 @@ ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
             ROS_WARN("执行任务 ID %u 失败，无法获取冻结任务目标，错误码：%s", task.id, err_to_string(code).c_str());
             return code;
         }
+
+        if(is_task_cancel_requested()) {
+            ROS_INFO("任务 ID %u 设置目标前收到取消请求", task.id);
+            return ErrorCode::CANCELLED;
+        }
+
         code = _arm_->set_target(target_in_base);
         if(code != ErrorCode::SUCCESS) {
             ROS_WARN("执行任务 ID %u 失败，无法设置目标，错误码：%s", task.id, err_to_string(code).c_str());
             return code;
         }
 
+        if(is_task_cancel_requested()) {
+            ROS_INFO("任务 ID %u 规划执行前收到取消请求", task.id);
+            return ErrorCode::CANCELLED;
+        }
+
         const ErrorCode exec_code = _arm_->plan_and_execute();
         if(exec_code != ErrorCode::SUCCESS) {
+            if(is_task_cancel_requested()) {
+                ROS_INFO("任务 ID %u 在执行过程中被取消", task.id);
+                return ErrorCode::CANCELLED;
+            }
             ROS_WARN("执行任务 ID %u 失败，无法规划执行，错误码：%s", task.id, err_to_string(exec_code).c_str());
             return exec_code;
+        }
+
+        if(is_task_cancel_requested()) {
+            ROS_INFO("任务 ID %u 执行完成后检测到取消请求", task.id);
+            return ErrorCode::CANCELLED;
         }
 
         ROS_INFO("成功执行任务 ID %u", task.id);
@@ -432,6 +461,11 @@ ErrorCode TasksManager::execute_task_group(const std::string& group_name, Execut
                 task_snapshot.id,
                 err_to_string(err_code).c_str());
             return err_code;
+        }
+
+        if(is_group_cancel_requested()) {
+            ROS_INFO("任务组 '%s' 在任务 ID %u 执行后收到取消请求", group_name.c_str(), task_snapshot.id);
+            return ErrorCode::CANCELLED;
         }
     }
 
@@ -936,9 +970,16 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         ErrorCode last = ErrorCode::FAILURE;
         const uint16_t total_attempts = static_cast<uint16_t>(pp.retry_times) + 1;
         for(uint16_t attempt = 1; attempt <= total_attempts; ++attempt) {
+            const ErrorCode cancel_code = check_cancel();
+            if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
+
             last = fn();
             if(last == ErrorCode::SUCCESS) return ErrorCode::SUCCESS;
             if(last == ErrorCode::CANCELLED) return last;
+
+            const ErrorCode cancel_after_attempt = check_cancel();
+            if(cancel_after_attempt != ErrorCode::SUCCESS) return cancel_after_attempt;
+
             ROS_WARN("任务 ID %u 阶段[%s] 第 %u/%u 次尝试失败：%s", task.id, pick_stage_to_string(stage), static_cast<unsigned int>(attempt), static_cast<unsigned int>(total_attempts), err_to_string(last).c_str());
         }
         return last;
@@ -947,16 +988,30 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     auto exec_move = [&](const TargetVariant& target,
         PickStage stage,
         const std::string& text) -> ErrorCode {
+            ErrorCode cancel_code = check_cancel();
+            if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
+
             report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
             ErrorCode ec = _arm_->set_target(target);
             if(ec != ErrorCode::SUCCESS) return fail_stage(stage, ec, text + "：设置目标失败");
+
+            cancel_code = check_cancel();
+            if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
+
             ec = _arm_->plan_and_execute();
-            if(ec != ErrorCode::SUCCESS) return fail_stage(stage, ec, text + "：执行失败");
+            if(ec != ErrorCode::SUCCESS) {
+                cancel_code = check_cancel();
+                if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
+                return fail_stage(stage, ec, text + "：执行失败");
+            }
             report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text + "：完成", ctx);
             return ErrorCode::SUCCESS;
         };
 
     auto exec_eef = [&](bool open, PickStage stage, const std::string& text) -> ErrorCode {
+        ErrorCode cancel_code = check_cancel();
+        if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
+
         if(!_eef_) return fail_stage(stage, ErrorCode::INVALID_INTERFACE, text + "：末端执行器未初始化");
         auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
         if(!gripper_if) return fail_stage(stage, ErrorCode::INVALID_INTERFACE, text + "：末端执行器不支持夹爪接口");
