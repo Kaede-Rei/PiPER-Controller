@@ -29,8 +29,8 @@ start:
     name: "eef_cmd"
 
 decartes:
-  vel_scale: 0.1
-  acc_scale: 0.1
+  vel_scale: 1.0
+  acc_scale: 1.0
   eef_step: 0.01
   jump_threshold: 0.0
   min_success_rate: 0.8
@@ -38,8 +38,8 @@ decartes:
 motion_planning:
   planning_time: 5.0
   planning_attempts: 10
-  max_velocity_scaling_factor: 0.1
-  max_acceleration_scaling_factor: 0.1
+  max_velocity_scaling_factor: 1.0
+  max_acceleration_scaling_factor: 1.0
   planner_id: "RRTConnect"
 
 reachable_pose_search:
