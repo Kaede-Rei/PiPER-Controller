@@ -168,7 +168,7 @@ def cam_point_to_flange_point(
 ) -> Tuple[float, float, float]:
     p_cam_homo = np.array([[x_cam], [y_cam], [z_cam], [1.0]], dtype=np.float64)
     p_flange_homo = T_CAM_TO_FLANGE @ p_cam_homo
-    return -p_flange_homo[0, 0], -p_flange_homo[1, 0], p_flange_homo[2, 0]
+    return p_flange_homo[0, 0], p_flange_homo[1, 0], p_flange_homo[2, 0]
 
 
 def get_mask_center(mask: np.ndarray) -> Optional[Tuple[float, float]]:
