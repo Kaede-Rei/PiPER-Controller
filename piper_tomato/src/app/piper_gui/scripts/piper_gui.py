@@ -120,10 +120,10 @@ class HandEyeConfig:
 
 @dataclass(frozen=True)
 class IntrinsicsConfig:
-    fx: float = 612.287415
-    fy: float = 612.246033
-    cx: float = 638.468506
-    cy: float = 359.933319
+    fx: float = 612.28741455
+    fy: float = 612.24603271
+    cx: float = 638.46850586
+    cy: float = 399.93331909
 
 
 DEPTH_CFG = DepthConfig()

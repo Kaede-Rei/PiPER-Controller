@@ -6,7 +6,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -14,40 +14,28 @@ import numpy as np
 # ============================
 # 顶部统一配置区
 # ============================
-# 数据目录
 DATASET_ROOT = Path("./picture")
 OUTPUT_ROOT = Path("./outputs")
 
-# 数据文件名
 DEFAULT_IMAGE_NAME = "image.jpg"
 DEFAULT_POSE_NAME = "pose.json"
 DEFAULT_DETECTION_NAME = "board_detection.json"
 DEFAULT_ANNOTATED_NAME = "annotated.jpg"
 
-# 相机内参
 CAMERA_MATRIX = np.array(
     [
-        [611.8829, 0.0, 639.6838],
-        [0.0, 612.0766, 363.2091],
+        [612.28741455, 0.0, 638.46850586],
+        [0.0, 612.24603271, 399.93331909],
         [0.0, 0.0, 1.0],
     ],
     dtype=np.float64,
 )
-
-# 这里按 OpenCV 顺序传入，允许 4/5/8 项
 DIST_COEFFS = np.array([-0.02141041, 0.01469840, 0.0, 0.0], dtype=np.float64)
 
-# 棋盘格参数
 CHESSBOARD_SIZE = (11, 8)  # 内角点 (列, 行)
 SQUARE_SIZE_M = 0.02
 
-# 机器人位姿的语义：
-# - "BASE_T_FLANGE": 输入的是 ^base T_flange
-# - "FLANGE_T_BASE": 输入的是 ^flange T_base
 ROBOT_POSE_FORMAT = "BASE_T_FLANGE"
-
-# 欧拉角公式候选。
-# 名字按最终矩阵乘法顺序写，例如 "RzRyRx" 表示 R = Rz @ Ry @ Rx。
 ROTATION_FORMULA_CANDIDATES = [
     "RzRyRx",
     "RxRyRz",
@@ -58,7 +46,6 @@ ROTATION_FORMULA_CANDIDATES = [
 ]
 DEFAULT_ROTATION_FORMULA = "RzRyRx"
 
-# 是否自动搜索欧拉角公式与 hand-eye 方法
 AUTO_SEARCH_FORMULAS = True
 AUTO_SEARCH_METHODS = True
 DEFAULT_HAND_EYE_METHOD = "TSAI"
@@ -76,7 +63,14 @@ SUBPIX_CRITERIA = (
 )
 SUBPIX_WIN = (11, 11)
 
-# OpenCV hand-eye 方法
+# 质量控制参数
+MAX_REPROJECTION_ERROR_PX = 0.50
+AUTO_PRUNE_OUTLIERS = True
+MIN_VALID_SAMPLES = 6
+MAX_PRUNE_ROUNDS = 3
+MIN_RMS_IMPROVEMENT_M = 0.003
+MIN_MAX_DIST_IMPROVEMENT_M = 0.005
+
 HAND_EYE_METHODS = {
     "TSAI": cv2.CALIB_HAND_EYE_TSAI,
     "PARK": cv2.CALIB_HAND_EYE_PARK,
@@ -114,6 +108,13 @@ class HandEyeConfig:
     pose_format: str = ROBOT_POSE_FORMAT
     rotation_formula: str = DEFAULT_ROTATION_FORMULA
     board: BoardConfig = field(default_factory=BoardConfig)
+    max_reprojection_error_px: Optional[float] = MAX_REPROJECTION_ERROR_PX
+    auto_prune_outliers: bool = AUTO_PRUNE_OUTLIERS
+    min_valid_samples: int = MIN_VALID_SAMPLES
+    max_prune_rounds: int = MAX_PRUNE_ROUNDS
+    min_rms_improvement_m: float = MIN_RMS_IMPROVEMENT_M
+    min_max_dist_improvement_m: float = MIN_MAX_DIST_IMPROVEMENT_M
+    excluded_indices: Tuple[int, ...] = ()
 
 
 @dataclass
@@ -130,13 +131,14 @@ class BoardDetection:
     annotated_image: Optional[np.ndarray] = None
 
 
-@dataclass(frozen=True)
-class CalibrationMetrics:
-    translation_mean_m: Tuple[float, float, float]
-    translation_rms_to_mean_m: float
-    translation_max_to_mean_m: float
-    rotation_max_to_first_deg: float
-    valid_count: int
+@dataclass
+class LoadedPose:
+    T_base_to_flange: np.ndarray
+    pose_format: str
+    source: str
+    robot_pose: Optional[RobotPose] = None
+    translation_m: Optional[Tuple[float, float, float]] = None
+    quaternion_xyzw: Optional[Tuple[float, float, float, float]] = None
 
 
 @dataclass
@@ -144,9 +146,21 @@ class SampleRecord:
     index: int
     image_path: Path
     pose_path: Path
-    robot_pose: RobotPose
+    robot_pose: Optional[RobotPose]
     T_base_to_flange: np.ndarray
     detection: BoardDetection
+    pose_source: str = "unknown"
+    pose_format: str = ROBOT_POSE_FORMAT
+    excluded_reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CalibrationMetrics:
+    translation_mean_m: Tuple[float, float, float]
+    translation_rms_to_mean_m: float
+    translation_max_to_mean_m: float
+    rotation_max_to_first_deg: float
+    valid_count: int
 
 
 @dataclass
@@ -159,6 +173,8 @@ class CalibrationCandidate:
     sample_indices: List[int]
     board_to_base_translations_m: List[Tuple[float, float, float]]
     board_to_base_rotations_deg_to_first: List[float]
+    sample_diagnostics: List[Dict[str, Any]] = field(default_factory=list)
+    pruned_indices: List[int] = field(default_factory=list)
 
 
 # ============================
@@ -198,14 +214,6 @@ def dict_to_pose(payload: Dict[str, Any]) -> RobotPose:
     )
 
 
-def load_pose_json(path: Path) -> Tuple[RobotPose, Optional[str]]:
-    with path.open("r", encoding="utf-8") as f:
-        payload = json.load(f)
-    pose = dict_to_pose(payload)
-    pose_format = payload.get("pose_format_hint")
-    return pose, pose_format
-
-
 def list_available_dataset_indices(dataset_root: Path) -> List[int]:
     if not dataset_root.exists():
         return []
@@ -221,6 +229,24 @@ def matrix_to_tuple_literal(matrix: np.ndarray) -> str:
     for row in matrix:
         rows.append("(" + ", ".join(f"{float(v):.6f}" for v in row) + ")")
     return "(\n    " + ",\n    ".join(rows) + ",\n)"
+
+
+def parse_excluded_indices(raw: str) -> Tuple[int, ...]:
+    if not raw.strip():
+        return ()
+    result: List[int] = []
+    for chunk in raw.split(","):
+        token = chunk.strip()
+        if not token:
+            continue
+        if "-" in token:
+            left, right = token.split("-", 1)
+            a, b = int(left), int(right)
+            lo, hi = min(a, b), max(a, b)
+            result.extend(range(lo, hi + 1))
+        else:
+            result.append(int(token))
+    return tuple(sorted(set(result)))
 
 
 # ============================
@@ -255,9 +281,29 @@ def rotation_matrix_from_euler(
     return R
 
 
+def quaternion_to_rotation_matrix(
+    qx: float, qy: float, qz: float, qw: float
+) -> np.ndarray:
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if norm <= 1e-12:
+        raise ValueError("非法四元数：范数为 0")
+    x, y, z, w = qx / norm, qy / norm, qz / norm, qw / norm
+    xx, yy, zz = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+    return np.array(
+        [
+            [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
+            [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
+            [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)],
+        ],
+        dtype=np.float64,
+    )
+
+
 def make_transform(R: np.ndarray, t_xyz_m: Sequence[float]) -> np.ndarray:
     T = np.eye(4, dtype=np.float64)
-    T[:3, :3] = R
+    T[:3, :3] = np.asarray(R, dtype=np.float64).reshape(3, 3)
     T[:3, 3] = np.asarray(t_xyz_m, dtype=np.float64).reshape(3)
     return T
 
@@ -287,6 +333,81 @@ def robot_pose_to_base_T_flange(
 def rotation_angle_deg(R: np.ndarray) -> float:
     trace = np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0)
     return float(np.degrees(np.arccos(trace)))
+
+
+def load_pose_json(
+    path: Path,
+    default_pose_format: str,
+    default_formula: str,
+) -> LoadedPose:
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    pose_format = (
+        payload.get("pose_format_hint")
+        or payload.get("pose_format")
+        or default_pose_format
+    )
+    source = str(
+        payload.get("pose_source") or payload.get("camera_backend") or "unknown"
+    )
+
+    matrix_payload = payload.get("transform_matrix")
+    if matrix_payload is None:
+        matrix_payload = payload.get("T_base_to_flange")
+    if matrix_payload is None:
+        matrix_payload = payload.get("base_T_flange")
+
+    if matrix_payload is not None:
+        T = np.asarray(matrix_payload, dtype=np.float64)
+        if T.shape != (4, 4):
+            raise ValueError(f"pose.json 中的 transform_matrix 不是 4x4: {path}")
+        translation = tuple(float(v) for v in T[:3, 3])
+        quat = payload.get("quaternion_xyzw")
+        quat_tuple = (
+            tuple(float(v) for v in quat[:4])
+            if isinstance(quat, (list, tuple)) and len(quat) >= 4
+            else None
+        )
+        return LoadedPose(
+            T_base_to_flange=T,
+            pose_format=pose_format,
+            source=source,
+            robot_pose=None,
+            translation_m=translation,
+            quaternion_xyzw=quat_tuple,
+        )
+
+    translation = payload.get("translation_m")
+    quat = payload.get("quaternion_xyzw")
+    if (
+        isinstance(translation, (list, tuple))
+        and len(translation) >= 3
+        and isinstance(quat, (list, tuple))
+        and len(quat) >= 4
+    ):
+        tx, ty, tz = [float(v) for v in translation[:3]]
+        qx, qy, qz, qw = [float(v) for v in quat[:4]]
+        T = make_transform(quaternion_to_rotation_matrix(qx, qy, qz, qw), [tx, ty, tz])
+        return LoadedPose(
+            T_base_to_flange=T,
+            pose_format=pose_format,
+            source=source,
+            robot_pose=None,
+            translation_m=(tx, ty, tz),
+            quaternion_xyzw=(qx, qy, qz, qw),
+        )
+
+    pose = dict_to_pose(payload)
+    T = robot_pose_to_base_T_flange(pose, pose_format, default_formula)
+    return LoadedPose(
+        T_base_to_flange=T,
+        pose_format=pose_format,
+        source=source or "legacy_pose",
+        robot_pose=pose,
+        translation_m=tuple(float(v) for v in T[:3, 3]),
+        quaternion_xyzw=None,
+    )
 
 
 # ============================
@@ -375,6 +496,9 @@ def load_sample_record(
     pose_format_override: Optional[str] = None,
     rotation_formula: Optional[str] = None,
 ) -> Optional[SampleRecord]:
+    if index in set(cfg.excluded_indices):
+        return None
+
     sample_dir = dataset_root / str(index)
     image_path = sample_dir / DEFAULT_IMAGE_NAME
     pose_path = sample_dir / DEFAULT_POSE_NAME
@@ -385,27 +509,41 @@ def load_sample_record(
     if image is None:
         return None
 
-    pose, pose_format_from_file = load_pose_json(pose_path)
-    pose_format = pose_format_override or pose_format_from_file or cfg.pose_format
     formula = rotation_formula or cfg.rotation_formula
-    T_base_to_flange = robot_pose_to_base_T_flange(pose, pose_format, formula)
+    loaded_pose = load_pose_json(
+        pose_path, pose_format_override or cfg.pose_format, formula
+    )
     detection = detect_board_pose(image, cfg.board)
     if not detection.ok:
+        return None
+
+    if (
+        cfg.max_reprojection_error_px is not None
+        and detection.reprojection_error_px is not None
+        and detection.reprojection_error_px > cfg.max_reprojection_error_px
+    ):
         return None
 
     return SampleRecord(
         index=index,
         image_path=image_path,
         pose_path=pose_path,
-        robot_pose=pose,
-        T_base_to_flange=T_base_to_flange,
+        robot_pose=loaded_pose.robot_pose,
+        T_base_to_flange=loaded_pose.T_base_to_flange,
         detection=detection,
+        pose_source=loaded_pose.source,
+        pose_format=loaded_pose.pose_format,
     )
 
 
 def _compute_candidate_metrics(
     records: Sequence[SampleRecord], T_cam_to_flange: np.ndarray
-) -> Tuple[CalibrationMetrics, List[Tuple[float, float, float]], List[float]]:
+) -> Tuple[
+    CalibrationMetrics,
+    List[Tuple[float, float, float]],
+    List[float],
+    List[Dict[str, Any]],
+]:
     translations: List[np.ndarray] = []
     board_rotations: List[np.ndarray] = []
 
@@ -437,9 +575,34 @@ def _compute_candidate_metrics(
         rotation_max_to_first_deg=rot_max,
         valid_count=len(records),
     )
+
     trans_list = [(float(t[0]), float(t[1]), float(t[2])) for t in translations]
     rot_list = [float(v) for v in rot_angles]
-    return metrics, trans_list, rot_list
+    diagnostics: List[Dict[str, Any]] = []
+    for record, t_vec, dist_m, rot_deg in zip(records, translations, dists, rot_angles):
+        diagnostics.append(
+            {
+                "index": record.index,
+                "pose_source": record.pose_source,
+                "reprojection_error_px": (
+                    None
+                    if record.detection.reprojection_error_px is None
+                    else float(record.detection.reprojection_error_px)
+                ),
+                "board_to_base_translation_m": [float(v) for v in t_vec],
+                "translation_deviation_to_mean_m": float(dist_m),
+                "translation_deviation_to_mean_mm": float(dist_m * 1000.0),
+                "rotation_deviation_to_first_deg": float(rot_deg),
+            }
+        )
+    diagnostics.sort(
+        key=lambda x: (
+            x["translation_deviation_to_mean_m"],
+            x["rotation_deviation_to_first_deg"],
+        ),
+        reverse=True,
+    )
+    return metrics, trans_list, rot_list, diagnostics
 
 
 def _calibrate_one_combo(
@@ -462,7 +625,7 @@ def _calibrate_one_combo(
         method=method_flag,
     )
     T_cam_to_flange = make_transform(R_cam2gripper, t_cam2gripper.reshape(3))
-    metrics, translations, rot_list = _compute_candidate_metrics(
+    metrics, translations, rot_list, diagnostics = _compute_candidate_metrics(
         records, T_cam_to_flange
     )
     return CalibrationCandidate(
@@ -474,6 +637,8 @@ def _calibrate_one_combo(
         sample_indices=[r.index for r in records],
         board_to_base_translations_m=translations,
         board_to_base_rotations_deg_to_first=rot_list,
+        sample_diagnostics=diagnostics,
+        pruned_indices=[],
     )
 
 
@@ -483,6 +648,69 @@ def _rank_key(candidate: CalibrationCandidate) -> Tuple[float, float, float]:
         candidate.metrics.translation_max_to_mean_m,
         candidate.metrics.rotation_max_to_first_deg,
     )
+
+
+def _candidate_improved(
+    old: CalibrationCandidate,
+    new: CalibrationCandidate,
+    cfg: HandEyeConfig,
+) -> bool:
+    if _rank_key(new) >= _rank_key(old):
+        return False
+    rms_gain = (
+        old.metrics.translation_rms_to_mean_m - new.metrics.translation_rms_to_mean_m
+    )
+    max_gain = (
+        old.metrics.translation_max_to_mean_m - new.metrics.translation_max_to_mean_m
+    )
+    return (
+        rms_gain >= cfg.min_rms_improvement_m
+        or max_gain >= cfg.min_max_dist_improvement_m
+    )
+
+
+def _auto_prune_candidate(
+    records: Sequence[SampleRecord],
+    method_name: str,
+    rotation_formula: str,
+    pose_format: str,
+    cfg: HandEyeConfig,
+) -> CalibrationCandidate:
+    current_records = list(records)
+    best_candidate = _calibrate_one_combo(
+        current_records, method_name, rotation_formula, pose_format
+    )
+    pruned: List[int] = []
+
+    if not cfg.auto_prune_outliers:
+        best_candidate.pruned_indices = pruned
+        return best_candidate
+
+    for _ in range(cfg.max_prune_rounds):
+        if len(current_records) <= cfg.min_valid_samples:
+            break
+        if not best_candidate.sample_diagnostics:
+            break
+
+        worst_index = int(best_candidate.sample_diagnostics[0]["index"])
+        next_records = [r for r in current_records if r.index != worst_index]
+        if len(next_records) < cfg.min_valid_samples:
+            break
+        try:
+            next_candidate = _calibrate_one_combo(
+                next_records, method_name, rotation_formula, pose_format
+            )
+        except cv2.error:
+            break
+        if not _candidate_improved(best_candidate, next_candidate, cfg):
+            break
+
+        pruned.append(worst_index)
+        current_records = next_records
+        best_candidate = next_candidate
+
+    best_candidate.pruned_indices = pruned
+    return best_candidate
 
 
 def calibrate_from_dataset(
@@ -517,7 +745,11 @@ def calibrate_from_dataset(
     for formula in formula_candidates:
         records: List[SampleRecord] = []
         invalid_local: List[int] = []
+        excluded_set = set(cfg.excluded_indices)
         for idx in range(min_index, max_index + 1):
+            if idx in excluded_set:
+                invalid_local.append(idx)
+                continue
             record = load_sample_record(
                 dataset_root,
                 idx,
@@ -530,18 +762,24 @@ def calibrate_from_dataset(
                 continue
             records.append(record)
 
-        if len(records) < 3:
+        if len(records) < max(
+            3, cfg.min_valid_samples if cfg.auto_prune_outliers else 3
+        ):
             continue
 
         for m in method_candidates:
             try:
-                candidate = _calibrate_one_combo(records, m, formula, pose_format_final)
+                candidate = _auto_prune_candidate(
+                    records, m, formula, pose_format_final, cfg
+                )
                 ranked.append(candidate)
                 if best_candidate is None or _rank_key(candidate) < _rank_key(
                     best_candidate
                 ):
                     best_candidate = candidate
-                    best_records = list(records)
+                    best_records = [
+                        r for r in records if r.index in set(candidate.sample_indices)
+                    ]
                     missing_or_invalid = invalid_local
             except cv2.error:
                 continue
@@ -564,6 +802,7 @@ def candidate_to_jsonable(candidate: CalibrationCandidate) -> Dict[str, Any]:
         "rotation_formula": candidate.rotation_formula,
         "pose_format": candidate.pose_format,
         "sample_indices": candidate.sample_indices,
+        "pruned_indices": candidate.pruned_indices,
         "T_cam_to_flange": candidate.T_cam_to_flange.tolist(),
         "T_cam_to_flange_tuple_literal": matrix_to_tuple_literal(
             candidate.T_cam_to_flange
@@ -571,6 +810,7 @@ def candidate_to_jsonable(candidate: CalibrationCandidate) -> Dict[str, Any]:
         "metrics": asdict(candidate.metrics),
         "board_to_base_translations_m": candidate.board_to_base_translations_m,
         "board_to_base_rotations_deg_to_first": candidate.board_to_base_rotations_deg_to_first,
+        "sample_diagnostics": candidate.sample_diagnostics,
     }
 
 
@@ -598,6 +838,15 @@ def save_calibration_outputs(
         out_dir / "ranked_candidates.json",
         {"candidates": [candidate_to_jsonable(c) for c in ranked]},
     )
+    write_json(
+        out_dir / "sample_diagnostics.json",
+        {
+            "best_method": best.method_name,
+            "best_rotation_formula": best.rotation_formula,
+            "pruned_indices": best.pruned_indices,
+            "samples": best.sample_diagnostics,
+        },
+    )
 
     lines = [
         f"dataset_root: {dataset_root}",
@@ -607,6 +856,7 @@ def save_calibration_outputs(
         f"best_rotation_formula: {best.rotation_formula}",
         f"pose_format: {best.pose_format}",
         f"valid_count: {best.metrics.valid_count}",
+        f"pruned_indices: {best.pruned_indices}",
         f"translation_rms_to_mean_m: {best.metrics.translation_rms_to_mean_m:.6f}",
         f"translation_max_to_mean_m: {best.metrics.translation_max_to_mean_m:.6f}",
         f"rotation_max_to_first_deg: {best.metrics.rotation_max_to_first_deg:.6f}",
@@ -653,6 +903,11 @@ def main() -> None:
     parser.add_argument(
         "--auto-methods", action="store_true", default=AUTO_SEARCH_METHODS
     )
+    parser.add_argument(
+        "--max-reproj-error-px", type=float, default=MAX_REPROJECTION_ERROR_PX
+    )
+    parser.add_argument("--disable-auto-prune", action="store_true")
+    parser.add_argument("--exclude-indices", type=str, default="")
     args = parser.parse_args()
 
     cfg = HandEyeConfig(
@@ -663,6 +918,9 @@ def main() -> None:
         board=BoardConfig(
             camera_matrix=CAMERA_MATRIX.copy(), dist_coeffs=DIST_COEFFS.copy()
         ),
+        max_reprojection_error_px=args.max_reproj_error_px,
+        auto_prune_outliers=not args.disable_auto_prune,
+        excluded_indices=parse_excluded_indices(args.exclude_indices),
     )
     best, ranked, records, invalid = calibrate_from_dataset(
         dataset_root=args.dataset_root,
@@ -688,6 +946,7 @@ def main() -> None:
     print(f"有效样本数: {len(records)}")
     print(f"无效/缺失样本索引: {invalid}")
     print(f"最佳组合: method={best.method_name}, formula={best.rotation_formula}")
+    print(f"被自动剔除的样本: {best.pruned_indices}")
     print(f"平移 RMS: {best.metrics.translation_rms_to_mean_m:.6f} m")
     print(f"最大平移误差: {best.metrics.translation_max_to_mean_m:.6f} m")
     print("^flange T_cam =")
