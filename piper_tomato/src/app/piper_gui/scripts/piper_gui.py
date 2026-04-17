@@ -10,9 +10,9 @@ import numpy as np
 import rospy
 import actionlib
 import tf2_ros
-import tf2_geometry_msgs
+import tf2_geometry_msgs  # noqa: F401
 from tf.transformations import quaternion_from_euler
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PointStamped
 from piper_msgs2.msg import PickTaskAction, PickTaskGoal
 from pyorbbecsdk import (
     OBAlignMode,
@@ -23,6 +23,14 @@ from pyorbbecsdk import (
     Pipeline,
     VideoFrame,
 )
+
+try:
+    from pyorbbecsdk import AlignFilter, OBFrameAggregateOutputMode, OBStreamType
+except ImportError:
+    AlignFilter = None
+    OBFrameAggregateOutputMode = None
+    OBStreamType = None
+
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import (
     QBrush,
@@ -74,10 +82,12 @@ class CameraConfig:
     color_width: int = 1280
     color_height: int = 720
     color_fps: int = 30
-    depth_width: int = 848
-    depth_height: int = 480
+    depth_width: int = 1280
+    depth_height: int = 800
     depth_fps: int = 30
     align_mode: int = OBAlignMode.SW_MODE
+    target_disp_search_range: int = 256
+    rotate_180: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,9 +121,9 @@ class UiConfig:
 class HandEyeConfig:
     # ^flange T_cam
     T_cam_to_flange: Tuple[Tuple[float, float, float, float], ...] = (
-        (0.140661, -0.988491, 0.055682, 0.061804),
-        (0.987542, 0.144088, 0.063234, -0.032926),
-        (-0.070529, 0.046094, 0.996444, 0.001963),
+        (0.164723, -0.986262, -0.012365, 0.018744),
+        (0.986069, 0.164370, 0.025507, -0.040338),
+        (-0.023125, -0.016394, 0.999598, -0.062264),
         (0.000000, 0.000000, 0.000000, 1.000000),
     )
 
@@ -134,7 +144,7 @@ UI_CFG = UiConfig()
 HAND_EYE_CFG = HandEyeConfig()
 INTRINSICS_CFG = IntrinsicsConfig()
 
-DEFAULT_DEPTH_INTRINSICS = np.array(
+DEFAULT_INTRINSICS = np.array(
     [
         [INTRINSICS_CFG.fx, 0.0, INTRINSICS_CFG.cx],
         [0.0, INTRINSICS_CFG.fy, INTRINSICS_CFG.cy],
@@ -145,6 +155,30 @@ DEFAULT_DEPTH_INTRINSICS = np.array(
 
 T_CAM_TO_FLANGE = np.array(HAND_EYE_CFG.T_cam_to_flange, dtype=np.float64)
 
+MIN_DEPTH = DEPTH_CFG.min_mm
+MAX_DEPTH = DEPTH_CFG.max_mm
+COLOR_W = CAMERA_CFG.color_width
+COLOR_H = CAMERA_CFG.color_height
+DEPTH_W = CAMERA_CFG.depth_width
+DEPTH_H = CAMERA_CFG.depth_height
+FPS = CAMERA_CFG.color_fps
+CAMERA_ROTATE_180 = CAMERA_CFG.rotate_180
+
+
+def rotate_point_180(u: int, v: int, width: int, height: int) -> Tuple[int, int]:
+    return width - 1 - int(u), height - 1 - int(v)
+
+
+def intrinsic_to_matrix(intrinsic: Any) -> np.ndarray:
+    return np.array(
+        [
+            [intrinsic.fx, 0.0, intrinsic.cx],
+            [0.0, intrinsic.fy, intrinsic.cy],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
 
 def frame_to_bgr_image(frame: VideoFrame) -> Union[Optional[np.ndarray], Any]:
     width = frame.get_width()
@@ -153,10 +187,14 @@ def frame_to_bgr_image(frame: VideoFrame) -> Union[Optional[np.ndarray], Any]:
     data = np.asanyarray(frame.get_data())
 
     if color_format == OBFormat.RGB:
-        image = np.resize(data, (height, width, 3))
+        image = np.frombuffer(frame.get_data(), dtype=np.uint8).reshape(
+            height, width, 3
+        )
         return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     if color_format == OBFormat.YUYV:
-        image = np.resize(data, (height, width, 2))
+        image = np.frombuffer(frame.get_data(), dtype=np.uint8).reshape(
+            height, width, 2
+        )
         return cv2.cvtColor(image, cv2.COLOR_YUV2BGR_YUYV)
     if color_format == OBFormat.MJPG:
         return cv2.imdecode(data, cv2.IMREAD_COLOR)
@@ -227,10 +265,10 @@ def depth_to_pointcloud(
     u: int,
     v: int,
     depth_m: float,
-    depth_intrinsics: np.ndarray,
+    intrinsics: np.ndarray,
 ) -> Tuple[float, float, float]:
-    fx, fy = depth_intrinsics[0, 0], depth_intrinsics[1, 1]
-    cx, cy = depth_intrinsics[0, 2], depth_intrinsics[1, 2]
+    fx, fy = intrinsics[0, 0], intrinsics[1, 1]
+    cx, cy = intrinsics[0, 2], intrinsics[1, 2]
     x = (u - cx) * depth_m / fx
     y = (v - cy) * depth_m / fy
     z = depth_m
@@ -285,9 +323,6 @@ class ImageDisplayWidget(QLabel):
                 int(disp_w), int(disp_h), Qt.IgnoreAspectRatio, Qt.SmoothTransformation
             )
             painter.drawPixmap(int(x), int(y), scaled_pix)
-            self._pixmap_offset = (x, y)
-            self._scale_x = disp_w / self._pixmap.width()
-            self._scale_y = disp_h / self._pixmap.height()
 
         if len(self._img_points) > 0:
             screen_points = [self._img_to_screen(x, y) for x, y in self._img_points]
@@ -299,8 +334,7 @@ class ImageDisplayWidget(QLabel):
             if len(screen_points) >= 3 or self._is_polygon_closed:
                 if len(screen_points) >= 3:
                     painter.drawLine(screen_points[-1], screen_points[0])
-                    brush = QBrush(QColor(0, 255, 0, 80))
-                    painter.setBrush(brush)
+                    painter.setBrush(QBrush(QColor(0, 255, 0, 80)))
                     painter.drawPolygon(QPolygonF(screen_points))
                     painter.setBrush(Qt.NoBrush)
 
@@ -403,14 +437,12 @@ class ImageDisplayWidget(QLabel):
             self._pan_y += delta.y()
             self._last_pan_pos = event.pos()
             self.update()
-            return
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.RightButton:
             self._is_panning = False
             self._last_pan_pos = None
             self.unsetCursor()
-            return
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton and len(self._img_points) >= 3:
@@ -458,7 +490,7 @@ class ImageDisplayWidget(QLabel):
 class WorkerThread(QThread):
     frame_ready = pyqtSignal(np.ndarray)
     log_signal = pyqtSignal(str)
-    data_ready = pyqtSignal(object, object, tuple)
+    data_ready = pyqtSignal(object)
     intrinsics_ready = pyqtSignal(np.ndarray)
     lrm_data_ready = pyqtSignal(int, float)
 
@@ -467,50 +499,50 @@ class WorkerThread(QThread):
         self._running = False
         self.pipeline = None
         self.device = None
+        self.align_filter = None
         self._has_sent_intrinsics = False
 
     def _select_color_profile(self, profile_list):
         try:
             return profile_list.get_video_stream_profile(
-                CAMERA_CFG.color_width,
-                CAMERA_CFG.color_height,
-                OBFormat.RGB,
-                CAMERA_CFG.color_fps,
+                COLOR_W, COLOR_H, OBFormat.RGB, FPS
             )
         except Exception:
-            return profile_list.get_default_video_stream_profile()
+            try:
+                return profile_list.get_video_stream_profile(
+                    COLOR_W, COLOR_H, OBFormat.MJPG, FPS
+                )
+            except Exception:
+                return profile_list.get_default_video_stream_profile()
 
     def _select_depth_profile(self, profile_list):
         try:
             return profile_list.get_video_stream_profile(
-                CAMERA_CFG.depth_width,
-                CAMERA_CFG.depth_height,
-                OBFormat.Y16,
-                CAMERA_CFG.depth_fps,
+                DEPTH_W, DEPTH_H, OBFormat.Y16, CAMERA_CFG.depth_fps
             )
         except Exception:
             return profile_list.get_default_video_stream_profile()
 
-    def _emit_intrinsics_once(self, depth_frame) -> None:
-        if self._has_sent_intrinsics:
-            return
-        try:
-            stream_profile = depth_frame.get_stream_profile()
-            video_profile = stream_profile.as_video_stream_profile()
-            intrinsics = video_profile.get_intrinsic()
-            K = np.array(
-                [
-                    [intrinsics.fx, 0, intrinsics.cx],
-                    [0, intrinsics.fy, intrinsics.cy],
-                    [0, 0, 1],
-                ],
-                dtype=np.float64,
+    def _set_disparity_search_range_256(self) -> bool:
+        if self.device is None:
+            return False
+
+        prop = getattr(OBPropertyID, "OB_PROP_DISP_SEARCH_RANGE_MODE_INT", None)
+        if prop is None:
+            self.log_signal.emit(
+                "⚠️ 当前 pyorbbecsdk 未暴露 OB_PROP_DISP_SEARCH_RANGE_MODE_INT"
             )
-            self.intrinsics_ready.emit(K)
-            self.log_signal.emit("✅ 内参读取成功")
-            self._has_sent_intrinsics = True
-        except Exception:
-            pass
+            return False
+
+        try:
+            self.device.set_int_property(prop, 2)
+            applied = self.device.get_int_property(prop)
+            ok = applied == 2
+            self.log_signal.emit(f"ℹ️ 视差搜索范围模式值: {applied}")
+            return ok
+        except Exception as e:
+            self.log_signal.emit(f"⚠️ 视差搜索范围设置失败: {e}")
+            return False
 
     def _read_lrm_data(self) -> None:
         if not self.device:
@@ -521,6 +553,17 @@ class WorkerThread(QThread):
         except Exception:
             pass
 
+    def _build_depth_mm(self, depth_frame) -> np.ndarray:
+        depth_u16 = np.frombuffer(depth_frame.get_data(), dtype=np.uint16).reshape(
+            (depth_frame.get_height(), depth_frame.get_width())
+        )
+        depth_u16 = cv2.medianBlur(depth_u16, 5)
+        depth_mm = depth_u16.astype(np.float32) * float(depth_frame.get_depth_scale())
+        depth_mm = np.where(
+            (depth_mm > MIN_DEPTH) & (depth_mm < MAX_DEPTH), depth_mm, 0
+        )
+        return depth_mm
+
     def run(self):
         self._running = True
         self._has_sent_intrinsics = False
@@ -530,29 +573,65 @@ class WorkerThread(QThread):
             self.device = self.pipeline.get_device()
             config = Config()
 
-            color_profile = self._select_color_profile(
-                self.pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
+            color_profile_list = self.pipeline.get_stream_profile_list(
+                OBSensorType.COLOR_SENSOR
             )
-            depth_profile = self._select_depth_profile(
-                self.pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
+            depth_profile_list = self.pipeline.get_stream_profile_list(
+                OBSensorType.DEPTH_SENSOR
             )
+            color_profile = self._select_color_profile(color_profile_list)
+            depth_profile = self._select_depth_profile(depth_profile_list)
 
             config.enable_stream(color_profile)
             config.enable_stream(depth_profile)
-            config.set_align_mode(CAMERA_CFG.align_mode)
+
+            if hasattr(config, "set_align_mode"):
+                try:
+                    config.set_align_mode(CAMERA_CFG.align_mode)
+                except Exception:
+                    pass
+
+            if (
+                hasattr(config, "set_frame_aggregate_output_mode")
+                and OBFrameAggregateOutputMode is not None
+                and hasattr(OBFrameAggregateOutputMode, "FULL_FRAME_REQUIRE")
+            ):
+                try:
+                    config.set_frame_aggregate_output_mode(
+                        OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE
+                    )
+                except Exception:
+                    pass
+
             self.pipeline.enable_frame_sync()
             self.pipeline.start(config)
 
+            if AlignFilter is not None and OBStreamType is not None:
+                try:
+                    self.align_filter = AlignFilter(
+                        align_to_stream=OBStreamType.COLOR_STREAM
+                    )
+                    self.log_signal.emit("✅ 已启用 AlignFilter: Depth -> Color")
+                except Exception as e:
+                    self.align_filter = None
+                    self.log_signal.emit(f"⚠️ AlignFilter 初始化失败: {e}")
+            else:
+                self.log_signal.emit(
+                    "⚠️ 当前 pyorbbecsdk 未暴露 AlignFilter，将回退到原始 depth"
+                )
+
+            disparity_256_ok = self._set_disparity_search_range_256()
+
             try:
                 self.device.set_bool_property(LRM_CFG.enable_property, True)
-                self.log_signal.emit("✅ LRM 激光补盲模块已开启 (0.001m~0.4m强制使用)")
+                self.log_signal.emit("✅ LRM 激光补盲模块已开启 (0.001m~0.4m 强制使用)")
             except Exception as e:
-                self.log_signal.emit(f"⚠️  LRM 开启失败: {e}")
+                self.log_signal.emit(f"⚠️ LRM 开启失败: {e}")
 
             self.log_signal.emit(
-                f"✅ 相机启动成功 (深度分辨率: {depth_profile.get_width()}x{depth_profile.get_height()}, 视差: 128)"
+                f"✅ 相机启动成功 (Color={color_profile.get_width()}x{color_profile.get_height()}, "
+                f"Depth={depth_profile.get_width()}x{depth_profile.get_height()}, disp256={'OK' if disparity_256_ok else 'NO'})"
             )
-            self.log_signal.emit("⚠️  注意: 0.4m以内深度将优先使用LRM数据")
 
             while self._running:
                 frames = self.pipeline.wait_for_frames(100)
@@ -564,29 +643,84 @@ class WorkerThread(QThread):
                 if color_frame is None or depth_frame is None:
                     continue
 
-                self._emit_intrinsics_once(depth_frame)
+                aligned_depth_frame = None
+                if self.align_filter is not None:
+                    try:
+                        aligned_frames = self.align_filter.process(frames)
+                        if aligned_frames is not None:
+                            aligned_frames = aligned_frames.as_frame_set()
+                            aligned_depth_frame = aligned_frames.get_depth_frame()
+                    except Exception as e:
+                        self.log_signal.emit(f"⚠️ AlignFilter 处理失败: {e}")
+                        aligned_depth_frame = None
 
                 color_image = frame_to_bgr_image(color_frame)
                 if color_image is None:
                     continue
 
-                depth_data = np.frombuffer(depth_frame.get_data(), dtype=np.uint16)
-                depth_data = depth_data.reshape(
-                    (depth_frame.get_height(), depth_frame.get_width())
-                )
-                depth_data = cv2.medianBlur(depth_data, 5)
-                depth_data = np.where(
-                    (depth_data > DEPTH_CFG.min_mm) & (depth_data < DEPTH_CFG.max_mm),
-                    depth_data,
-                    0,
-                )
+                if CAMERA_ROTATE_180:
+                    display_image = cv2.rotate(color_image, cv2.ROTATE_180)
+                else:
+                    display_image = color_image
 
-                self.frame_ready.emit(color_image)
-                self.data_ready.emit(
-                    depth_data,
-                    depth_frame.get_depth_scale(),
-                    (color_frame.get_width(), color_frame.get_height()),
-                )
+                raw_depth_mm = self._build_depth_mm(depth_frame)
+                aligned_depth_mm = None
+                if aligned_depth_frame is not None:
+                    try:
+                        aligned_depth_mm = self._build_depth_mm(aligned_depth_frame)
+                    except Exception as e:
+                        self.log_signal.emit(f"⚠️ 对齐深度解析失败: {e}")
+                        aligned_depth_mm = None
+
+                color_profile_obj = color_frame.get_stream_profile()
+                depth_profile_obj = depth_frame.get_stream_profile()
+                color_video_profile = color_profile_obj.as_video_stream_profile()
+                depth_video_profile = depth_profile_obj.as_video_stream_profile()
+                K_color = intrinsic_to_matrix(color_video_profile.get_intrinsic())
+                K_depth = intrinsic_to_matrix(depth_video_profile.get_intrinsic())
+
+                projection_depth_mm = None
+                projection_intrinsics = None
+                projection_mode = "invalid"
+
+                if aligned_depth_mm is not None and aligned_depth_mm.shape[:2] == (
+                    color_frame.get_height(),
+                    color_frame.get_width(),
+                ):
+                    projection_depth_mm = aligned_depth_mm
+                    projection_intrinsics = K_color
+                    projection_mode = "aligned_to_color"
+                elif raw_depth_mm.shape[:2] == (
+                    color_frame.get_height(),
+                    color_frame.get_width(),
+                ):
+                    projection_depth_mm = raw_depth_mm
+                    projection_intrinsics = K_color
+                    projection_mode = "pipeline_aligned_to_color"
+                else:
+                    projection_depth_mm = raw_depth_mm
+                    projection_intrinsics = K_depth
+                    projection_mode = "raw_depth"
+
+                if not self._has_sent_intrinsics and projection_intrinsics is not None:
+                    self.intrinsics_ready.emit(projection_intrinsics.copy())
+                    self._has_sent_intrinsics = True
+                    self.log_signal.emit(f"✅ 当前回投影内参已就绪: {projection_mode}")
+
+                payload = {
+                    "projection_depth_mm": projection_depth_mm,
+                    "projection_intrinsics": projection_intrinsics,
+                    "projection_mode": projection_mode,
+                    "aligned_depth_mm": aligned_depth_mm,
+                    "raw_depth_mm": raw_depth_mm,
+                    "color_size": (color_frame.get_width(), color_frame.get_height()),
+                    "depth_size": (depth_frame.get_width(), depth_frame.get_height()),
+                    "color_intrinsics_K": K_color,
+                    "depth_intrinsics_K": K_depth,
+                }
+
+                self.frame_ready.emit(display_image)
+                self.data_ready.emit(payload)
                 self._read_lrm_data()
 
         except Exception as e:
@@ -605,15 +739,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(UI_CFG.window_title)
         self.setGeometry(
-            UI_CFG.window_x,
-            UI_CFG.window_y,
-            UI_CFG.window_w,
-            UI_CFG.window_h,
+            UI_CFG.window_x, UI_CFG.window_y, UI_CFG.window_w, UI_CFG.window_h
         )
 
         self.current_depth_data = None
-        self.current_depth_scale = None
         self.current_color_size = None
+        self.current_depth_intrinsics = DEFAULT_INTRINSICS.copy()
+        self.current_projection_mode = "invalid"
         self.current_lrm_mm = 0
         self.current_lrm_m = 0.0
         self.current_cutting_pixel = None
@@ -624,13 +756,10 @@ class MainWindow(QMainWindow):
 
         self.ros_available = False
         self.pick_client = None
-        self.depth_intrinsics = DEFAULT_DEPTH_INTRINSICS.copy()
         self.last_request_type = None
 
-        # 先初始化 ROS
         self.init_ros()
 
-        # 再创建 TF
         self.tf_buffer = None
         self.tf_listener = None
         if self.ros_available:
@@ -644,9 +773,6 @@ class MainWindow(QMainWindow):
         self._toggle_window_shortcut.activated.connect(self.toggle_window_state)
         self._reset_view_shortcut = QShortcut(QKeySequence("R"), self)
         self._reset_view_shortcut.activated.connect(self.video_label.reset_view)
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
 
     def toggle_window_state(self) -> None:
         if self.isMaximized() or self.isFullScreen():
@@ -684,21 +810,17 @@ class MainWindow(QMainWindow):
         if not self.ros_available or self.tf_buffer is None:
             raise RuntimeError("ROS/TF 未初始化，无法执行 flange -> tcp 变换")
 
-        pt_flange = PoseStamped()
+        pt_flange = PointStamped()
         pt_flange.header.frame_id = ROS_CFG.flange_frame
         pt_flange.header.stamp = rospy.Time(0)
-        pt_flange.pose.position.x = x_flange
-        pt_flange.pose.position.y = y_flange
-        pt_flange.pose.position.z = z_flange
-        pt_flange.pose.orientation.x = 0.0
-        pt_flange.pose.orientation.y = 0.0
-        pt_flange.pose.orientation.z = 0.0
-        pt_flange.pose.orientation.w = 1.0
+        pt_flange.point.x = x_flange
+        pt_flange.point.y = y_flange
+        pt_flange.point.z = z_flange
 
         pt_tcp = self.tf_buffer.transform(
             pt_flange, ROS_CFG.tcp_frame, rospy.Duration(ROS_CFG.tf_wait_sec)
         )
-        return pt_tcp.pose.position.x, pt_tcp.pose.position.y, pt_tcp.pose.position.z
+        return pt_tcp.point.x, pt_tcp.point.y, pt_tcp.point.z
 
     def send_arm_command(self, x: float, y: float, z: float) -> bool:
         del x, y, z
@@ -862,12 +984,15 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_intrinsics_received(self, K: np.ndarray) -> None:
-        self.depth_intrinsics = K
+        self.current_depth_intrinsics = K
 
-    def receive_data(self, depth_data, scale, color_size) -> None:
-        self.current_depth_data = depth_data
-        self.current_depth_scale = scale
-        self.current_color_size = color_size
+    def receive_data(self, payload) -> None:
+        self.current_depth_data = payload.get("projection_depth_mm")
+        self.current_color_size = payload.get("color_size")
+        K = payload.get("projection_intrinsics")
+        if K is not None:
+            self.current_depth_intrinsics = K
+        self.current_projection_mode = payload.get("projection_mode", "invalid")
 
     def on_lrm_data_received(self, dist_mm: int, dist_m: float) -> None:
         self.current_lrm_mm = dist_mm
@@ -929,6 +1054,7 @@ class MainWindow(QMainWindow):
         self.info_label.setText(f"""
             <h3>✅ 目标锁定{lrm_note}</h3>
             <p><b>ROS状态:</b> {ros_status}</p>
+            <p><b>D2C模式:</b> {self.current_projection_mode}</p>
             <p><b>切割像素:</b> ({u}, {v})</p>
             <p><b>深度:</b> {depth_m:.3f} m</p>
             <hr>
@@ -947,7 +1073,7 @@ class MainWindow(QMainWindow):
             <p><b>X:</b> {x_tcp:.4f}</p>
             <p><b>Y:</b> {y_tcp:.4f}</p>
             <p><b>Z:</b> {z_tcp:.4f}</p>
-            """)
+        """)
 
     def manual_send_command(self) -> None:
         self.upsert_current_task()
@@ -1169,16 +1295,32 @@ class MainWindow(QMainWindow):
             return
 
         self.current_cutting_pixel = cutting_pixel
-        u, v = cutting_pixel
+        u_disp, v_disp = cutting_pixel
         color_w, color_h = self.current_color_size
-        depth_h, depth_w = self.current_depth_data.shape
+        depth_h, depth_w = self.current_depth_data.shape[:2]
 
-        du = int(np.clip(u * depth_w / color_w, 0, depth_w - 1))
-        dv = int(np.clip(v * depth_h / color_h, 0, depth_h - 1))
+        if (depth_w, depth_h) != (color_w, color_h):
+            self.info_label.setText(
+                f"⚠️ 当前投影深度尺寸为 {depth_w}x{depth_h}，彩色尺寸为 {color_w}x{color_h}。\n"
+                "D2C 未真正落到 color 像素坐标系，当前不会继续计算。"
+            )
+            self.target_tcp_coord = None
+            self.btn_upsert_task.setEnabled(False)
+            return
 
-        depth_mask = cv2.resize(
-            mask, (depth_w, depth_h), interpolation=cv2.INTER_NEAREST
-        )
+        if CAMERA_ROTATE_180:
+            du, dv = rotate_point_180(
+                int(round(u_disp)), int(round(v_disp)), color_w, color_h
+            )
+            depth_mask = cv2.rotate(mask, cv2.ROTATE_180)
+        else:
+            du = int(np.clip(round(u_disp), 0, depth_w - 1))
+            dv = int(np.clip(round(v_disp), 0, depth_h - 1))
+            depth_mask = mask
+
+        du = int(np.clip(du, 0, depth_w - 1))
+        dv = int(np.clip(dv, 0, depth_h - 1))
+
         depth_raw = self.get_valid_depth_around(
             self.current_depth_data, du, dv, depth_mask
         )
@@ -1191,7 +1333,7 @@ class MainWindow(QMainWindow):
             return
 
         depth_m = depth_raw / 1000.0
-        cam_xyz = depth_to_pointcloud(du, dv, depth_m, self.depth_intrinsics)
+        cam_xyz = depth_to_pointcloud(du, dv, depth_m, self.current_depth_intrinsics)
         flange_xyz = cam_point_to_flange_point(*cam_xyz)
 
         try:
@@ -1207,7 +1349,9 @@ class MainWindow(QMainWindow):
         self.target_tcp_coord = tcp_xyz
         self.btn_upsert_task.setEnabled(True)
 
-        self._update_info_label(u, v, depth_m, use_lrm, cam_xyz, flange_xyz, tcp_xyz)
+        self._update_info_label(
+            u_disp, v_disp, depth_m, use_lrm, cam_xyz, flange_xyz, tcp_xyz
+        )
 
     def closeEvent(self, event):
         if hasattr(self, "worker"):

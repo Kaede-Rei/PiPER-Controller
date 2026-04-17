@@ -18,6 +18,8 @@ build/
 devel/
 install/
 Log/
+outputs/
+picture/
 
 plan.md
 
