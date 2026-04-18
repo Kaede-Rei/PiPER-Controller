@@ -118,6 +118,25 @@ class UiConfig:
 
 
 @dataclass(frozen=True)
+class TargetSelectionConfig:
+    point_method: str = "skeleton_centroid"
+    mask_close_kernel: int = 5
+    mask_open_kernel: int = 3
+    depth_kernel_size: int = 7
+    depth_trim_ratio: float = 0.15
+    center_band_min_dist_px: float = 1.0
+    prefer_lrm_override: bool = True
+
+
+@dataclass(frozen=True)
+class ResidualCompensationConfig:
+    enabled: bool = False
+    dx: float = 0.0200
+    dy: float = 0.0070
+    dz: float = 0.0170
+
+
+@dataclass(frozen=True)
 class HandEyeConfig:
     # ^flange T_cam
     T_cam_to_flange: Tuple[Tuple[float, float, float, float], ...] = (
@@ -141,6 +160,8 @@ LRM_CFG = LRMConfig()
 CAMERA_CFG = CameraConfig()
 ROS_CFG = RosConfig()
 UI_CFG = UiConfig()
+TARGET_CFG = TargetSelectionConfig()
+RESIDUAL_COMP_CFG = ResidualCompensationConfig()
 HAND_EYE_CFG = HandEyeConfig()
 INTRINSICS_CFG = IntrinsicsConfig()
 
@@ -218,14 +239,54 @@ def get_mask_center(mask: np.ndarray) -> Optional[Tuple[float, float]]:
     return cx, cy
 
 
-def find_cutting_point(
-    stem_mask: np.ndarray,
-    stem_center: Tuple[float, float],
-    original_image: np.ndarray,
-) -> Tuple[float, float]:
-    del original_image
+def preprocess_selection_mask(
+    mask: np.ndarray,
+    close_kernel: int = TARGET_CFG.mask_close_kernel,
+    open_kernel: int = TARGET_CFG.mask_open_kernel,
+) -> np.ndarray:
+    binary_mask = (mask > 0).astype(np.uint8) * 255
+    if binary_mask.size == 0:
+        return binary_mask
 
-    binary_mask = (stem_mask > 0.5).astype(np.uint8) * 255
+    close_kernel = max(1, int(close_kernel))
+    open_kernel = max(1, int(open_kernel))
+    if close_kernel % 2 == 0:
+        close_kernel += 1
+    if open_kernel % 2 == 0:
+        open_kernel += 1
+
+    kernel_close = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (close_kernel, close_kernel)
+    )
+    kernel_open = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (open_kernel, open_kernel)
+    )
+    refined = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel_close)
+    refined = cv2.morphologyEx(refined, cv2.MORPH_OPEN, kernel_open)
+    return refined
+
+
+def build_morphological_skeleton(binary_mask: np.ndarray) -> np.ndarray:
+    work = (binary_mask > 0).astype(np.uint8) * 255
+    if work.size == 0 or cv2.countNonZero(work) == 0:
+        return np.zeros_like(work)
+
+    skel = np.zeros_like(work)
+    element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+    while True:
+        eroded = cv2.erode(work, element)
+        opened = cv2.dilate(eroded, element)
+        temp = cv2.subtract(work, opened)
+        skel = cv2.bitwise_or(skel, temp)
+        work = eroded
+        if cv2.countNonZero(work) == 0:
+            break
+    return skel
+
+
+def find_cutting_point_from_convexity_defect(
+    binary_mask: np.ndarray, stem_center: Tuple[float, float]
+) -> Tuple[float, float]:
     contours, _ = cv2.findContours(
         binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
@@ -236,21 +297,17 @@ def find_cutting_point(
     epsilon = 0.001 * cv2.arcLength(largest_contour, True)
     largest_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
     hull = cv2.convexHull(largest_contour, returnPoints=False)
-
     try:
         defects = cv2.convexityDefects(largest_contour, hull)
         if defects is None:
             return stem_center
-
         cutting_points = []
         for i in range(defects.shape[0]):
             _, _, f, _ = defects[i, 0]
             far_point = tuple(largest_contour[f][0])
             cutting_points.append(far_point)
-
         if not cutting_points:
             return stem_center
-
         return min(
             cutting_points,
             key=lambda p: np.sqrt(
@@ -259,6 +316,55 @@ def find_cutting_point(
         )
     except cv2.error:
         return stem_center
+
+
+def find_cutting_point(
+    stem_mask: np.ndarray,
+    stem_center: Tuple[float, float],
+    original_image: np.ndarray,
+    method: str = TARGET_CFG.point_method,
+    close_kernel: int = TARGET_CFG.mask_close_kernel,
+    open_kernel: int = TARGET_CFG.mask_open_kernel,
+) -> Tuple[float, float]:
+    del original_image
+
+    ys, xs = np.where(stem_mask > 0)
+    if len(xs) == 0:
+        return stem_center
+
+    x0, x1 = max(0, int(xs.min()) - 2), int(xs.max()) + 3
+    y0, y1 = max(0, int(ys.min()) - 2), int(ys.max()) + 3
+    cropped_mask = stem_mask[y0:y1, x0:x1]
+    binary_mask = preprocess_selection_mask(cropped_mask, close_kernel, open_kernel)
+    local_center = (stem_center[0] - x0, stem_center[1] - y0)
+
+    if method == "centroid":
+        return stem_center
+    if method == "legacy_defect":
+        px, py = find_cutting_point_from_convexity_defect(binary_mask, local_center)
+        return float(px + x0), float(py + y0)
+
+    skeleton = build_morphological_skeleton(binary_mask)
+    skel_y, skel_x = np.where(skeleton > 0)
+    if len(skel_x) == 0:
+        px, py = find_cutting_point_from_convexity_defect(binary_mask, local_center)
+        return float(px + x0), float(py + y0)
+
+    dx = skel_x.astype(np.float64) - float(local_center[0])
+    dy = skel_y.astype(np.float64) - float(local_center[1])
+    idx = int(np.argmin(dx * dx + dy * dy))
+    return float(skel_x[idx] + x0), float(skel_y[idx] + y0)
+
+
+def trimmed_median(values: np.ndarray, trim_ratio: float) -> float:
+    if values.size == 0:
+        return 0.0
+    values = np.sort(values.astype(np.float64))
+    trim_ratio = float(max(0.0, min(0.45, trim_ratio)))
+    trim_n = int(values.size * trim_ratio)
+    if trim_n > 0 and values.size > (2 * trim_n):
+        values = values[trim_n:-trim_n]
+    return float(np.median(values))
 
 
 def depth_to_pointcloud(
@@ -296,6 +402,19 @@ class ImageDisplayWidget(QLabel):
         self._pan_y = 0.0
         self._is_panning = False
         self._last_pan_pos = None
+        self.point_method = TARGET_CFG.point_method
+        self.mask_close_kernel = TARGET_CFG.mask_close_kernel
+        self.mask_open_kernel = TARGET_CFG.mask_open_kernel
+
+    def sync_pick_config(
+        self,
+        point_method: str,
+        mask_close_kernel: int,
+        mask_open_kernel: int,
+    ) -> None:
+        self.point_method = point_method
+        self.mask_close_kernel = max(1, int(mask_close_kernel))
+        self.mask_open_kernel = max(1, int(mask_open_kernel))
 
     def set_image(self, cv_img: np.ndarray) -> None:
         if cv_img is None:
@@ -463,7 +582,14 @@ class ImageDisplayWidget(QLabel):
         if stem_center is None:
             return
 
-        cutting_point = find_cutting_point(mask, stem_center, self._latest_cv_image)
+        cutting_point = find_cutting_point(
+            mask,
+            stem_center,
+            self._latest_cv_image,
+            self.point_method,
+            self.mask_close_kernel,
+            self.mask_open_kernel,
+        )
         if cutting_point is None:
             return
 
@@ -751,6 +877,7 @@ class MainWindow(QMainWindow):
         self.current_cutting_pixel = None
 
         self.target_tcp_coord = None
+        self.raw_target_tcp_coord = None
         self.last_cam_coord = None
         self.last_flange_coord = None
 
@@ -852,7 +979,7 @@ class MainWindow(QMainWindow):
         info_group = QGroupBox("目标锁定 / 坐标信息")
         info_group_layout = QVBoxLayout(info_group)
         self.info_label = QLabel(
-            "系统初始化中...\n\n操作说明：\n1. 左键：添加轮廓点\n2. 鼠标滚轮：缩放画面\n3. 右键拖拽：平移画面\n4. R 键：重置视图\n"
+            "系统初始化中...\n\n操作说明：\n1. 左键绘制目标区域\n2. 双击左键闭合区域\n3. 鼠标滚轮缩放，右键拖拽平移\n4. R 键重置视图\n"
         )
         self.info_label.setWordWrap(True)
         self.info_label.setFont(QFont(UI_CFG.info_font_name, UI_CFG.info_font_size))
@@ -929,6 +1056,35 @@ class MainWindow(QMainWindow):
         place_layout.addRow("Yaw", self.place_yaw_edit)
         control_column.addWidget(place_group)
 
+        target_group = QGroupBox("取点 / TCP补偿")
+        target_layout = QFormLayout(target_group)
+        self.point_method_box = QComboBox()
+        self.point_method_box.addItem("中心线最近质心", "skeleton_centroid")
+        self.point_method_box.addItem("区域质心", "centroid")
+        self.point_method_box.addItem("轮廓凹陷兼容", "legacy_defect")
+        self.mask_close_kernel_edit = QLineEdit(str(TARGET_CFG.mask_close_kernel))
+        self.mask_open_kernel_edit = QLineEdit(str(TARGET_CFG.mask_open_kernel))
+        self.depth_kernel_edit = QLineEdit(str(TARGET_CFG.depth_kernel_size))
+        self.depth_trim_ratio_edit = QLineEdit(f"{TARGET_CFG.depth_trim_ratio:.2f}")
+        self.chk_prefer_lrm_override = QCheckBox("近距优先使用 LRM")
+        self.chk_prefer_lrm_override.setChecked(TARGET_CFG.prefer_lrm_override)
+        self.chk_enable_tcp_comp = QCheckBox("启用 TCP 平移补偿")
+        self.chk_enable_tcp_comp.setChecked(RESIDUAL_COMP_CFG.enabled)
+        self.tcp_comp_x_edit = QLineEdit(f"{RESIDUAL_COMP_CFG.dx:.4f}")
+        self.tcp_comp_y_edit = QLineEdit(f"{RESIDUAL_COMP_CFG.dy:.4f}")
+        self.tcp_comp_z_edit = QLineEdit(f"{RESIDUAL_COMP_CFG.dz:.4f}")
+        target_layout.addRow("取点方式", self.point_method_box)
+        target_layout.addRow("闭运算核", self.mask_close_kernel_edit)
+        target_layout.addRow("开运算核", self.mask_open_kernel_edit)
+        target_layout.addRow("深度核尺寸", self.depth_kernel_edit)
+        target_layout.addRow("深度裁剪比例", self.depth_trim_ratio_edit)
+        target_layout.addRow(self.chk_prefer_lrm_override)
+        target_layout.addRow(self.chk_enable_tcp_comp)
+        target_layout.addRow("补偿 X", self.tcp_comp_x_edit)
+        target_layout.addRow("补偿 Y", self.tcp_comp_y_edit)
+        target_layout.addRow("补偿 Z", self.tcp_comp_z_edit)
+        control_column.addWidget(target_group)
+
         self.btn_reset = QPushButton("重置选择")
         self.btn_reset.clicked.connect(self.video_label.clear_selection)
         self.btn_reset.setMinimumHeight(40)
@@ -973,6 +1129,23 @@ class MainWindow(QMainWindow):
         control_column.addWidget(self.btn_cancel_cmd)
 
         control_column.addStretch()
+        self._sync_pick_config_to_view()
+        self.point_method_box.currentIndexChanged.connect(
+            self._sync_pick_config_to_view
+        )
+        self.mask_close_kernel_edit.editingFinished.connect(
+            self._sync_pick_config_to_view
+        )
+        self.mask_open_kernel_edit.editingFinished.connect(
+            self._sync_pick_config_to_view
+        )
+
+    def _sync_pick_config_to_view(self) -> None:
+        self.video_label.sync_pick_config(
+            str(self.point_method_box.currentData()),
+            self._parse_int(self.mask_close_kernel_edit, TARGET_CFG.mask_close_kernel),
+            self._parse_int(self.mask_open_kernel_edit, TARGET_CFG.mask_open_kernel),
+        )
 
     def init_thread(self) -> None:
         self.worker = WorkerThread()
@@ -1005,35 +1178,66 @@ class MainWindow(QMainWindow):
         v: int,
         stem_mask: np.ndarray,
         kernel_size: int = DEPTH_CFG.kernel_size,
+        trim_ratio: float = TARGET_CFG.depth_trim_ratio,
     ) -> float:
         h, w = depth_img.shape
         if stem_mask.shape[:2] != (h, w):
             stem_mask = cv2.resize(stem_mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
+        binary_mask = preprocess_selection_mask(
+            stem_mask,
+            self._parse_int(self.mask_close_kernel_edit, TARGET_CFG.mask_close_kernel),
+            self._parse_int(self.mask_open_kernel_edit, TARGET_CFG.mask_open_kernel),
+        )
+        kernel_size = max(3, int(kernel_size))
+        if kernel_size % 2 == 0:
+            kernel_size += 1
         half_k = kernel_size // 2
         start_x, end_x = max(0, u - half_k), min(w, u + half_k + 1)
         start_y, end_y = max(0, v - half_k), min(h, v + half_k + 1)
 
-        depth_roi = depth_img[start_y:end_y, start_x:end_x]
-        mask_roi = stem_mask[start_y:end_y, start_x:end_x]
+        distance_map = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 5)
+        local_radius = float(distance_map[v, u]) if 0 <= v < h and 0 <= u < w else 0.0
+        center_threshold = max(TARGET_CFG.center_band_min_dist_px, local_radius * 0.5)
+        center_mask = (distance_map >= center_threshold).astype(np.uint8) * 255
+        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        eroded_mask = cv2.erode(binary_mask, erode_kernel, iterations=1)
 
-        valid_mask = (mask_roi > 0) & (depth_roi > 0)
-        valid_depths = depth_roi[valid_mask]
-        if len(valid_depths) > 0:
-            return float(np.median(valid_depths))
+        masks_to_try = [center_mask, eroded_mask, binary_mask]
+        for candidate_mask in masks_to_try:
+            depth_roi = depth_img[start_y:end_y, start_x:end_x]
+            mask_roi = candidate_mask[start_y:end_y, start_x:end_x]
+            valid_mask = (mask_roi > 0) & (depth_roi > 0)
+            valid_depths = depth_roi[valid_mask]
+            if valid_depths.size >= 3:
+                return trimmed_median(valid_depths, trim_ratio)
 
-        full_mask_valid = (stem_mask > 0) & (depth_img > 0)
-        full_valid_depths = depth_img[full_mask_valid]
+        full_valid_depths = depth_img[(binary_mask > 0) & (depth_img > 0)]
         return (
-            float(np.median(full_valid_depths)) if len(full_valid_depths) > 0 else 0.0
+            trimmed_median(full_valid_depths, trim_ratio)
+            if full_valid_depths.size > 0
+            else 0.0
         )
 
     def _get_depth_value_mm(self, depth_raw: float) -> Tuple[float, bool]:
         use_lrm = False
-        if LRM_CFG.valid_min_mm <= self.current_lrm_mm <= LRM_CFG.valid_max_mm:
+        if (
+            self.chk_prefer_lrm_override.isChecked()
+            and LRM_CFG.valid_min_mm <= self.current_lrm_mm <= LRM_CFG.valid_max_mm
+        ):
             depth_raw = float(self.current_lrm_mm)
             use_lrm = True
         return depth_raw, use_lrm
+
+    def _apply_tcp_residual_compensation(
+        self, tcp_xyz: Tuple[float, float, float]
+    ) -> Tuple[float, float, float]:
+        if not self.chk_enable_tcp_comp.isChecked():
+            return tcp_xyz
+        dx = self._parse_float(self.tcp_comp_x_edit, 0.0)
+        dy = self._parse_float(self.tcp_comp_y_edit, 0.0)
+        dz = self._parse_float(self.tcp_comp_z_edit, 0.0)
+        return tcp_xyz[0] + dx, tcp_xyz[1] + dy, tcp_xyz[2] + dz
 
     def _update_info_label(
         self,
@@ -1043,36 +1247,29 @@ class MainWindow(QMainWindow):
         use_lrm: bool,
         cam_xyz: Tuple[float, float, float],
         flange_xyz: Tuple[float, float, float],
+        raw_tcp_xyz: Tuple[float, float, float],
         tcp_xyz: Tuple[float, float, float],
     ) -> None:
-        ros_status = "✅ ROS已连接" if self.ros_available else "❌ ROS未连接"
-        lrm_note = " <font color='red'>(LRM激光补盲)</font>" if use_lrm else ""
+        ros_status = "已连接" if self.ros_available else "未连接"
+        lrm_note = " (LRM)" if use_lrm else ""
         x_cam, y_cam, z_cam = cam_xyz
         x_flange, y_flange, z_flange = flange_xyz
+        x_tcp_raw, y_tcp_raw, z_tcp_raw = raw_tcp_xyz
         x_tcp, y_tcp, z_tcp = tcp_xyz
+        point_method = self.point_method_box.currentText()
 
         self.info_label.setText(f"""
-            <h3>✅ 目标锁定{lrm_note}</h3>
-            <p><b>ROS状态:</b> {ros_status}</p>
+            <h3>目标已锁定{lrm_note}</h3>
+            <p><b>ROS:</b> {ros_status}</p>
             <p><b>D2C模式:</b> {self.current_projection_mode}</p>
-            <p><b>切割像素:</b> ({u}, {v})</p>
+            <p><b>取点方式:</b> {point_method}</p>
+            <p><b>像素:</b> ({u:.1f}, {v:.1f})</p>
             <p><b>深度:</b> {depth_m:.3f} m</p>
             <hr>
-            <p><b>Camera坐标:</b></p>
-            <p><b>X:</b> {x_cam:.4f}</p>
-            <p><b>Y:</b> {y_cam:.4f}</p>
-            <p><b>Z:</b> {z_cam:.4f}</p>
-            <hr>
-            <p><b>Flange坐标:</b></p>
-            <p><b>X:</b> {x_flange:.4f}</p>
-            <p><b>Y:</b> {y_flange:.4f}</p>
-            <p><b>Z:</b> {z_flange:.4f}</p>
-            <hr>
-            <p><b style='color: #9b59b6;'>TCP相对坐标</b></p>
-            <p style='color: #9b59b6;'>将以 Point(link_tcp) 写入任务层，并在设置任务时冻结到底座坐标系。</p>
-            <p><b>X:</b> {x_tcp:.4f}</p>
-            <p><b>Y:</b> {y_tcp:.4f}</p>
-            <p><b>Z:</b> {z_tcp:.4f}</p>
+            <p><b>Camera:</b> {x_cam:.4f}, {y_cam:.4f}, {z_cam:.4f}</p>
+            <p><b>Flange:</b> {x_flange:.4f}, {y_flange:.4f}, {z_flange:.4f}</p>
+            <p><b>TCP 原始:</b> {x_tcp_raw:.4f}, {y_tcp_raw:.4f}, {z_tcp_raw:.4f}</p>
+            <p><b>TCP 发送:</b> {x_tcp:.4f}, {y_tcp:.4f}, {z_tcp:.4f}</p>
         """)
 
     def manual_send_command(self) -> None:
@@ -1321,13 +1518,20 @@ class MainWindow(QMainWindow):
         du = int(np.clip(du, 0, depth_w - 1))
         dv = int(np.clip(dv, 0, depth_h - 1))
 
+        depth_kernel = self._parse_int(
+            self.depth_kernel_edit, TARGET_CFG.depth_kernel_size
+        )
+        trim_ratio = self._parse_float(
+            self.depth_trim_ratio_edit, TARGET_CFG.depth_trim_ratio
+        )
         depth_raw = self.get_valid_depth_around(
-            self.current_depth_data, du, dv, depth_mask
+            self.current_depth_data, du, dv, depth_mask, depth_kernel, trim_ratio
         )
         depth_raw, use_lrm = self._get_depth_value_mm(depth_raw)
 
         if depth_raw == 0:
-            self.info_label.setText("⚠️ 深度无效，请调整位置")
+            self.info_label.setText("深度无效，请调整选择区域")
+            self.raw_target_tcp_coord = None
             self.target_tcp_coord = None
             self.btn_upsert_task.setEnabled(False)
             return
@@ -1337,20 +1541,24 @@ class MainWindow(QMainWindow):
         flange_xyz = cam_point_to_flange_point(*cam_xyz)
 
         try:
-            tcp_xyz = self.flange_point_to_tcp_point(*flange_xyz)
+            raw_tcp_xyz = self.flange_point_to_tcp_point(*flange_xyz)
         except Exception as e:
-            self.info_label.setText(f"⚠️ TF 变换失败: {e}")
+            self.info_label.setText(f"TF 变换失败: {e}")
+            self.raw_target_tcp_coord = None
             self.target_tcp_coord = None
             self.btn_upsert_task.setEnabled(False)
             return
 
+        tcp_xyz = self._apply_tcp_residual_compensation(raw_tcp_xyz)
+
         self.last_cam_coord = cam_xyz
         self.last_flange_coord = flange_xyz
+        self.raw_target_tcp_coord = raw_tcp_xyz
         self.target_tcp_coord = tcp_xyz
         self.btn_upsert_task.setEnabled(True)
 
         self._update_info_label(
-            u_disp, v_disp, depth_m, use_lrm, cam_xyz, flange_xyz, tcp_xyz
+            u_disp, v_disp, depth_m, use_lrm, cam_xyz, flange_xyz, raw_tcp_xyz, tcp_xyz
         )
 
     def closeEvent(self, event):
