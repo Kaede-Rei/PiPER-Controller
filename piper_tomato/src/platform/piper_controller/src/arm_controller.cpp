@@ -380,22 +380,22 @@ ErrorCode ArmController::async_plan_and_execute(std::function<void(ErrorCode)> c
             ROS_WARN("异步规划失败，错误码：%d", err_code.val);
             _is_planning_or_executing_ = false;
             if(callback) callback(ErrorCode::PLANNING_FAILED);
+            return;
         }
-        else {
-            ROS_INFO("异步规划成功，正在执行...");
-            err_code = _arm_.execute(plan);
-            if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
-                ROS_WARN("异步执行失败，错误码：%d", err_code.val);
-                _is_planning_or_executing_ = false;
-                if(callback) callback(ErrorCode::EXECUTION_FAILED);
-            }
-            else {
-                ROS_INFO("异步执行成功");
-                _is_planning_or_executing_ = false;
-                if(callback) callback(ErrorCode::SUCCESS);
-            }
+
+        ROS_INFO("异步规划成功，正在执行...");
+        err_code = _arm_.execute(plan);
+        if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+            ROS_WARN("异步执行失败，错误码：%d", err_code.val);
+            _is_planning_or_executing_ = false;
+            if(callback) callback(ErrorCode::EXECUTION_FAILED);
+            return;
         }
-        });
+
+        ROS_INFO("异步执行成功");
+        _is_planning_or_executing_ = false;
+        if(callback) callback(ErrorCode::SUCCESS);
+    });
 
     return ErrorCode::SUCCESS;
 }
@@ -797,13 +797,6 @@ ErrorCode ArmController::cancel_async() {
 
     ROS_INFO("正在取消异步任务...");
     _arm_.stop();
-
-    if(_async_thread_.joinable()) {
-        _async_thread_.join();
-    }
-
-    _is_planning_or_executing_ = false;
-    ROS_INFO("异步任务已取消");
     return ErrorCode::SUCCESS;
 }
 

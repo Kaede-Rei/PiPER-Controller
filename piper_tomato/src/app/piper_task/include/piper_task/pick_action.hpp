@@ -3,7 +3,9 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include <actionlib/server/simple_action_server.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -34,7 +36,7 @@ public:
         std::shared_ptr<TasksManager> tasks_manager,
         std::shared_ptr<ArmController> arm,
         const std::string& action_name);
-    ~PickTaskAction() = default;
+    ~PickTaskAction();
 
     PickTaskAction(const PickTaskAction&) = delete;
     PickTaskAction& operator=(const PickTaskAction&) = delete;
@@ -63,6 +65,7 @@ private:
      * @param goal Goal 请求
      */
     void handle_execute_task_group_request(const piper_msgs2::PickTaskGoal& goal);
+    void finish_execute_task_group_request(const piper_msgs2::PickTaskGoal& goal);
     void handle_update_task_group_config_request(const piper_msgs2::PickTaskGoal& goal);
 
     /**
@@ -128,7 +131,10 @@ private:
     std::shared_ptr<ArmController> _arm_;
 
     std::atomic<bool> _cancel_requested_{ false };
+    std::atomic<bool> _execute_group_running_{ false };
     std::atomic<unsigned int> _id_seed_{ 1000 };
+    std::thread _execute_group_thread_;
+    std::mutex _execute_group_mutex_;
 };
 
 }  // namespace piper

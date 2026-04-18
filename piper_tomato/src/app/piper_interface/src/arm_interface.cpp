@@ -186,9 +186,7 @@ void ArmMoveAction::on_preempt() {
  * @param req 转换后的 ArmCmdRequest
  * @return 转换是否成功
  */
-tl::optional<ArmCmdRequest> SimpleArmMoveAction::convert_goal_to_request(
-    const piper_msgs2::SimpleMoveArmGoal& goal
-) {
+tl::optional<ArmCmdRequest> SimpleArmMoveAction::convert_goal_to_request(const piper_msgs2::SimpleMoveArmGoal& goal) {
     ArmCmdRequest req{};
     req.type = static_cast<ArmCmdType>(goal.command_type);
 

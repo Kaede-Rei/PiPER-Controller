@@ -130,7 +130,7 @@ class TargetSelectionConfig:
 
 @dataclass(frozen=True)
 class ResidualCompensationConfig:
-    enabled: bool = False
+    enabled: bool = True
     dx: float = 0.0200
     dy: float = 0.0070
     dz: float = 0.0170
@@ -1417,6 +1417,10 @@ class MainWindow(QMainWindow):
         goal.request_type = PickTaskGoal.EXECUTE_TASK_GROUP
         goal.group_name = self.group_name_edit.text().strip() or ROS_CFG.pick_group_name
         self._fill_group_config(goal)
+        goal.use_eef = self.chk_use_eef.isChecked()
+        goal.go_safe_after_cancel = self.chk_go_safe_after_cancel.isChecked()
+        goal.retry_times = max(0, self._parse_int(self.retry_times_edit, 0))
+        goal.retry_times = min(goal.retry_times, 255)
         self.last_request_type = goal.request_type
         self.task_status_label.setText(
             f"采摘任务状态：已发送任务组执行请求，任务组='{goal.group_name}'"

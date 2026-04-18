@@ -301,6 +301,26 @@ ErrorCode TasksManager::set_task_pick_params(const std::string& group_name, unsi
     return ErrorCode::SUCCESS;
 }
 
+ErrorCode TasksManager::set_task_group_pick_execution_behavior(const std::string& group_name, bool use_eef, bool go_safe_after_cancel, uint8_t retry_times) {
+    auto group = find_task_group(group_name);
+    if(!group) return group.error();
+
+    std::size_t updated = 0;
+    for(auto& [id, task] : group.value()->tasks) {
+        (void)id;
+        if(task.type != TaskType::PICK || !task.pick_params) continue;
+        task.pick_params->use_eef = use_eef;
+        task.pick_params->go_safe_after_cancel = go_safe_after_cancel;
+        task.pick_params->retry_times = retry_times;
+        ++updated;
+    }
+
+    ROS_INFO("任务组 '%s' 的 PICK 执行行为已覆盖：use_eef=%s, go_safe_after_cancel=%s, retry_times=%u, updated=%zu",
+        group_name.c_str(), use_eef ? "true" : "false", go_safe_after_cancel ? "true" : "false",
+        static_cast<unsigned int>(retry_times), updated);
+    return ErrorCode::SUCCESS;
+}
+
 /**
  * @brief 执行任务组中的指定任务
  * @param group_name 任务组名称
@@ -489,9 +509,19 @@ ErrorCode TasksManager::execute_task_group(const std::string& group_name, Execut
             return code;
         }
 
-        auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
-        if(!gripper_if) ROS_WARN("末端执行器不支持夹爪接口，无法执行任务组完成后的夹爪复位");
-        else gripper_if.value().close();
+        bool any_pick_use_eef = false;
+        for(const auto& [tid, t] : group.value()->tasks) {
+            (void)tid;
+            if(t.type == TaskType::PICK && t.pick_params && t.pick_params->use_eef) {
+                any_pick_use_eef = true;
+                break;
+            }
+        }
+        if(any_pick_use_eef && _eef_) {
+            auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
+            if(!gripper_if) ROS_WARN("末端执行器不支持夹爪接口，无法执行任务组完成后的夹爪复位");
+            else gripper_if.value().close();
+        }
 
         report_pick_feedback(feedback_task, PickStage::PICK_GO_HOME, true, ErrorCode::SUCCESS, "任务组完成后回到初始位：完成", ctx);
     }
@@ -950,10 +980,17 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         report_pick_feedback(task, PickStage::PICK_CANCELED, false, ErrorCode::CANCELLED, "任务已取消", ctx);
 
         if(pp.go_safe_after_cancel) {
+            _arm_->cancel_async();
+            for(int i = 0; i < 50; ++i) {
+                if(!_arm_->is_planning_or_executing()) break;
+                ros::Duration(0.02).sleep();
+            }
             const ErrorCode safe_code = _arm_->home();
             if(safe_code != ErrorCode::SUCCESS) {
                 ROS_WARN("任务 ID %u 取消后回安全位失败，错误码：%s", task.id, err_to_string(safe_code).c_str());
             }
+            auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
+            if(gripper_if) gripper_if.value().close();
         }
         return ErrorCode::CANCELLED;
         };
@@ -998,7 +1035,26 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
             cancel_code = check_cancel();
             if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
 
-            ec = _arm_->plan_and_execute();
+            std::atomic<bool> done{ false };
+            std::atomic<int> result_code{ static_cast<int>(ErrorCode::FAILURE) };
+            ec = _arm_->async_plan_and_execute([&](ErrorCode async_code) {
+                result_code.store(static_cast<int>(async_code));
+                done.store(true);
+                });
+            if(ec != ErrorCode::SUCCESS) {
+                return fail_stage(stage, ec, text + "：启动异步执行失败");
+            }
+
+            ros::Rate rate(50.0);
+            while(ros::ok() && !done.load()) {
+                if(is_cancel_requested(task, ctx)) {
+                    _arm_->cancel_async();
+                    return check_cancel();
+                }
+                rate.sleep();
+            }
+
+            ec = static_cast<ErrorCode>(result_code.load());
             if(ec != ErrorCode::SUCCESS) {
                 cancel_code = check_cancel();
                 if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
@@ -1023,11 +1079,16 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         return ErrorCode::SUCCESS;
         };
 
-    if(!_eef_) return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_INTERFACE, "末端执行器未初始化，无法执行采摘任务");
-    auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
-    if(!gripper_if) return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_INTERFACE, "末端执行器不支持夹爪接口，无法执行采摘任务");
-    gripper_if.value().open();
-    report_pick_feedback(task, PickStage::PICK_START, true, ErrorCode::SUCCESS, "开始", ctx);
+    if(pp.use_eef) {
+        if(!_eef_) return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_INTERFACE, "末端执行器未初始化，无法执行采摘任务");
+        auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
+        if(!gripper_if) return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_INTERFACE, "末端执行器不支持夹爪接口，无法执行采摘任务");
+        gripper_if.value().open();
+        report_pick_feedback(task, PickStage::PICK_START, true, ErrorCode::SUCCESS, "开始", ctx);
+    }
+    else {
+        report_pick_feedback(task, PickStage::PICK_START, true, ErrorCode::SUCCESS, "开始：跳过末端初始化动作", ctx);
+    }
 
     ErrorCode code = check_cancel();
     if(code != ErrorCode::SUCCESS) return code;

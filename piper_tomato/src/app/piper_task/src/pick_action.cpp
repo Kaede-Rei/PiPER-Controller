@@ -1,6 +1,7 @@
 #include "piper_task/pick_action.hpp"
 
 #include <chrono>
+#include <thread>
 
 namespace piper {
 
@@ -37,6 +38,13 @@ PickTaskAction::PickTaskAction(ros::NodeHandle& nh,
     _as_->registerGoalCallback(boost::bind(&PickTaskAction::on_goal, this));
     _as_->registerPreemptCallback(boost::bind(&PickTaskAction::on_preempt, this));
     _as_->start();
+}
+
+PickTaskAction::~PickTaskAction() {
+    _cancel_requested_.store(true);
+    if(_execute_group_thread_.joinable()) {
+        _execute_group_thread_.join();
+    }
 }
 
 /**
@@ -96,8 +104,9 @@ void PickTaskAction::on_preempt() {
     _cancel_requested_.store(true);
     if(_arm_) {
         try {
+            _arm_->cancel_async();
             _arm_->stop();
-            ROS_INFO("收到取消请求，已触发机械臂停止");
+            ROS_INFO("收到取消请求，已触发机械臂取消/停止");
         }
         catch(const std::exception& e) {
             ROS_WARN("取消时停止机械臂异常：%s", e.what());
@@ -318,8 +327,32 @@ void PickTaskAction::handle_update_task_group_config_request(const piper_msgs2::
  * @param goal Goal 请求
  */
 void PickTaskAction::handle_execute_task_group_request(const piper_msgs2::PickTaskGoal& goal) {
-    _cancel_requested_.store(false);
+    std::lock_guard<std::mutex> lk(_execute_group_mutex_);
+    if(_execute_group_running_.load()) {
+        piper_msgs2::PickTaskResult res;
+        res.success = false;
+        res.error_code = static_cast<int32_t>(ErrorCode::ASYNC_TASK_RUNNING);
+        res.message = "已有任务组正在执行";
+        res.canceled = false;
+        res.final_pose = get_current_pose_stamped();
+        _as_->setAborted(res, res.message);
+        return;
+    }
 
+    if(_execute_group_thread_.joinable()) {
+        _execute_group_thread_.join();
+    }
+
+    _cancel_requested_.store(false);
+    _execute_group_running_.store(true);
+    piper_msgs2::PickTaskGoal goal_copy = goal;
+    _execute_group_thread_ = std::thread([this, goal_copy]() {
+        finish_execute_task_group_request(goal_copy);
+        _execute_group_running_.store(false);
+    });
+}
+
+void PickTaskAction::finish_execute_task_group_request(const piper_msgs2::PickTaskGoal& goal) {
     const std::string group_name = resolve_group_name(goal);
 
     ErrorCode code = apply_goal_task_group_config(goal, group_name);
@@ -328,6 +361,18 @@ void PickTaskAction::handle_execute_task_group_request(const piper_msgs2::PickTa
         res.success = false;
         res.error_code = static_cast<int32_t>(code);
         res.message = "设置任务组配置失败";
+        res.canceled = false;
+        res.final_pose = get_current_pose_stamped();
+        _as_->setAborted(res, res.message);
+        return;
+    }
+
+    code = _tasks_manager_->set_task_group_pick_execution_behavior(group_name, goal.use_eef, goal.go_safe_after_cancel, goal.retry_times);
+    if(code != ErrorCode::SUCCESS && code != ErrorCode::TASK_GROUP_NOT_FOUND) {
+        piper_msgs2::PickTaskResult res;
+        res.success = false;
+        res.error_code = static_cast<int32_t>(code);
+        res.message = "覆盖任务组 PICK 执行行为失败";
         res.canceled = false;
         res.final_pose = get_current_pose_stamped();
         _as_->setAborted(res, res.message);
@@ -359,26 +404,9 @@ void PickTaskAction::handle_execute_task_group_request(const piper_msgs2::PickTa
         fb.last_error_code = static_cast<int32_t>(last_code);
         fb.current_pose = get_current_pose_stamped();
         _as_->publishFeedback(fb);
-
-        if(_as_->isPreemptRequested()) {
-            _cancel_requested_.store(true);
-        }
-        };
-
-    std::atomic<bool> execution_finished{ false };
-    std::thread cancel_watcher([this, &execution_finished]() {
-        while(!execution_finished.load()) {
-            if(_as_ && _as_->isPreemptRequested()) {
-                _cancel_requested_.store(true);
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-        });
+    };
 
     code = _tasks_manager_->execute_task_group(group_name, &ctx);
-    execution_finished.store(true);
-    if(cancel_watcher.joinable()) cancel_watcher.join();
 
     piper_msgs2::PickTaskResult res;
     res.error_code = static_cast<int32_t>(code);

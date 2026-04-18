@@ -155,6 +155,7 @@ public:
     ErrorCode delete_task(const std::string& group_name, unsigned int id);
     ErrorCode set_task_target(const std::string& group_name, unsigned int id, const tl::optional<TargetVariant>& target, const std::string& target_frame = "");
     ErrorCode set_task_pick_params(const std::string& group_name, unsigned int id, const PickTaskParams& pick_params);
+    ErrorCode set_task_group_pick_execution_behavior(const std::string& group_name, bool use_eef, bool go_safe_after_cancel, uint8_t retry_times);
     ErrorCode execute_task(const std::string& group_name, unsigned int id);
     ErrorCode execute_task(const std::string& group_name, unsigned int id, ExecutionContext* ctx);
     ErrorCode execute_task(Task& task);
