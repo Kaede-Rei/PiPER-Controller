@@ -71,6 +71,22 @@ MAX_PRUNE_ROUNDS = 3
 MIN_RMS_IMPROVEMENT_M = 0.003
 MIN_MAX_DIST_IMPROVEMENT_M = 0.005
 
+# 物理约束参数
+CONSTRAINT_MODE_DISABLED = "DISABLED"
+CONSTRAINT_MODE_SOFT = "SOFT_PREFER"
+CONSTRAINT_MODE_HARD = "HARD_FILTER"
+CONSTRAINT_MODES = [
+    CONSTRAINT_MODE_DISABLED,
+    CONSTRAINT_MODE_SOFT,
+    CONSTRAINT_MODE_HARD,
+]
+SIGN_ANY = "ANY"
+SIGN_POSITIVE = "POSITIVE"
+SIGN_NEGATIVE = "NEGATIVE"
+SIGN_OPTIONS = [SIGN_ANY, SIGN_POSITIVE, SIGN_NEGATIVE]
+DEFAULT_SIGN_CONSTRAINT = SIGN_ANY
+DEFAULT_Z_AXIS_COS_MIN = 0.0
+
 HAND_EYE_METHODS = {
     "TSAI": cv2.CALIB_HAND_EYE_TSAI,
     "PARK": cv2.CALIB_HAND_EYE_PARK,
@@ -102,6 +118,26 @@ class RobotPose:
 
 
 @dataclass(frozen=True)
+class PhysicalConstraintConfig:
+    mode: str = CONSTRAINT_MODE_DISABLED
+    tx_sign: str = DEFAULT_SIGN_CONSTRAINT
+    ty_sign: str = DEFAULT_SIGN_CONSTRAINT
+    tz_sign: str = DEFAULT_SIGN_CONSTRAINT
+    tx_min_m: Optional[float] = None
+    tx_max_m: Optional[float] = None
+    ty_min_m: Optional[float] = None
+    ty_max_m: Optional[float] = None
+    tz_min_m: Optional[float] = None
+    tz_max_m: Optional[float] = None
+    z_axis_same_direction: bool = False
+    z_axis_cos_min: float = DEFAULT_Z_AXIS_COS_MIN
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != CONSTRAINT_MODE_DISABLED
+
+
+@dataclass(frozen=True)
 class HandEyeConfig:
     dataset_root: Path = DATASET_ROOT
     output_root: Path = OUTPUT_ROOT
@@ -115,6 +151,9 @@ class HandEyeConfig:
     min_rms_improvement_m: float = MIN_RMS_IMPROVEMENT_M
     min_max_dist_improvement_m: float = MIN_MAX_DIST_IMPROVEMENT_M
     excluded_indices: Tuple[int, ...] = ()
+    physical_constraints: PhysicalConstraintConfig = field(
+        default_factory=PhysicalConstraintConfig
+    )
 
 
 @dataclass
@@ -164,6 +203,18 @@ class CalibrationMetrics:
 
 
 @dataclass
+class ConstraintEvaluation:
+    mode: str
+    passed: bool
+    hard_failed: bool
+    penalty: float
+    violations: List[str] = field(default_factory=list)
+    translation_m: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    z_axis_in_flange: Tuple[float, float, float] = (0.0, 0.0, 1.0)
+    z_axis_cos_to_flange_z: float = 1.0
+
+
+@dataclass
 class CalibrationCandidate:
     method_name: str
     rotation_formula: str
@@ -175,6 +226,14 @@ class CalibrationCandidate:
     board_to_base_rotations_deg_to_first: List[float]
     sample_diagnostics: List[Dict[str, Any]] = field(default_factory=list)
     pruned_indices: List[int] = field(default_factory=list)
+    constraint_eval: ConstraintEvaluation = field(
+        default_factory=lambda: ConstraintEvaluation(
+            mode=CONSTRAINT_MODE_DISABLED,
+            passed=True,
+            hard_failed=False,
+            penalty=0.0,
+        )
+    )
 
 
 # ============================
@@ -231,6 +290,13 @@ def matrix_to_tuple_literal(matrix: np.ndarray) -> str:
     return "(\n    " + ",\n    ".join(rows) + ",\n)"
 
 
+def _parse_optional_float(raw: str) -> Optional[float]:
+    token = raw.strip()
+    if token == "":
+        return None
+    return float(token)
+
+
 def parse_excluded_indices(raw: str) -> Tuple[int, ...]:
     if not raw.strip():
         return ()
@@ -247,6 +313,10 @@ def parse_excluded_indices(raw: str) -> Tuple[int, ...]:
         else:
             result.append(int(token))
     return tuple(sorted(set(result)))
+
+
+def physical_constraints_to_jsonable(cfg: PhysicalConstraintConfig) -> Dict[str, Any]:
+    return asdict(cfg)
 
 
 # ============================
@@ -536,6 +606,97 @@ def load_sample_record(
     )
 
 
+def _match_sign(value: float, sign_rule: str) -> bool:
+    eps = 1e-12
+    if sign_rule == SIGN_ANY:
+        return True
+    if sign_rule == SIGN_POSITIVE:
+        return value > eps
+    if sign_rule == SIGN_NEGATIVE:
+        return value < -eps
+    raise ValueError(f"未知 sign_rule: {sign_rule}")
+
+
+def _range_penalty(
+    axis_name: str,
+    value: float,
+    min_v: Optional[float],
+    max_v: Optional[float],
+    violations: List[str],
+) -> float:
+    penalty = 0.0
+    if min_v is not None and value < min_v:
+        delta = min_v - value
+        violations.append(f"{axis_name}={value:.6f} < {min_v:.6f}")
+        penalty += float(delta * 1000.0)
+    if max_v is not None and value > max_v:
+        delta = value - max_v
+        violations.append(f"{axis_name}={value:.6f} > {max_v:.6f}")
+        penalty += float(delta * 1000.0)
+    return penalty
+
+
+def evaluate_candidate_constraints(
+    T_cam_to_flange: np.ndarray,
+    cfg: PhysicalConstraintConfig,
+) -> ConstraintEvaluation:
+    translation = T_cam_to_flange[:3, 3].reshape(3)
+    z_axis = T_cam_to_flange[:3, 2].reshape(3)
+    z_axis_norm = float(np.linalg.norm(z_axis))
+    if z_axis_norm <= 1e-12:
+        z_axis_cos = -1.0
+    else:
+        z_axis_cos = float(z_axis[2] / z_axis_norm)
+
+    if not cfg.enabled:
+        return ConstraintEvaluation(
+            mode=cfg.mode,
+            passed=True,
+            hard_failed=False,
+            penalty=0.0,
+            violations=[],
+            translation_m=(float(translation[0]), float(translation[1]), float(translation[2])),
+            z_axis_in_flange=(float(z_axis[0]), float(z_axis[1]), float(z_axis[2])),
+            z_axis_cos_to_flange_z=z_axis_cos,
+        )
+
+    violations: List[str] = []
+    penalty = 0.0
+    tx, ty, tz = [float(v) for v in translation]
+
+    for axis_name, value, sign_rule in (
+        ("tx", tx, cfg.tx_sign),
+        ("ty", ty, cfg.ty_sign),
+        ("tz", tz, cfg.tz_sign),
+    ):
+        if not _match_sign(value, sign_rule):
+            violations.append(f"{axis_name} 符号不满足 {sign_rule}: {value:.6f}")
+            penalty += abs(value) * 1000.0 + 1.0
+
+    penalty += _range_penalty("tx", tx, cfg.tx_min_m, cfg.tx_max_m, violations)
+    penalty += _range_penalty("ty", ty, cfg.ty_min_m, cfg.ty_max_m, violations)
+    penalty += _range_penalty("tz", tz, cfg.tz_min_m, cfg.tz_max_m, violations)
+
+    if cfg.z_axis_same_direction and z_axis_cos < cfg.z_axis_cos_min:
+        violations.append(
+            f"cam z 与 flange z 夹角约束失败: cos={z_axis_cos:.6f} < {cfg.z_axis_cos_min:.6f}"
+        )
+        penalty += float((cfg.z_axis_cos_min - z_axis_cos) * 1000.0 + 10.0)
+
+    passed = len(violations) == 0
+    hard_failed = cfg.mode == CONSTRAINT_MODE_HARD and not passed
+    return ConstraintEvaluation(
+        mode=cfg.mode,
+        passed=passed,
+        hard_failed=hard_failed,
+        penalty=float(penalty),
+        violations=violations,
+        translation_m=(tx, ty, tz),
+        z_axis_in_flange=(float(z_axis[0]), float(z_axis[1]), float(z_axis[2])),
+        z_axis_cos_to_flange_z=z_axis_cos,
+    )
+
+
 def _compute_candidate_metrics(
     records: Sequence[SampleRecord], T_cam_to_flange: np.ndarray
 ) -> Tuple[
@@ -610,6 +771,7 @@ def _calibrate_one_combo(
     method_name: str,
     rotation_formula: str,
     pose_format: str,
+    physical_constraints: PhysicalConstraintConfig,
 ) -> CalibrationCandidate:
     R_gripper2base = [r.T_base_to_flange[:3, :3] for r in records]
     t_gripper2base = [r.T_base_to_flange[:3, 3].reshape(3, 1) for r in records]
@@ -628,6 +790,7 @@ def _calibrate_one_combo(
     metrics, translations, rot_list, diagnostics = _compute_candidate_metrics(
         records, T_cam_to_flange
     )
+    constraint_eval = evaluate_candidate_constraints(T_cam_to_flange, physical_constraints)
     return CalibrationCandidate(
         method_name=method_name,
         rotation_formula=rotation_formula,
@@ -639,11 +802,15 @@ def _calibrate_one_combo(
         board_to_base_rotations_deg_to_first=rot_list,
         sample_diagnostics=diagnostics,
         pruned_indices=[],
+        constraint_eval=constraint_eval,
     )
 
 
-def _rank_key(candidate: CalibrationCandidate) -> Tuple[float, float, float]:
+def _rank_key(candidate: CalibrationCandidate) -> Tuple[float, float, float, float, float]:
+    failed_flag = 0.0 if candidate.constraint_eval.passed else 1.0
     return (
+        failed_flag,
+        float(candidate.constraint_eval.penalty),
         candidate.metrics.translation_rms_to_mean_m,
         candidate.metrics.translation_max_to_mean_m,
         candidate.metrics.rotation_max_to_first_deg,
@@ -663,8 +830,14 @@ def _candidate_improved(
     max_gain = (
         old.metrics.translation_max_to_mean_m - new.metrics.translation_max_to_mean_m
     )
+    passed_upgrade = (
+        not old.constraint_eval.passed and new.constraint_eval.passed
+    )
+    penalty_gain = old.constraint_eval.penalty - new.constraint_eval.penalty
     return (
-        rms_gain >= cfg.min_rms_improvement_m
+        passed_upgrade
+        or penalty_gain > 1e-9
+        or rms_gain >= cfg.min_rms_improvement_m
         or max_gain >= cfg.min_max_dist_improvement_m
     )
 
@@ -678,9 +851,18 @@ def _auto_prune_candidate(
 ) -> CalibrationCandidate:
     current_records = list(records)
     best_candidate = _calibrate_one_combo(
-        current_records, method_name, rotation_formula, pose_format
+        current_records,
+        method_name,
+        rotation_formula,
+        pose_format,
+        cfg.physical_constraints,
     )
     pruned: List[int] = []
+
+    if cfg.physical_constraints.mode == CONSTRAINT_MODE_HARD and best_candidate.constraint_eval.hard_failed:
+        raise ValueError(
+            f"候选 {method_name}/{rotation_formula} 不满足硬约束: {best_candidate.constraint_eval.violations}"
+        )
 
     if not cfg.auto_prune_outliers:
         best_candidate.pruned_indices = pruned
@@ -698,9 +880,20 @@ def _auto_prune_candidate(
             break
         try:
             next_candidate = _calibrate_one_combo(
-                next_records, method_name, rotation_formula, pose_format
+                next_records,
+                method_name,
+                rotation_formula,
+                pose_format,
+                cfg.physical_constraints,
             )
         except cv2.error:
+            break
+        except ValueError:
+            break
+        if (
+            cfg.physical_constraints.mode == CONSTRAINT_MODE_HARD
+            and next_candidate.constraint_eval.hard_failed
+        ):
             break
         if not _candidate_improved(best_candidate, next_candidate, cfg):
             break
@@ -741,6 +934,7 @@ def calibrate_from_dataset(
     ranked: List[CalibrationCandidate] = []
     best_records: List[SampleRecord] = []
     missing_or_invalid: List[int] = []
+    hard_fail_messages: List[str] = []
 
     for formula in formula_candidates:
         records: List[SampleRecord] = []
@@ -783,10 +977,16 @@ def calibrate_from_dataset(
                     missing_or_invalid = invalid_local
             except cv2.error:
                 continue
+            except ValueError as exc:
+                hard_fail_messages.append(str(exc))
+                continue
 
     if best_candidate is None:
+        suffix = ""
+        if cfg.physical_constraints.mode == CONSTRAINT_MODE_HARD and hard_fail_messages:
+            suffix = "；当前硬约束过于严格，所有候选都被过滤"
         raise ValueError(
-            "在当前数据集上无法得到有效 hand-eye 结果，请检查样本数量、棋盘格检测和位姿定义"
+            "在当前数据集上无法得到有效 hand-eye 结果，请检查样本数量、棋盘格检测和位姿定义" + suffix
         )
 
     ranked.sort(key=_rank_key)
@@ -811,6 +1011,7 @@ def candidate_to_jsonable(candidate: CalibrationCandidate) -> Dict[str, Any]:
         "board_to_base_translations_m": candidate.board_to_base_translations_m,
         "board_to_base_rotations_deg_to_first": candidate.board_to_base_rotations_deg_to_first,
         "sample_diagnostics": candidate.sample_diagnostics,
+        "constraint_eval": asdict(candidate.constraint_eval),
     }
 
 
@@ -822,6 +1023,7 @@ def save_calibration_outputs(
     max_index: int,
     output_root: Path,
     invalid_indices: Optional[Sequence[int]] = None,
+    cfg: Optional[HandEyeConfig] = None,
 ) -> Path:
     ts = datetime.now().strftime("handeye_%Y%m%d_%H%M%S")
     out_dir = ensure_dir(output_root / ts)
@@ -830,6 +1032,19 @@ def save_calibration_outputs(
         "dataset_root": str(dataset_root),
         "index_range": {"min": min_index, "max": max_index},
         "invalid_or_missing_indices": list(invalid_indices or []),
+        "config": {
+            "pose_format": None if cfg is None else cfg.pose_format,
+            "rotation_formula": None if cfg is None else cfg.rotation_formula,
+            "max_reprojection_error_px": None if cfg is None else cfg.max_reprojection_error_px,
+            "auto_prune_outliers": None if cfg is None else cfg.auto_prune_outliers,
+            "min_valid_samples": None if cfg is None else cfg.min_valid_samples,
+            "max_prune_rounds": None if cfg is None else cfg.max_prune_rounds,
+            "min_rms_improvement_m": None if cfg is None else cfg.min_rms_improvement_m,
+            "min_max_dist_improvement_m": None if cfg is None else cfg.min_max_dist_improvement_m,
+            "physical_constraints": None
+            if cfg is None
+            else physical_constraints_to_jsonable(cfg.physical_constraints),
+        },
         "best": candidate_to_jsonable(best),
         "ranked_count": len(ranked),
     }
@@ -844,6 +1059,7 @@ def save_calibration_outputs(
             "best_method": best.method_name,
             "best_rotation_formula": best.rotation_formula,
             "pruned_indices": best.pruned_indices,
+            "constraint_eval": asdict(best.constraint_eval),
             "samples": best.sample_diagnostics,
         },
     )
@@ -860,6 +1076,10 @@ def save_calibration_outputs(
         f"translation_rms_to_mean_m: {best.metrics.translation_rms_to_mean_m:.6f}",
         f"translation_max_to_mean_m: {best.metrics.translation_max_to_mean_m:.6f}",
         f"rotation_max_to_first_deg: {best.metrics.rotation_max_to_first_deg:.6f}",
+        f"constraint_mode: {best.constraint_eval.mode}",
+        f"constraint_passed: {best.constraint_eval.passed}",
+        f"constraint_penalty: {best.constraint_eval.penalty:.6f}",
+        f"constraint_violations: {best.constraint_eval.violations}",
         "",
         "^flange T_cam =",
         np.array2string(best.T_cam_to_flange, precision=6, suppress_small=False),
@@ -876,7 +1096,7 @@ def save_calibration_outputs(
 # ============================
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="基于 ./picture/<index>/ 的手眼标定脚本"
+        description="基于 ./picture/<index>/ 的手眼标定脚本（支持可选物理约束）"
     )
     parser.add_argument("--dataset-root", type=Path, default=DATASET_ROOT)
     parser.add_argument("--output-root", type=Path, default=OUTPUT_ROOT)
@@ -908,6 +1128,22 @@ def main() -> None:
     )
     parser.add_argument("--disable-auto-prune", action="store_true")
     parser.add_argument("--exclude-indices", type=str, default="")
+    parser.add_argument(
+        "--constraint-mode",
+        choices=CONSTRAINT_MODES,
+        default=CONSTRAINT_MODE_DISABLED,
+    )
+    parser.add_argument("--tx-sign", choices=SIGN_OPTIONS, default=SIGN_ANY)
+    parser.add_argument("--ty-sign", choices=SIGN_OPTIONS, default=SIGN_ANY)
+    parser.add_argument("--tz-sign", choices=SIGN_OPTIONS, default=SIGN_ANY)
+    parser.add_argument("--tx-min-m", type=float, default=None)
+    parser.add_argument("--tx-max-m", type=float, default=None)
+    parser.add_argument("--ty-min-m", type=float, default=None)
+    parser.add_argument("--ty-max-m", type=float, default=None)
+    parser.add_argument("--tz-min-m", type=float, default=None)
+    parser.add_argument("--tz-max-m", type=float, default=None)
+    parser.add_argument("--z-axis-same-direction", action="store_true")
+    parser.add_argument("--z-axis-cos-min", type=float, default=DEFAULT_Z_AXIS_COS_MIN)
     args = parser.parse_args()
 
     cfg = HandEyeConfig(
@@ -921,6 +1157,20 @@ def main() -> None:
         max_reprojection_error_px=args.max_reproj_error_px,
         auto_prune_outliers=not args.disable_auto_prune,
         excluded_indices=parse_excluded_indices(args.exclude_indices),
+        physical_constraints=PhysicalConstraintConfig(
+            mode=args.constraint_mode,
+            tx_sign=args.tx_sign,
+            ty_sign=args.ty_sign,
+            tz_sign=args.tz_sign,
+            tx_min_m=args.tx_min_m,
+            tx_max_m=args.tx_max_m,
+            ty_min_m=args.ty_min_m,
+            ty_max_m=args.ty_max_m,
+            tz_min_m=args.tz_min_m,
+            tz_max_m=args.tz_max_m,
+            z_axis_same_direction=args.z_axis_same_direction,
+            z_axis_cos_min=args.z_axis_cos_min,
+        ),
     )
     best, ranked, records, invalid = calibrate_from_dataset(
         dataset_root=args.dataset_root,
@@ -941,12 +1191,16 @@ def main() -> None:
         args.max_index,
         args.output_root,
         invalid,
+        cfg=cfg,
     )
 
     print(f"有效样本数: {len(records)}")
     print(f"无效/缺失样本索引: {invalid}")
     print(f"最佳组合: method={best.method_name}, formula={best.rotation_formula}")
     print(f"被自动剔除的样本: {best.pruned_indices}")
+    print(f"约束模式: {best.constraint_eval.mode}")
+    print(f"约束是否满足: {best.constraint_eval.passed}")
+    print(f"约束违例: {best.constraint_eval.violations}")
     print(f"平移 RMS: {best.metrics.translation_rms_to_mean_m:.6f} m")
     print(f"最大平移误差: {best.metrics.translation_max_to_mean_m:.6f} m")
     print("^flange T_cam =")
