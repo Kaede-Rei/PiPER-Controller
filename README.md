@@ -162,6 +162,32 @@ rosrun piper_gui piper_gui.py
 - GUI 默认连接 `/pick_action`。
 - GUI 启动前请确保 `piper_start.launch` 已正常运行。
 
+### 6. 手眼采集与标定（hand-eye）
+
+手眼工具位于 `hand-eye/`，数据默认读写到仓库根目录的 `picture/` 与 `outputs/`。
+
+启动采集 GUI：
+
+```bash
+python ./hand-eye/hand_eye_capture_gui.py
+```
+
+命令行执行标定：
+
+```bash
+python ./hand-eye/pipper_hand_eye.py --min-index 1 --max-index 50
+```
+
+标定结果输出到：
+
+```text
+./outputs/handeye_时间戳/
+```
+
+包含 `best_result.json`、`ranked_candidates.json`、`sample_diagnostics.json`、`summary.txt`。
+
+更多细节见：`hand-eye/README.md`。
+
 ---
 
 ## 🔌 ROS 接口
@@ -267,6 +293,9 @@ piper-ws/
 ├── README.md
 ├── can-activate.sh
 ├── piper_test.py
+├── hand-eye/                  # 手眼采集与标定工具（GUI + CLI）
+├── picture/                   # 手眼数据集目录（按 index 存储）
+├── outputs/                   # 手眼标定输出目录
 ├── piper_ros/                 # 官方 ROS 相关包工作区
 ├── piper_tomato/              # 控制主工作区
 │   ├── src/
@@ -294,6 +323,8 @@ piper-ws/
 | `can-activate.sh` | 激活 CAN 设备 |
 | `piper-start.sh` | 一键启动流程脚本 |
 | `piper_test.py` | 接口快速验证 |
+| `hand-eye/hand_eye_capture_gui.py` | 手眼采集 GUI |
+| `hand-eye/pipper_hand_eye.py` | 手眼标定 CLI |
 | `ros_env/source-piper.sh` | 快速加载环境 |
 
 ---
