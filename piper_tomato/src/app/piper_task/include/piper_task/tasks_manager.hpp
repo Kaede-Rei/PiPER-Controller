@@ -39,8 +39,10 @@ enum class SortType {
 #define PICK_STAGE_TABLE \
     X(IDLE, "空闲") \
     X(START, "开始") \
-    X(MOVE_TO_PICK, "移动到采摘位") \
+    X(MOVE_TO_PRE_PICK, "移动到预采摘位") \
+    X(APPROACH_PICK, "直线接近采摘位") \
     X(PICKING, "采摘中") \
+    X(RETREAT_FROM_PICK, "直线退出采摘位") \
     X(MOVE_TO_PLACE, "移动到放置位") \
     X(PLACING, "放置中") \
     X(FINISH, "完成") \
@@ -71,6 +73,19 @@ struct PickTaskParams {
     bool go_safe_after_cancel{ true };
     /// @brief 最大重试次数（不含第一次执行）
     uint8_t retry_times{ 0 };
+
+    /// @brief 预采摘位相对于采摘位的偏移（tcp 坐标系下的 z 轴偏移）
+    bool use_pre_pick{ true };
+    /// @brief 预采摘位相对于采摘位的偏移距离（tcp 坐标系下的 z 轴偏移，单位：米）
+    double pre_pick_offset{ 0.1 };
+    /// @brief 退出位相对于采摘位的偏移（tcp 坐标系下的 z 轴偏移，单位：米）
+    double retreat_offset{ 0.1 };
+    /// @brief 直线运动时的步进距离（单位：米）
+    double cartesian_eef_step{ 0.01 };
+    /// @brief 直线运动的速度缩放（0-1）
+    double cartesian_vel_scale{ 0.05 };
+    /// @brief 直线运动的加速度缩放（0-1）
+    double cartesian_acc_scale{ 0.05 };
 
     /// @brief 当前阶段
     PickStage current_stage{ PickStage::PICK_IDLE };

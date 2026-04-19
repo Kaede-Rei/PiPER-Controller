@@ -1,7 +1,9 @@
 #include "piper_task/tasks_manager.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <set>
 #include <stdexcept>
 
@@ -24,6 +26,8 @@ const char* pick_stage_to_string(PickStage stage) {
     }
 }
 #undef X
+
+using MoveItPlan = moveit::planning_interface::MoveGroupInterface::Plan;
 
 /**
  * @brief 将底座坐标系下的目标补全为 Pose 以便用于距离计算
@@ -54,6 +58,162 @@ geometry_msgs::Pose target_to_effective_pose_in_base(const TargetVariant& target
         }
         }, target);
 }
+
+/**
+ * @brief 在局部 TCP z 轴方向上对位姿做纯平移偏移
+ * @param pose 输入位姿
+ * @param dz 沿局部 z 轴的偏移量（米）
+ * @return 偏移后的位姿
+ */
+geometry_msgs::Pose pose_with_local_z_offset(const geometry_msgs::Pose& pose, double dz) {
+    tf2::Transform T_pose;
+    tf2::fromMsg(pose, T_pose);
+
+    tf2::Transform T_offset;
+    T_offset.setIdentity();
+    T_offset.setOrigin(tf2::Vector3(0.0, 0.0, dz));
+
+    geometry_msgs::Pose result;
+    tf2::toMsg(T_pose * T_offset, result);
+
+    return result;
+}
+
+/**
+ * @brief 绕位姿自身局部 z 轴旋转
+ * @param pose 输入位姿
+ * @param yaw_rad 绕局部 z 轴旋转角（弧度）
+ * @return 旋转后的位姿
+ */
+geometry_msgs::Pose rotate_pose_about_local_z(const geometry_msgs::Pose& pose, double yaw_rad) {
+    tf2::Transform T_pose;
+    tf2::fromMsg(pose, T_pose);
+
+    tf2::Quaternion q_rot;
+    q_rot.setRPY(0.0, 0.0, yaw_rad);
+    q_rot.normalize();
+
+    tf2::Transform T_rot;
+    T_rot.setIdentity();
+    T_rot.setRotation(q_rot);
+
+    geometry_msgs::Pose result;
+    tf2::toMsg(T_pose * T_rot, result);
+
+    return result;
+}
+
+/**
+ * @brief 从 TargetVariant 中提取“精确的最终采摘位姿”
+ * @param target_in_base 已冻结到底座坐标系下的目标
+ * @return 若目标本身是完整 Pose / PoseStamped 则返回，否则为空
+ */
+tl::optional<geometry_msgs::Pose> exact_pick_pose_from_target(const TargetVariant& target_in_base) {
+    return std::visit(variant_visitor{
+        [](const std::monostate&) -> tl::optional<geometry_msgs::Pose> {
+            return tl::nullopt;
+        },
+        [](const geometry_msgs::Pose& pose) -> tl::optional<geometry_msgs::Pose> {
+            return pose;
+        },
+        [](const geometry_msgs::Point&) -> tl::optional<geometry_msgs::Pose> {
+            return tl::nullopt;
+        },
+        [](const geometry_msgs::Quaternion&) -> tl::optional<geometry_msgs::Pose> {
+            return tl::nullopt;
+        },
+        [](const geometry_msgs::PoseStamped& pose_stamped) -> tl::optional<geometry_msgs::Pose> {
+            return pose_stamped.pose;
+        }
+        }, target_in_base);
+}
+
+/**
+ * @brief 构造最终采摘位姿候选集合
+ * @param target_in_base 已冻结到底座坐标系下的目标
+ * @param current_pose 当前末端位姿（base_link）
+ * @return 候选最终采摘位姿集合
+ */
+std::vector<geometry_msgs::Pose> build_pick_pose_candidates(
+    const TargetVariant& target_in_base,
+    const geometry_msgs::Pose& current_pose) {
+
+    std::vector<geometry_msgs::Pose> out;
+
+    if(const auto exact_pose = exact_pick_pose_from_target(target_in_base)) {
+        out.push_back(*exact_pose);
+        return out;
+    }
+
+    const auto* point = std::get_if<geometry_msgs::Point>(&target_in_base);
+    if(!point) {
+        return out;
+    }
+
+    geometry_msgs::Pose seed_pose;
+    seed_pose.position = *point;
+    seed_pose.orientation = current_pose.orientation;
+
+    static constexpr std::array<double, 6> kTwistSamples = {
+        0.0,
+        M_PI / 2.0,
+        -M_PI / 2.0,
+        M_PI,
+        M_PI / 4.0,
+        -M_PI / 4.0
+    };
+
+    out.reserve(kTwistSamples.size());
+    for(const double yaw : kTwistSamples) {
+        out.push_back(rotate_pose_about_local_z(seed_pose, yaw));
+    }
+
+    return out;
+}
+
+/**
+ * @brief 计算两组关节值的一范数距离
+ * @param a 关节组 a
+ * @param b 关节组 b
+ * @return L1 距离
+ */
+double joint_l1_distance(const std::vector<double>& a, const std::vector<double>& b) {
+    const std::size_t n = std::min(a.size(), b.size());
+    double sum = 0.0;
+    for(std::size_t i = 0; i < n; ++i) {
+        sum += std::abs(a[i] - b[i]);
+    }
+    return sum;
+}
+
+/**
+ * @brief 使用当前关节状态对规划结果打分
+ * @param plan 规划结果
+ * @param current_joints 当前关节值
+ * @param extra_penalty 额外惩罚
+ * @return 分数，越小越好
+ */
+double score_plan_with_current_joints(
+    const MoveItPlan& plan,
+    const std::vector<double>& current_joints,
+    double extra_penalty = 0.0) {
+
+    const auto& jt = plan.trajectory_.joint_trajectory;
+    if(jt.points.empty()) return std::numeric_limits<double>::infinity();
+
+    return joint_l1_distance(current_joints, jt.points.back().positions) + extra_penalty;
+}
+
+/**
+ * @brief 预采摘方案选择结果
+ */
+struct PickApproachChoice {
+    bool valid{ false };
+    geometry_msgs::Pose final_pick_pose;
+    geometry_msgs::Pose pre_pick_pose;
+    MoveItPlan pre_pick_plan;
+    double score{ std::numeric_limits<double>::infinity() };
+};
 
 }  // namespace
 
@@ -264,8 +424,25 @@ ErrorCode TasksManager::set_task_target(const std::string& group_name, unsigned 
 ErrorCode TasksManager::set_task_pick_params(const std::string& group_name, unsigned int id, const PickTaskParams& pick_params) {
     auto task = find_task(group_name, id);
     if(!task) return task.error();
+
     if(pick_params.use_place_pose && !pick_params.place_target) {
         ROS_WARN("任务组 '%s' 中任务 ID %u 启用了放置动作，但未设置放置目标", group_name.c_str(), id);
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    if(pick_params.pre_pick_offset < 0.0 || pick_params.retreat_offset < 0.0) {
+        ROS_WARN("任务组 '%s' 中任务 ID %u 的预采摘 / 退出偏移不能为负数", group_name.c_str(), id);
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    if(pick_params.cartesian_eef_step <= 0.0) {
+        ROS_WARN("任务组 '%s' 中任务 ID %u 的笛卡尔步进必须大于 0", group_name.c_str(), id);
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    if(pick_params.cartesian_vel_scale <= 0.0 || pick_params.cartesian_vel_scale > 1.0 ||
+        pick_params.cartesian_acc_scale <= 0.0 || pick_params.cartesian_acc_scale > 1.0) {
+        ROS_WARN("任务组 '%s' 中任务 ID %u 的笛卡尔速度 / 加速度缩放必须在 (0, 1] 范围内", group_name.c_str(), id);
         return ErrorCode::INVALID_PARAMETER;
     }
 
@@ -391,8 +568,11 @@ ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
             return ErrorCode::CANCELLED;
         }
 
+        report_pick_feedback(task, PickStage::PICK_MOVE_TO_PRE_PICK, false, ErrorCode::SUCCESS, "移动到目标位", ctx);
+
         code = _arm_->set_target(target_in_base);
         if(code != ErrorCode::SUCCESS) {
+            report_pick_feedback(task, PickStage::PICK_FAILED, false, code, "移动到目标位：设置目标失败", ctx);
             ROS_WARN("执行任务 ID %u 失败，无法设置目标，错误码：%s", task.id, err_to_string(code).c_str());
             return code;
         }
@@ -408,6 +588,7 @@ ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
                 ROS_INFO("任务 ID %u 在执行过程中被取消", task.id);
                 return ErrorCode::CANCELLED;
             }
+            report_pick_feedback(task, PickStage::PICK_FAILED, false, exec_code, "移动到目标位：执行失败", ctx);
             ROS_WARN("执行任务 ID %u 失败，无法规划执行，错误码：%s", task.id, err_to_string(exec_code).c_str());
             return exec_code;
         }
@@ -417,6 +598,7 @@ ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
             return ErrorCode::CANCELLED;
         }
 
+        report_pick_feedback(task, PickStage::PICK_MOVE_TO_PRE_PICK, true, ErrorCode::SUCCESS, "移动到目标位：完成", ctx);
         ROS_INFO("成功执行任务 ID %u", task.id);
         return ErrorCode::SUCCESS;
     }
@@ -543,7 +725,11 @@ uint32_t TasksManager::estimate_task_group_steps(const std::string& group_name) 
         (void)id;
         total_steps += estimate_task_steps(task);
     }
-    if(group_it->second.go_home_after_finish) total_steps += 1;
+
+    if(group_it->second.go_home_after_finish) {
+        total_steps += 1;
+    }
+
     return total_steps;
 }
 
@@ -677,10 +863,6 @@ ErrorCode TasksManager::sort_tasks(TaskGroup& task_group) {
 
     if(!no_target_ids.empty()) {
         ROS_WARN("任务组中存在 %zu 个没有目标的任务，已自动排在末尾", no_target_ids.size());
-        for(const unsigned int id : no_target_ids) {
-            task_group.sorted_tasks.push_back(task_group.tasks.at(id));
-            task_group.sorted_tasks.back().id = id;
-        }
     }
 
     std::set<unsigned int> visited_ids;
@@ -735,6 +917,12 @@ ErrorCode TasksManager::sort_tasks(TaskGroup& task_group) {
     }
 
     optimize_with_2opt(task_group.sorted_tasks, task_group.weight_orient);
+
+    for(const unsigned int id : no_target_ids) {
+        task_group.sorted_tasks.push_back(task_group.tasks.at(id));
+        task_group.sorted_tasks.back().id = id;
+    }
+
     ROS_INFO("任务组已按加权距离排序");
     return ErrorCode::SUCCESS;
 }
@@ -929,15 +1117,32 @@ ErrorCode TasksManager::freeze_target_to_base(const tl::optional<TargetVariant>&
  * @return 预计步骤数量
  */
 uint32_t TasksManager::estimate_task_steps(const Task& task) const {
-    if(task.type == TaskType::MOVE_ONLY) return 1;
-
-    if(task.type == TaskType::PICK) {
-        uint32_t steps = 4;
-        if(task.pick_params && task.pick_params->use_place_pose) steps += 2;
-        return steps;
+    // 这里估算的不是“函数调用次数”，而是 Action 层真正会记为一步的
+    // “唯一 task.id + stage 组合数”。同一 stage 的“开始/完成”两次反馈只算一步。
+    if(task.type == TaskType::MOVE_ONLY) {
+        return task.target ? 1u : 0u;
     }
 
-    return 0;
+    if(task.type != TaskType::PICK || !task.pick_params || !task.target) {
+        return 0;
+    }
+
+    const auto& pp = *task.pick_params;
+
+    uint32_t steps = 0;
+    steps += 1;  // START
+    steps += 1;  // MOVE_TO_PRE_PICK（未启用预采摘时，此阶段承载“直接移动到采摘位”）
+    if(pp.use_pre_pick) steps += 1;  // APPROACH_PICK
+    steps += 1;  // PICKING
+    if(pp.use_pre_pick) steps += 1;  // RETREAT_FROM_PICK
+
+    if(pp.use_place_pose && pp.place_target) {
+        steps += 1;  // MOVE_TO_PLACE
+        steps += 1;  // PLACING
+    }
+
+    steps += 1;  // FINISH
+    return steps;
 }
 
 /**
@@ -985,13 +1190,20 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
                 if(!_arm_->is_planning_or_executing()) break;
                 ros::Duration(0.02).sleep();
             }
+
             const ErrorCode safe_code = _arm_->home();
             if(safe_code != ErrorCode::SUCCESS) {
                 ROS_WARN("任务 ID %u 取消后回安全位失败，错误码：%s", task.id, err_to_string(safe_code).c_str());
             }
-            auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
-            if(gripper_if) gripper_if.value().close();
+
+            if(_eef_) {
+                auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
+                if(gripper_if) {
+                    gripper_if.value().close();
+                }
+            }
         }
+
         return ErrorCode::CANCELLED;
         };
 
@@ -999,45 +1211,49 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         pp.current_stage = PickStage::PICK_FAILED;
         pp.completed = false;
         report_pick_feedback(task, PickStage::PICK_FAILED, false, ec, text, ctx);
-        ROS_WARN("任务 ID %u 在阶段[%s]失败：%s (%s)", task.id, pick_stage_to_string(stage), text.c_str(), err_to_string(ec).c_str());
+        ROS_WARN("任务 ID %u 在阶段[%s]失败：%s (%s)",
+            task.id, pick_stage_to_string(stage), text.c_str(), err_to_string(ec).c_str());
         return ec;
         };
 
     auto run_with_retry = [&](const std::function<ErrorCode()>& fn, PickStage stage) -> ErrorCode {
         ErrorCode last = ErrorCode::FAILURE;
         const uint16_t total_attempts = static_cast<uint16_t>(pp.retry_times) + 1;
+
         for(uint16_t attempt = 1; attempt <= total_attempts; ++attempt) {
-            const ErrorCode cancel_code = check_cancel();
+            ErrorCode cancel_code = check_cancel();
             if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
 
             last = fn();
             if(last == ErrorCode::SUCCESS) return ErrorCode::SUCCESS;
             if(last == ErrorCode::CANCELLED) return last;
 
-            const ErrorCode cancel_after_attempt = check_cancel();
-            if(cancel_after_attempt != ErrorCode::SUCCESS) return cancel_after_attempt;
+            cancel_code = check_cancel();
+            if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
 
-            ROS_WARN("任务 ID %u 阶段[%s] 第 %u/%u 次尝试失败：%s", task.id, pick_stage_to_string(stage), static_cast<unsigned int>(attempt), static_cast<unsigned int>(total_attempts), err_to_string(last).c_str());
+            ROS_WARN("任务 ID %u 阶段[%s] 第 %u/%u 次尝试失败：%s",
+                task.id,
+                pick_stage_to_string(stage),
+                static_cast<unsigned int>(attempt),
+                static_cast<unsigned int>(total_attempts),
+                err_to_string(last).c_str());
         }
+
         return last;
         };
 
-    auto exec_move = [&](const TargetVariant& target,
+    auto exec_planned_move = [&](const MoveItPlan& plan,
         PickStage stage,
         const std::string& text) -> ErrorCode {
             ErrorCode cancel_code = check_cancel();
             if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
 
             report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
-            ErrorCode ec = _arm_->set_target(target);
-            if(ec != ErrorCode::SUCCESS) return fail_stage(stage, ec, text + "：设置目标失败");
-
-            cancel_code = check_cancel();
-            if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
 
             std::atomic<bool> done{ false };
             std::atomic<int> result_code{ static_cast<int>(ErrorCode::FAILURE) };
-            ec = _arm_->async_plan_and_execute([&](ErrorCode async_code) {
+
+            ErrorCode ec = _arm_->async_execute(plan.trajectory_, [&](ErrorCode async_code) {
                 result_code.store(static_cast<int>(async_code));
                 done.store(true);
                 });
@@ -1060,6 +1276,74 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
                 if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
                 return fail_stage(stage, ec, text + "：执行失败");
             }
+
+            report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text + "：完成", ctx);
+            return ErrorCode::SUCCESS;
+        };
+
+    auto plan_pose_once = [&](const geometry_msgs::Pose& pose, MoveItPlan& plan) -> ErrorCode {
+        _arm_->clear_constraints();
+        _arm_->clear_target();
+
+        const ErrorCode set_code = _arm_->set_target(TargetVariant{ pose });
+        if(set_code != ErrorCode::SUCCESS) {
+            _arm_->clear_target();
+            return set_code;
+        }
+
+        const ErrorCode plan_code = _arm_->plan(plan);
+        _arm_->clear_target();
+        return plan_code;
+        };
+
+    auto exec_cartesian_line = [&](const geometry_msgs::Pose& start_pose,
+        const geometry_msgs::Pose& end_pose,
+        PickStage stage,
+        const std::string& text) -> ErrorCode {
+            ErrorCode cancel_code = check_cancel();
+            if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
+
+            report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
+
+            const DescartesResult dr = _arm_->set_line(
+                TargetVariant{ start_pose },
+                TargetVariant{ end_pose },
+                pp.cartesian_eef_step,
+                TimeParamMethod::TOTG,
+                pp.cartesian_vel_scale,
+                pp.cartesian_acc_scale);
+
+            if(dr.error_code != ErrorCode::SUCCESS) {
+                return fail_stage(stage, dr.error_code, text + "：笛卡尔规划失败");
+            }
+
+            std::atomic<bool> done{ false };
+            std::atomic<int> result_code{ static_cast<int>(ErrorCode::FAILURE) };
+
+            ErrorCode ec = _arm_->async_execute(dr.trajectory, [&](ErrorCode async_code) {
+                result_code.store(static_cast<int>(async_code));
+                done.store(true);
+                });
+            if(ec != ErrorCode::SUCCESS) {
+                return fail_stage(stage, ec, text + "：启动异步执行失败");
+            }
+
+            ros::Rate rate(50.0);
+            while(ros::ok() && !done.load()) {
+                if(is_cancel_requested(task, ctx)) {
+                    _arm_->cancel_async();
+                    return check_cancel();
+                }
+                rate.sleep();
+            }
+
+            ec = static_cast<ErrorCode>(result_code.load());
+            if(ec != ErrorCode::SUCCESS) {
+                cancel_code = check_cancel();
+                if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
+                return fail_stage(stage, ec, text + "：执行失败");
+            }
+
             report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text + "：完成", ctx);
             return ErrorCode::SUCCESS;
         };
@@ -1073,7 +1357,7 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         if(!gripper_if) return fail_stage(stage, ErrorCode::INVALID_INTERFACE, text + "：末端执行器不支持夹爪接口");
 
         report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
-        ErrorCode ec = open ? gripper_if.value().open() : gripper_if.value().close();
+        const ErrorCode ec = open ? gripper_if.value().open() : gripper_if.value().close();
         if(ec != ErrorCode::SUCCESS) return fail_stage(stage, ec, text + "：执行失败");
         report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text + "：完成", ctx);
         return ErrorCode::SUCCESS;
@@ -1083,6 +1367,7 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         if(!_eef_) return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_INTERFACE, "末端执行器未初始化，无法执行采摘任务");
         auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
         if(!gripper_if) return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_INTERFACE, "末端执行器不支持夹爪接口，无法执行采摘任务");
+
         gripper_if.value().open();
         report_pick_feedback(task, PickStage::PICK_START, true, ErrorCode::SUCCESS, "开始", ctx);
     }
@@ -1095,15 +1380,85 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
 
     TargetVariant target_in_base;
     code = get_frozen_task_target_in_base(task, target_in_base);
-    if(code != ErrorCode::SUCCESS) return fail_stage(PickStage::PICK_MOVE_TO_PICK, code, "获取冻结目标失败");
-    code = run_with_retry([&]() { return exec_move(target_in_base, PickStage::PICK_MOVE_TO_PICK, "移动到采摘位"); }, PickStage::PICK_MOVE_TO_PICK);
+    if(code != ErrorCode::SUCCESS) {
+        return fail_stage(PickStage::PICK_START, code, "获取冻结目标失败");
+    }
+
+    const geometry_msgs::Pose current_pose = _arm_->get_current_pose();
+    const std::vector<double> current_joints = _arm_->get_current_joints();
+
+    PickApproachChoice best_choice;
+    const std::vector<geometry_msgs::Pose> pick_candidates = build_pick_pose_candidates(target_in_base, current_pose);
+    if(pick_candidates.empty()) {
+        return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_TARGET_TYPE, "PICK 任务目标必须是 Pose / Point / PoseStamped");
+    }
+
+    for(std::size_t i = 0; i < pick_candidates.size(); ++i) {
+        const geometry_msgs::Pose& final_pick_pose = pick_candidates[i];
+        const geometry_msgs::Pose pre_pick_pose = pp.use_pre_pick
+            ? pose_with_local_z_offset(final_pick_pose, -std::abs(pp.pre_pick_offset))
+            : final_pick_pose;
+
+        MoveItPlan plan;
+        const ErrorCode plan_code = plan_pose_once(pre_pick_pose, plan);
+        if(plan_code != ErrorCode::SUCCESS) {
+            continue;
+        }
+
+        const double penalty = static_cast<double>(i) * 0.1;
+        const double score = score_plan_with_current_joints(plan, current_joints, penalty);
+
+        if(score < best_choice.score) {
+            best_choice.valid = true;
+            best_choice.final_pick_pose = final_pick_pose;
+            best_choice.pre_pick_pose = pre_pick_pose;
+            best_choice.pre_pick_plan = plan;
+            best_choice.score = score;
+        }
+    }
+
+    if(!best_choice.valid) {
+        return fail_stage(
+            PickStage::PICK_MOVE_TO_PRE_PICK,
+            ErrorCode::PLANNING_FAILED,
+            pp.use_pre_pick ? "未找到可达的预采摘位姿" : "未找到可达的采摘位姿");
+    }
+
+    code = run_with_retry(
+        [&]() {
+            return exec_planned_move(
+                best_choice.pre_pick_plan,
+                PickStage::PICK_MOVE_TO_PRE_PICK,
+                pp.use_pre_pick ? "移动到预采摘位" : "移动到采摘位");
+        },
+        PickStage::PICK_MOVE_TO_PRE_PICK);
     if(code != ErrorCode::SUCCESS) return code;
 
     code = check_cancel();
     if(code != ErrorCode::SUCCESS) return code;
 
+    if(pp.use_pre_pick) {
+        code = run_with_retry(
+            [&]() {
+                return exec_cartesian_line(
+                    best_choice.pre_pick_pose,
+                    best_choice.final_pick_pose,
+                    PickStage::PICK_APPROACH_PICK,
+                    "直线接近采摘位");
+            },
+            PickStage::PICK_APPROACH_PICK);
+        if(code != ErrorCode::SUCCESS) return code;
+    }
+
+    code = check_cancel();
+    if(code != ErrorCode::SUCCESS) return code;
+
     if(pp.use_eef) {
-        code = run_with_retry([&]() { return exec_eef(false, PickStage::PICK_PICKING, "采摘中"); }, PickStage::PICK_PICKING);
+        code = run_with_retry(
+            [&]() {
+                return exec_eef(false, PickStage::PICK_PICKING, "采摘中");
+            },
+            PickStage::PICK_PICKING);
         if(code != ErrorCode::SUCCESS) return code;
     }
     else {
@@ -1113,18 +1468,64 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     code = check_cancel();
     if(code != ErrorCode::SUCCESS) return code;
 
+    if(pp.use_pre_pick) {
+        const geometry_msgs::Pose retreat_pose =
+            pose_with_local_z_offset(best_choice.final_pick_pose, -std::abs(pp.retreat_offset));
+
+        code = run_with_retry(
+            [&]() {
+                return exec_cartesian_line(
+                    best_choice.final_pick_pose,
+                    retreat_pose,
+                    PickStage::PICK_RETREAT_FROM_PICK,
+                    "直线退出采摘位");
+            },
+            PickStage::PICK_RETREAT_FROM_PICK);
+        if(code != ErrorCode::SUCCESS) return code;
+    }
+
+    code = check_cancel();
+    if(code != ErrorCode::SUCCESS) return code;
+
     if(pp.use_place_pose && pp.place_target) {
         TargetVariant place_target_in_base;
         code = get_frozen_place_target_in_base(task, place_target_in_base);
-        if(code != ErrorCode::SUCCESS) return fail_stage(PickStage::PICK_MOVE_TO_PLACE, code, "获取冻结放置目标失败");
-        code = run_with_retry([&]() { return exec_move(place_target_in_base, PickStage::PICK_MOVE_TO_PLACE, "移动到放置位"); }, PickStage::PICK_MOVE_TO_PLACE);
+        if(code != ErrorCode::SUCCESS) {
+            return fail_stage(PickStage::PICK_MOVE_TO_PLACE, code, "获取冻结放置目标失败");
+        }
+
+        code = run_with_retry(
+            [&]() -> ErrorCode {
+                MoveItPlan place_plan;
+                _arm_->clear_constraints();
+                _arm_->clear_target();
+
+                ErrorCode ec = _arm_->set_target(place_target_in_base);
+                if(ec != ErrorCode::SUCCESS) {
+                    _arm_->clear_target();
+                    return fail_stage(PickStage::PICK_MOVE_TO_PLACE, ec, "移动到放置位：设置目标失败");
+                }
+
+                ec = _arm_->plan(place_plan);
+                _arm_->clear_target();
+                if(ec != ErrorCode::SUCCESS) {
+                    return fail_stage(PickStage::PICK_MOVE_TO_PLACE, ec, "移动到放置位：规划失败");
+                }
+
+                return exec_planned_move(place_plan, PickStage::PICK_MOVE_TO_PLACE, "移动到放置位");
+            },
+            PickStage::PICK_MOVE_TO_PLACE);
         if(code != ErrorCode::SUCCESS) return code;
 
         code = check_cancel();
         if(code != ErrorCode::SUCCESS) return code;
 
         if(pp.use_eef) {
-            code = run_with_retry([&]() { return exec_eef(true, PickStage::PICK_PLACING, "放置中"); }, PickStage::PICK_PLACING);
+            code = run_with_retry(
+                [&]() {
+                    return exec_eef(true, PickStage::PICK_PLACING, "放置中");
+                },
+                PickStage::PICK_PLACING);
             if(code != ErrorCode::SUCCESS) return code;
         }
         else {
@@ -1133,8 +1534,8 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     }
 
     pp.completed = true;
+    pp.current_stage = PickStage::PICK_FINISH;
     report_pick_feedback(task, PickStage::PICK_FINISH, true, ErrorCode::SUCCESS, "完成", ctx);
-
     return ErrorCode::SUCCESS;
 }
 

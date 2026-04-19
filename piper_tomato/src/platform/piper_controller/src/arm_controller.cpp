@@ -395,7 +395,7 @@ ErrorCode ArmController::async_plan_and_execute(std::function<void(ErrorCode)> c
         ROS_INFO("异步执行成功");
         _is_planning_or_executing_ = false;
         if(callback) callback(ErrorCode::SUCCESS);
-    });
+        });
 
     return ErrorCode::SUCCESS;
 }
