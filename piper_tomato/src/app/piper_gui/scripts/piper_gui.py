@@ -137,7 +137,7 @@ class TargetSelectionConfig:
 
 @dataclass(frozen=True)
 class ResidualCompensationConfig:
-    enabled: bool = True
+    enabled: bool = False
     dx: float = 0.0200
     dy: float = 0.0200
     dz: float = 0.0100
@@ -147,9 +147,9 @@ class ResidualCompensationConfig:
 class HandEyeConfig:
     # ^flange T_cam
     T_cam_to_flange: Tuple[Tuple[float, float, float, float], ...] = (
-        (0.164723, -0.986262, -0.012365, 0.018744),
-        (0.986069, 0.164370, 0.025507, -0.040338),
-        (-0.023125, -0.016394, 0.999598, 0.062264),
+        (0.164723, -0.986262, -0.012365, 0.038744),
+        (0.986069, 0.164370, 0.025507, -0.020338),
+        (-0.023125, -0.016394, 0.999598, 0.072264),
         (0.000000, 0.000000, 0.000000, 1.000000),
     )
 
