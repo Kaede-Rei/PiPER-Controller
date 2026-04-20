@@ -1,6 +1,5 @@
 #include "piper_controller/arm_controller.hpp"
 
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <queue>
@@ -19,6 +18,12 @@ namespace piper {
 
 namespace {
 
+/**
+ * @brief 归一化输入目标为 PoseStamped 以便用于后续处理
+ * @param target 输入目标
+ * @param default_source_frame 当目标不带 frame 信息时使用的默认坐标系
+ * @return 归一化后的 PoseStamped，若无法归一化则返回空值
+ */
 tl::optional<geometry_msgs::PoseStamped> normalize_target_to_pose_stamped(const TargetVariant& target, const std::string& default_source_frame) {
 
     return std::visit(variant_visitor{
@@ -315,43 +320,61 @@ ErrorCode ArmController::async_plan_and_execute(std::function<void(ErrorCode)> c
     return async_plan_and_execute(CancelChecker{}, std::move(callback));
 }
 
+/**
+ * @brief 带取消检查的规划
+ * @param plan 规划输出
+ * @param should_cancel 取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::plan_checked(moveit::planning_interface::MoveGroupInterface::Plan& plan, CancelChecker should_cancel) {
     return run_async_and_wait([this, &plan, should_cancel]() {
         return plan_impl(plan, should_cancel);
-    }, should_cancel);
+        }, should_cancel);
 }
 
+/**
+ * @brief 带取消检查的执行
+ * @param plan 规划输入
+ * @param should_cancel 取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::execute_checked(const moveit::planning_interface::MoveGroupInterface::Plan& plan, CancelChecker should_cancel) {
     return run_async_and_wait([this, &plan, should_cancel]() {
         return execute_plan_impl(plan, should_cancel);
-    }, should_cancel);
+        }, should_cancel);
 }
 
+/**
+ * @brief 带取消检查的规划并执行
+ * @param should_cancel 取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::plan_and_execute_checked(CancelChecker should_cancel) {
     return run_async_and_wait([this, should_cancel]() {
         return plan_and_execute_impl(should_cancel);
-    }, should_cancel);
+        }, should_cancel);
 }
 
+/**
+ * @brief 带取消检查的异步规划并执行
+ * @param should_cancel 取消检查函数
+ * @param callback 完成回调
+ * @return 错误码
+ */
 ErrorCode ArmController::async_plan_and_execute(CancelChecker should_cancel, std::function<void(ErrorCode)> callback) {
     return start_async_work([this, should_cancel]() {
         return plan_and_execute_impl(should_cancel);
-    }, std::move(callback));
+        }, std::move(callback));
 }
 
+/**
+ * @brief 停止当前运动
+ */
 void ArmController::stop() {
     _arm_.stop();
     ROS_INFO("已停止当前运动");
 }
 
-/**
- * @brief 对轨迹做时间参数化
- * @param trajectory 轨迹输入输出
- * @param method 时间参数化方法
- * @param vel_scale 速度缩放
- * @param acc_scale 加速度缩放
- * @return 错误码
- */
 /**
  * @brief 对轨迹做时间参数化
  * @param trajectory 轨迹输入输出
@@ -589,20 +612,22 @@ ErrorCode ArmController::async_execute(const moveit_msgs::RobotTrajectory& traje
 ErrorCode ArmController::execute_trajectory_checked(const moveit_msgs::RobotTrajectory& trajectory, CancelChecker should_cancel) {
     return run_async_and_wait([this, trajectory, should_cancel]() {
         return execute_trajectory_impl(trajectory, should_cancel);
-    }, should_cancel);
+        }, should_cancel);
 }
 
 ErrorCode ArmController::async_execute(const moveit_msgs::RobotTrajectory& trajectory, CancelChecker should_cancel, std::function<void(ErrorCode)> callback) {
     return start_async_work([this, trajectory, should_cancel]() {
         return execute_trajectory_impl(trajectory, should_cancel);
-    }, std::move(callback));
+        }, std::move(callback));
 }
 
 /**
  * @brief 添加姿态约束
- */
-/**
- * @brief 添加姿态约束
+ * @param target_orientation 目标姿态四元数
+ * @param tolerance_x X轴容忍度（弧度）
+ * @param tolerance_y Y轴容忍度（弧度）
+ * @param tolerance_z Z轴容忍度（弧度）
+ * @param weight 约束权重（0-1）
  */
 void ArmController::set_orientation_constraint(const geometry_msgs::Quaternion& target_orientation, double tolerance_x, double tolerance_y, double tolerance_z, double weight) {
     moveit_msgs::OrientationConstraint ocm;
@@ -624,6 +649,9 @@ void ArmController::set_orientation_constraint(const geometry_msgs::Quaternion& 
 
 /**
  * @brief 添加位置约束
+ * @param target_position 目标位置
+ * @param scope_size 约束范围大小（长宽高）
+ * @param weight 约束权重（0-1）
  */
 void ArmController::set_position_constraint(const geometry_msgs::Point& target_position, const geometry_msgs::Vector3& scope_size, double weight) {
     moveit_msgs::PositionConstraint pcm;
@@ -660,6 +688,11 @@ void ArmController::set_position_constraint(const geometry_msgs::Point& target_p
 }
 /**
  * @brief 添加关节约束
+ * @param joint_name 关节名称
+ * @param target_angle 目标角度（弧度）
+ * @param above 上容忍度（弧度）
+ * @param below 下容忍度（弧度）
+ * @param weight 约束权重（0-1）
  */
 void ArmController::set_joint_constraint(const std::string& joint_name, double target_angle, double above, double below, double weight) {
     moveit_msgs::JointConstraint jc;
@@ -698,10 +731,16 @@ bool ArmController::is_planning_or_executing() const {
     return _is_planning_or_executing_.load();
 }
 
+/**
+ * @brief 查询取消状态
+ */
 bool ArmController::cancel_requested() const {
     return _cancel_requested_.load();
 }
 
+/**
+ * @brief 请求取消当前异步任务
+ */
 void ArmController::request_cancel() {
     _cancel_requested_.store(true);
     _arm_.stop();
@@ -724,14 +763,6 @@ ErrorCode ArmController::cancel_async() {
  * @param yaw 旋转角度（弧度）
  * @return 旋转后的姿态四元数
  */
-/**
- * @brief 在当前姿态基础上相对旋转 RPY 角度并转换为四元数（底座坐标系）
- * @param q_in 当前姿态四元数
- * @param roll 旋转角度（弧度）
- * @param pitch 旋转角度（弧度）
- * @param yaw 旋转角度（弧度）
- * @return 旋转后的姿态四元数
- */
 geometry_msgs::Quaternion ArmController::rotate_relative_rpy_to_quaternion(const geometry_msgs::Quaternion& q_in, double roll, double pitch, double yaw) {
     tf2::Quaternion q_in_tf2, q_relative, q_out;
     tf2::fromMsg(q_in, q_in_tf2);
@@ -744,6 +775,10 @@ geometry_msgs::Quaternion ArmController::rotate_relative_rpy_to_quaternion(const
 
 /**
  * @brief RPY 转四元数
+ * @param roll 旋转角度（弧度）
+ * @param pitch 旋转角度（弧度）
+ * @param yaw 旋转角度（弧度）
+ * @return 姿态四元数
  */
 geometry_msgs::Quaternion ArmController::rpy_to_quaternion(double roll, double pitch, double yaw) {
     tf2::Quaternion quat;
@@ -761,6 +796,13 @@ geometry_msgs::Quaternion ArmController::rpy_to_quaternion(double roll, double p
 
 /**
  * @brief RPY + 平移 转 Pose
+ * @param roll 旋转角度（弧度）
+ * @param pitch 旋转角度（弧度）
+ * @param yaw 旋转角度（弧度）
+ * @param x 平移（米）
+ * @param y 平移（米）
+ * @param z 平移（米）
+ * @return 位姿
  */
 geometry_msgs::Pose ArmController::rpy_to_pose(double roll, double pitch, double yaw, double x, double y, double z) {
     geometry_msgs::Pose pose;
@@ -1010,16 +1052,30 @@ ErrorCode ArmController::reset_to_zero() {
     return plan_and_execute();
 }
 
+/**
+ * @brief 检查是否需要取消当前异步任务
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 是否需要取消
+ */
 bool ArmController::should_cancel(const CancelChecker& should_cancel_fn) const {
     return _cancel_requested_.load() || static_cast<bool>(should_cancel_fn && should_cancel_fn());
 }
 
+/**
+ * @brief 重置取消状态
+ */
 void ArmController::reset_cancel_state() {
     _cancel_requested_.store(false);
     _async_done_.store(true);
     _async_result_.store(static_cast<int>(ErrorCode::SUCCESS));
 }
 
+/**
+ * @brief 启动异步任务
+ * @param work 任务函数
+ * @param callback 完成回调
+ * @return 错误码
+ */
 ErrorCode ArmController::start_async_work(AsyncWork work, std::function<void(ErrorCode)> callback) {
     if(_is_planning_or_executing_.load()) {
         ROS_WARN("当前已有异步任务正在执行，请稍后再试");
@@ -1059,11 +1115,16 @@ ErrorCode ArmController::start_async_work(AsyncWork work, std::function<void(Err
         _async_cv_.notify_all();
 
         if(callback) callback(result);
-    });
+        });
 
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 等待异步任务完成并获取结果
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 任务结果错误码
+ */
 ErrorCode ArmController::wait_async_result(CancelChecker should_cancel_fn) {
     using namespace std::chrono_literals;
 
@@ -1085,8 +1146,6 @@ ErrorCode ArmController::wait_async_result(CancelChecker should_cancel_fn) {
     const bool canceled = should_cancel(should_cancel_fn) || _cancel_requested_.load();
     const ErrorCode result = static_cast<ErrorCode>(_async_result_.load());
 
-    // 取消结果已经通过返回值传递给上层，这里顺手清理内部取消态，
-    // 防止下一轮新的 checked 操作被上一轮残留状态直接短路。
     if(canceled) {
         reset_cancel_state();
         return ErrorCode::CANCELLED;
@@ -1096,11 +1155,15 @@ ErrorCode ArmController::wait_async_result(CancelChecker should_cancel_fn) {
     return result;
 }
 
+/**
+ * @brief 运行异步任务并等待结果，期间可通过 should_cancel_fn 请求取消
+ * @param work 任务函数
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 任务结果错误码
+ */
 ErrorCode ArmController::run_async_and_wait(AsyncWork work, CancelChecker should_cancel_fn) {
     const bool external_cancel = static_cast<bool>(should_cancel_fn && should_cancel_fn());
 
-    // 上一轮取消处理完成后，若当前没有异步任务在跑，允许清掉“陈旧的内部取消标志”。
-    // 否则下一轮新的同步/受检操作会在 start_async_work() 之前就被 should_cancel() 直接拦掉。
     if(!external_cancel && !_is_planning_or_executing_.load() && _cancel_requested_.load()) {
         reset_cancel_state();
     }
@@ -1117,6 +1180,12 @@ ErrorCode ArmController::run_async_and_wait(AsyncWork work, CancelChecker should
     return wait_async_result(should_cancel_fn);
 }
 
+/**
+ * @brief 规划实现
+ * @param plan 规划结果
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::plan_impl(moveit::planning_interface::MoveGroupInterface::Plan& plan, const CancelChecker& should_cancel_fn) {
     if(should_cancel(should_cancel_fn)) {
         return ErrorCode::CANCELLED;
@@ -1139,6 +1208,12 @@ ErrorCode ArmController::plan_impl(moveit::planning_interface::MoveGroupInterfac
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 执行实现
+ * @param plan 规划结果
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::execute_plan_impl(const moveit::planning_interface::MoveGroupInterface::Plan& plan, const CancelChecker& should_cancel_fn) {
     if(should_cancel(should_cancel_fn)) {
         return ErrorCode::CANCELLED;
@@ -1161,6 +1236,11 @@ ErrorCode ArmController::execute_plan_impl(const moveit::planning_interface::Mov
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 规划并执行实现
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::plan_and_execute_impl(const CancelChecker& should_cancel_fn) {
     moveit::planning_interface::MoveGroupInterface::Plan plan;
     ErrorCode code = plan_impl(plan, should_cancel_fn);
@@ -1168,6 +1248,12 @@ ErrorCode ArmController::plan_and_execute_impl(const CancelChecker& should_cance
     return execute_plan_impl(plan, should_cancel_fn);
 }
 
+/**
+ * @brief 执行轨迹实现
+ * @param trajectory 轨迹消息
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::execute_trajectory_impl(const moveit_msgs::RobotTrajectory& trajectory, const CancelChecker& should_cancel_fn) {
     if(should_cancel(should_cancel_fn)) {
         return ErrorCode::CANCELLED;
@@ -1193,6 +1279,13 @@ ErrorCode ArmController::execute_trajectory_impl(const moveit_msgs::RobotTraject
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 规划目标实现
+ * @param target 目标
+ * @param plan 规划结果
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::plan_target_impl(const TargetVariant& target, moveit::planning_interface::MoveGroupInterface::Plan& plan, const CancelChecker& should_cancel_fn) {
     if(should_cancel(should_cancel_fn)) {
         return ErrorCode::CANCELLED;
@@ -1212,6 +1305,12 @@ ErrorCode ArmController::plan_target_impl(const TargetVariant& target, moveit::p
     return code;
 }
 
+/**
+ * @brief 规划并执行目标实现
+ * @param target 目标
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::plan_target_and_execute_impl(const TargetVariant& target, const CancelChecker& should_cancel_fn) {
     moveit::planning_interface::MoveGroupInterface::Plan plan;
     ErrorCode code = plan_target_impl(target, plan, should_cancel_fn);
@@ -1219,11 +1318,16 @@ ErrorCode ArmController::plan_target_and_execute_impl(const TargetVariant& targe
     return execute_plan_impl(plan, should_cancel_fn);
 }
 
+/**
+ * @brief 规划目标实现（带检查）
+ * @param target 目标
+ * @param plan 规划结果
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::plan_target_checked(const TargetVariant& target, moveit::planning_interface::MoveGroupInterface::Plan& plan, CancelChecker should_cancel_fn) {
     const bool external_cancel = static_cast<bool>(should_cancel_fn && should_cancel_fn());
 
-    // 与 run_async_and_wait() 同理：新一轮任务开始前，若外部未取消且当前不在执行中，
-    // 则允许清理上一轮残留的内部取消标志，避免直接误判为 CANCELLED。
     if(!external_cancel && !_is_planning_or_executing_.load() && _cancel_requested_.load()) {
         reset_cancel_state();
     }
@@ -1244,6 +1348,12 @@ ErrorCode ArmController::plan_target_checked(const TargetVariant& target, moveit
     return code;
 }
 
+/**
+ * @brief 规划并执行目标实现（带检查）
+ * @param target 目标
+ * @param should_cancel_fn 外部取消检查函数
+ * @return 错误码
+ */
 ErrorCode ArmController::plan_target_and_execute_checked(const TargetVariant& target, CancelChecker should_cancel_fn) {
     moveit::planning_interface::MoveGroupInterface::Plan plan;
     ErrorCode code = plan_target_checked(target, plan, should_cancel_fn);

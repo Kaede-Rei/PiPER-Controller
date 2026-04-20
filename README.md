@@ -74,7 +74,7 @@ sudo apt install -y can-utils ethtool
 # 串口权限
 sudo usermod -aG dialout $USER
 
-# Python SDK
+# Python SDK (v0.2.20)
 pip3 install piper_sdk
 ```
 
@@ -141,6 +141,33 @@ ip link show can0
 
 ### 4. 启动系统
 
+#### 方式一：使用启动脚本（推荐）
+
+```bash
+# 基础启动
+./piper-start.sh
+
+# 启动并在中断时失能系统
+./piper-start.sh --disable
+
+# 启动并设置回零后等待时间（秒）
+./piper-start.sh --delay 5
+
+# 组合参数
+./piper-start.sh --disable --delay 8
+
+# 查看帮助
+./piper-start.sh --help
+```
+
+启动脚本会自动：
+- source ROS 环境（`piper_ros` 与 `piper_tomato`）
+- 启动 `piper_interface` 节点
+- 中断时执行回零操作
+- 可选失能系统或设置延迟等待时间
+
+#### 方式二：手动启动
+
 ```bash
 source piper_tomato/devel/setup.bash
 roslaunch piper_interface piper_start.launch
@@ -161,6 +188,7 @@ rosrun piper_gui piper_gui.py
 
 - GUI 默认连接 `/pick_action`。
 - GUI 启动前请确保 `piper_start.launch` 已正常运行。
+- 或使用启动脚本直接启动：`./piper-start.sh`
 
 ### 6. 手眼采集与标定（hand-eye）
 
@@ -261,26 +289,79 @@ python piper_test.py
 
 ---
 
-## ⚙️ EEF 配置与 TCP 定义
+## ⚙️ 系统配置
 
-配置文件：`piper_tomato/src/app/piper_interface/config/config.yaml`
+### 启动参数
+
+系统启动时从私有命名空间 `~start/...` 读取配置，对应文件为 [piper_tomato/src/app/piper_interface/config/config.yaml](piper_tomato/src/app/piper_interface/config/config.yaml)。
+
+默认配置文件包含以下主要模块：
 
 ```yaml
 start:
+  arm_group_name: "arm"
+  
+  # 末端执行器配置
   eef:
     enabled: true
     type: "servo_gripper"   # two_finger_gripper | servo_gripper
     name: "gripper"
     serial_port: "/dev/ttyACM0"
     baud_rate: 115200
+
+  # Action 与 Service 接口
+  arm_move_action:
+    enabled: true
+    name: "move_arm"
+  simple_arm_move_action:
+    enabled: true
+    name: "simple_move_arm"
+  arm_config_service:
+    enabled: true
+    name: "arm_config"
+  arm_query_service:
+    enabled: true
+    name: "arm_query"
+  pick_action:
+    enabled: true
+    name: "pick_action"
+  eef_cmd_service:
+    enabled: true
+    name: "eef_cmd"
+
+  # 轨迹参数（Decartes）
+  decartes:
+    vel_scale: 1.0
+    acc_scale: 1.0
+    eef_step: 0.01
+    jump_threshold: 0.0
+    min_success_rate: 0.8
+
+  # 运动规划参数
+  motion_planning:
+    planning_time: 5.0
+    planning_attempts: 10
+    max_velocity_scaling_factor: 1.0
+    max_acceleration_scaling_factor: 1.0
+    planner_id: "RRTConnect"
+
+  # 可达性搜索参数
+  reachable_pose_search:
+    step_deg: 5.0
+    radius_deg: 60.0
 ```
 
-说明：
+### EEF 配置与 TCP 定义
 
-- `enabled=false`：不挂载 EEF。
-- `type=two_finger_gripper`：MoveIt 夹爪组方式。
-- `type=servo_gripper`：串口舵机夹爪方式。
-- TCP 统一以 URDF 为准，不再通过 `config.yaml` 配置 `tcp_offset`。
+末端执行器配置通过 `eef.*` 参数控制：
+
+- `enabled=false`：不挂载 EEF，对应的 `/eef_cmd` Service 返回"未初始化"。
+- `enabled=true` 且 `type=two_finger_gripper`：以 MoveIt 夹爪组方式集成。
+- `enabled=true` 且 `type=servo_gripper`：以串口舵机夹爪方式集成。
+
+TCP（Tool Center Point）配置说明：
+
+- TCP 坐标关系统一从 URDF 定义，不再通过 `config.yaml` 配置 `tcp_offset`。
 - 当前 `link_tcp` 固定在 `link6`，偏移为 `xyz=(0, 0.018, 0.13181)`、`rpy=(0, 0, 0)`。
 - 对应文件：`piper_ros/src/piper_description/urdf/piper_description.urdf` 与 `piper_ros/src/piper_moveit/piper_with_gripper_moveit/config/gazebo_piper_description.urdf`。
 
@@ -318,14 +399,16 @@ piper-ws/
 
 ## 🛠️ 常用脚本
 
-| 脚本 | 功能 |
-|---|---|
-| `can-activate.sh` | 激活 CAN 设备 |
-| `piper-start.sh` | 一键启动流程脚本 |
-| `piper_test.py` | 接口快速验证 |
-| `hand-eye/hand_eye_capture_gui.py` | 手眼采集 GUI |
-| `hand-eye/pipper_hand_eye.py` | 手眼标定 CLI |
-| `ros_env/source-piper.sh` | 快速加载环境 |
+| 脚本 | 功能 | 说明 |
+|---|---|---|
+| `can-activate.sh` | 激活 CAN 设备 | `sudo ip link set can0 type can bitrate 1000000 && sudo ip link set can0 up` |
+| `piper-start.sh` | 一键启动系统 | 支持 `--disable` 和 `--delay` 参数；推荐方式 |
+| `piper_test.py` | 接口快速验证 | 验证 Python SDK 连通性 |
+| `hand-eye/hand_eye_capture_gui.py` | 手眼采集 GUI | 图形化手眼标定数据采集 |
+| `hand-eye/pipper_hand_eye.py` | 手眼标定 CLI | 批量执行手眼标定计算 |
+| `ros_env/source-piper.sh` | 快速加载环境 | Ubuntu 22.04 虚拟环境专用 |
+| `piper_ros/can_activate.sh` | CAN 激活脚本 | 官方 ROS 包提供 |
+| `piper_sdk/can_activate.sh` | CAN 激活脚本 | SDK 提供的替代脚本 |
 
 ---
 
@@ -360,8 +443,42 @@ rostopic list | grep move_arm
 
 - 检查目标位姿是否超出工作空间。
 - 检查当前约束参数是否过严。
-- 降低速度/加速度缩放参数后重试。
+- 降低速度/加速度缩放参数后重试（参考 `config.yaml` 中 `motion_planning` 配置）。
 - 若返回 `TF_TRANSFORM_FAILED`，优先检查 TF 树与 URDF 中 `link_tcp` 定义。
+
+### 5) 启动脚本问题
+
+```bash
+# 检查工作空间编译状态
+ls piper_ros/devel/setup.bash piper_tomato/devel/setup.bash
+
+# 查看脚本日志
+./piper-start.sh 2>&1 | tail -20
+```
+
+### 6) 手眼标定数据不足
+
+- 确保采集了足够的样本（推荐 >= 10 个）。
+- 检查 `picture/` 目录中各 index 文件夹中是否都有 `board_detection.json` 和 `pose.json`。
+- 查看 `outputs/` 中的 `sample_diagnostics.json` 了解标定质量。
+
+### 7) 末端执行器不响应
+
+```bash
+# 检查串口连接
+ls -la /dev/ttyACM* /dev/com-* 2>/dev/null
+
+# 查看配置中的 serial_port 是否正确
+grep serial_port piper_tomato/src/app/piper_interface/config/config.yaml
+```
+
+---
+
+### 接口文档
+
+详细的 ROS 接口说明、命令编号与字段定义见：
+
+- [piper_tomato/PiPER 机械臂接口文档.md](piper_tomato/PiPER%20机械臂接口文档.md)
 
 ---
 
@@ -374,9 +491,11 @@ rostopic list | grep move_arm
 
 项目内文档：
 
-- `piper_tomato/PiPER 机械臂接口文档.md`
-- `piper_tomato/src/app/piper_interface/config/config.yaml`
-- `piper_sdk/README.MD`
+- [piper_tomato/PiPER 机械臂接口文档.md](piper_tomato/PiPER%20机械臂接口文档.md) - 详细的 Action/Service 定义与命令编号
+- [piper_tomato/src/app/piper_interface/config/config.yaml](piper_tomato/src/app/piper_interface/config/config.yaml) - 系统启动参数配置
+- [piper_sdk/README.MD](piper_sdk/README.MD) - Python SDK 使用说明
+- [hand-eye/README.md](hand-eye/README.md) - 手眼标定工具详细文档
+- [piper_ros/README.MD](piper_ros/README.MD) - ROS 官方包文档
 
 ---
 
