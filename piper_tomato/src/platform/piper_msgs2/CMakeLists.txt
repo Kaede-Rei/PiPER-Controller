@@ -19,6 +19,7 @@ add_service_files(
     CommandEef.srv
     ConfigArm.srv
     QueryArm.srv
+    OrbbecPixel.srv
 )
 
 add_action_files(

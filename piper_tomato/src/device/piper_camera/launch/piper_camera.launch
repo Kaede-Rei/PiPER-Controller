@@ -1,0 +1,5 @@
+<launch>
+    <node pkg="piper_camera" type="piper_orbbec.py" name="piper_orbbec" output="screen">
+        <rosparam command="load" file="$(find piper_camera)/config/piper_orbbec.yaml" />
+    </node>
+</launch>

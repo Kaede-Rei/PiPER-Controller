@@ -1,6 +1,9 @@
 <launch>
     <!-- 真机控制 - 启动 PiPER 控制节点 -->
     <include file="$(find piper)/launch/start_single_piper.launch" />
+    <!-- Gemini335L 相机 -->
+    <include file="$(find piper_camera)/launch/piper_camera.launch" />
+
     <node name="delay_for_moveit" pkg="roscpp_tutorials" type="talker" launch-prefix="bash -c 'sleep 3; exec '" output="screen" />
 
     <include file="$(find piper_with_gripper_moveit)/launch/demo.launch" />

@@ -1,0 +1,20 @@
+camera_name: gemeni335l
+
+color_width: 1280
+color_height: 720
+color_fps: 30
+
+depth_width: 1280
+depth_height: 800
+depth_fps: 30
+
+align_mode: sw
+rotate_180: false
+
+min_depth_m: 0.10
+max_depth_m: 10.0
+
+enable_lrm: true
+publish_rate: 30.0
+
+frame_id: eef_camera_link

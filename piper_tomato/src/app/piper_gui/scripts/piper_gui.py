@@ -19,24 +19,11 @@ from piper_msgs2.msg import (
     SimpleMoveArmAction,
     SimpleMoveArmGoal,
 )
-from pyorbbecsdk import (
-    OBAlignMode,
-    OBFormat,
-    OBPropertyID,
-    OBSensorType,
-    Config,
-    Pipeline,
-    VideoFrame,
-)
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image, CameraInfo
+from std_msgs.msg import Float32
 
-try:
-    from pyorbbecsdk import AlignFilter, OBFrameAggregateOutputMode, OBStreamType
-except ImportError:
-    AlignFilter = None
-    OBFrameAggregateOutputMode = None
-    OBStreamType = None
-
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QThread, QTimer
+from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QTimer
 from PyQt5.QtGui import (
     QBrush,
     QColor,
@@ -79,20 +66,10 @@ class DepthConfig:
 class LRMConfig:
     valid_min_mm: int = 1
     valid_max_mm: int = 400
-    enable_property: int = OBPropertyID.OB_PROP_LDP_BOOL
-    measure_property: int = OBPropertyID.OB_PROP_LDP_MEASURE_DISTANCE_INT
 
 
 @dataclass(frozen=True)
 class CameraConfig:
-    color_width: int = 1280
-    color_height: int = 720
-    color_fps: int = 30
-    depth_width: int = 1280
-    depth_height: int = 800
-    depth_fps: int = 30
-    align_mode: int = OBAlignMode.SW_MODE
-    target_disp_search_range: int = 256
     rotate_180: bool = False
 
 
@@ -108,6 +85,10 @@ class RosConfig:
     action_wait_sec: float = 5.0
     result_wait_sec: float = 10.0
     tf_wait_sec: float = 0.2
+    camera_color_topic: str = "/piper/camera/orbbec/color/image_raw"
+    camera_depth_topic: str = "/piper/camera/orbbec/depth/image_raw"
+    camera_info_topic: str = "/piper/camera/orbbec/info"
+    camera_lrm_topic: str = "/piper/camera/orbbec/lrm_distance"
 
 
 @dataclass(frozen=True)
@@ -185,48 +166,11 @@ T_CAM_TO_FLANGE = np.array(HAND_EYE_CFG.T_cam_to_flange, dtype=np.float64)
 
 MIN_DEPTH = DEPTH_CFG.min_mm
 MAX_DEPTH = DEPTH_CFG.max_mm
-COLOR_W = CAMERA_CFG.color_width
-COLOR_H = CAMERA_CFG.color_height
-DEPTH_W = CAMERA_CFG.depth_width
-DEPTH_H = CAMERA_CFG.depth_height
-FPS = CAMERA_CFG.color_fps
 CAMERA_ROTATE_180 = CAMERA_CFG.rotate_180
 
 
 def rotate_point_180(u: int, v: int, width: int, height: int) -> Tuple[int, int]:
     return width - 1 - int(u), height - 1 - int(v)
-
-
-def intrinsic_to_matrix(intrinsic: Any) -> np.ndarray:
-    return np.array(
-        [
-            [intrinsic.fx, 0.0, intrinsic.cx],
-            [0.0, intrinsic.fy, intrinsic.cy],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
-
-
-def frame_to_bgr_image(frame: VideoFrame) -> Union[Optional[np.ndarray], Any]:
-    width = frame.get_width()
-    height = frame.get_height()
-    color_format = frame.get_format()
-    data = np.asanyarray(frame.get_data())
-
-    if color_format == OBFormat.RGB:
-        image = np.frombuffer(frame.get_data(), dtype=np.uint8).reshape(
-            height, width, 3
-        )
-        return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    if color_format == OBFormat.YUYV:
-        image = np.frombuffer(frame.get_data(), dtype=np.uint8).reshape(
-            height, width, 2
-        )
-        return cv2.cvtColor(image, cv2.COLOR_YUV2BGR_YUYV)
-    if color_format == OBFormat.MJPG:
-        return cv2.imdecode(data, cv2.IMREAD_COLOR)
-    return None
 
 
 def cam_point_to_flange_point(
@@ -620,253 +564,6 @@ class ImageDisplayWidget(QLabel):
         self.update()
 
 
-class WorkerThread(QThread):
-    frame_ready = pyqtSignal(np.ndarray)
-    log_signal = pyqtSignal(str)
-    data_ready = pyqtSignal(object)
-    intrinsics_ready = pyqtSignal(np.ndarray)
-    lrm_data_ready = pyqtSignal(int, float)
-
-    def __init__(self):
-        super().__init__()
-        self._running = False
-        self.pipeline = None
-        self.device = None
-        self.align_filter = None
-        self._has_sent_intrinsics = False
-
-    def _select_color_profile(self, profile_list):
-        try:
-            return profile_list.get_video_stream_profile(
-                COLOR_W, COLOR_H, OBFormat.RGB, FPS
-            )
-        except Exception:
-            try:
-                return profile_list.get_video_stream_profile(
-                    COLOR_W, COLOR_H, OBFormat.MJPG, FPS
-                )
-            except Exception:
-                return profile_list.get_default_video_stream_profile()
-
-    def _select_depth_profile(self, profile_list):
-        try:
-            return profile_list.get_video_stream_profile(
-                DEPTH_W, DEPTH_H, OBFormat.Y16, CAMERA_CFG.depth_fps
-            )
-        except Exception:
-            return profile_list.get_default_video_stream_profile()
-
-    def _set_disparity_search_range_256(self) -> bool:
-        if self.device is None:
-            return False
-
-        prop = getattr(OBPropertyID, "OB_PROP_DISP_SEARCH_RANGE_MODE_INT", None)
-        if prop is None:
-            self.log_signal.emit(
-                "⚠️ 当前 pyorbbecsdk 未暴露 OB_PROP_DISP_SEARCH_RANGE_MODE_INT"
-            )
-            return False
-
-        try:
-            self.device.set_int_property(prop, 2)
-            applied = self.device.get_int_property(prop)
-            ok = applied == 2
-            self.log_signal.emit(f"ℹ️ 视差搜索范围模式值: {applied}")
-            return ok
-        except Exception as e:
-            self.log_signal.emit(f"⚠️ 视差搜索范围设置失败: {e}")
-            return False
-
-    def _read_lrm_data(self) -> None:
-        if not self.device:
-            return
-        try:
-            lrm_dist_mm = self.device.get_int_property(LRM_CFG.measure_property)
-            self.lrm_data_ready.emit(lrm_dist_mm, lrm_dist_mm / 1000.0)
-        except Exception:
-            pass
-
-    def _build_depth_mm(self, depth_frame) -> np.ndarray:
-        depth_u16 = np.frombuffer(depth_frame.get_data(), dtype=np.uint16).reshape(
-            (depth_frame.get_height(), depth_frame.get_width())
-        )
-        depth_u16 = cv2.medianBlur(depth_u16, 5)
-        depth_mm = depth_u16.astype(np.float32) * float(depth_frame.get_depth_scale())
-        depth_mm = np.where(
-            (depth_mm > MIN_DEPTH) & (depth_mm < MAX_DEPTH), depth_mm, 0
-        )
-        return depth_mm
-
-    def run(self):
-        self._running = True
-        self._has_sent_intrinsics = False
-
-        try:
-            self.pipeline = Pipeline()
-            self.device = self.pipeline.get_device()
-            config = Config()
-
-            color_profile_list = self.pipeline.get_stream_profile_list(
-                OBSensorType.COLOR_SENSOR
-            )
-            depth_profile_list = self.pipeline.get_stream_profile_list(
-                OBSensorType.DEPTH_SENSOR
-            )
-            color_profile = self._select_color_profile(color_profile_list)
-            depth_profile = self._select_depth_profile(depth_profile_list)
-
-            config.enable_stream(color_profile)
-            config.enable_stream(depth_profile)
-
-            if hasattr(config, "set_align_mode"):
-                try:
-                    config.set_align_mode(CAMERA_CFG.align_mode)
-                except Exception:
-                    pass
-
-            if (
-                hasattr(config, "set_frame_aggregate_output_mode")
-                and OBFrameAggregateOutputMode is not None
-                and hasattr(OBFrameAggregateOutputMode, "FULL_FRAME_REQUIRE")
-            ):
-                try:
-                    config.set_frame_aggregate_output_mode(
-                        OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE
-                    )
-                except Exception:
-                    pass
-
-            self.pipeline.enable_frame_sync()
-            self.pipeline.start(config)
-
-            if AlignFilter is not None and OBStreamType is not None:
-                try:
-                    self.align_filter = AlignFilter(
-                        align_to_stream=OBStreamType.COLOR_STREAM
-                    )
-                    self.log_signal.emit("✅ 已启用 AlignFilter: Depth -> Color")
-                except Exception as e:
-                    self.align_filter = None
-                    self.log_signal.emit(f"⚠️ AlignFilter 初始化失败: {e}")
-            else:
-                self.log_signal.emit(
-                    "⚠️ 当前 pyorbbecsdk 未暴露 AlignFilter，将回退到原始 depth"
-                )
-
-            disparity_256_ok = self._set_disparity_search_range_256()
-
-            try:
-                self.device.set_bool_property(LRM_CFG.enable_property, True)
-                self.log_signal.emit("✅ LRM 激光补盲模块已开启 (0.001m~0.4m 强制使用)")
-            except Exception as e:
-                self.log_signal.emit(f"⚠️ LRM 开启失败: {e}")
-
-            self.log_signal.emit(
-                f"✅ 相机启动成功 (Color={color_profile.get_width()}x{color_profile.get_height()}, "
-                f"Depth={depth_profile.get_width()}x{depth_profile.get_height()}, disp256={'OK' if disparity_256_ok else 'NO'})"
-            )
-
-            while self._running:
-                frames = self.pipeline.wait_for_frames(100)
-                if frames is None:
-                    continue
-
-                color_frame = frames.get_color_frame()
-                depth_frame = frames.get_depth_frame()
-                if color_frame is None or depth_frame is None:
-                    continue
-
-                aligned_depth_frame = None
-                if self.align_filter is not None:
-                    try:
-                        aligned_frames = self.align_filter.process(frames)
-                        if aligned_frames is not None:
-                            aligned_frames = aligned_frames.as_frame_set()
-                            aligned_depth_frame = aligned_frames.get_depth_frame()
-                    except Exception as e:
-                        self.log_signal.emit(f"⚠️ AlignFilter 处理失败: {e}")
-                        aligned_depth_frame = None
-
-                color_image = frame_to_bgr_image(color_frame)
-                if color_image is None:
-                    continue
-
-                if CAMERA_ROTATE_180:
-                    display_image = cv2.rotate(color_image, cv2.ROTATE_180)
-                else:
-                    display_image = color_image
-
-                raw_depth_mm = self._build_depth_mm(depth_frame)
-                aligned_depth_mm = None
-                if aligned_depth_frame is not None:
-                    try:
-                        aligned_depth_mm = self._build_depth_mm(aligned_depth_frame)
-                    except Exception as e:
-                        self.log_signal.emit(f"⚠️ 对齐深度解析失败: {e}")
-                        aligned_depth_mm = None
-
-                color_profile_obj = color_frame.get_stream_profile()
-                depth_profile_obj = depth_frame.get_stream_profile()
-                color_video_profile = color_profile_obj.as_video_stream_profile()
-                depth_video_profile = depth_profile_obj.as_video_stream_profile()
-                K_color = intrinsic_to_matrix(color_video_profile.get_intrinsic())
-                K_depth = intrinsic_to_matrix(depth_video_profile.get_intrinsic())
-
-                projection_depth_mm = None
-                projection_intrinsics = None
-                projection_mode = "invalid"
-
-                if aligned_depth_mm is not None and aligned_depth_mm.shape[:2] == (
-                    color_frame.get_height(),
-                    color_frame.get_width(),
-                ):
-                    projection_depth_mm = aligned_depth_mm
-                    projection_intrinsics = K_color
-                    projection_mode = "aligned_to_color"
-                elif raw_depth_mm.shape[:2] == (
-                    color_frame.get_height(),
-                    color_frame.get_width(),
-                ):
-                    projection_depth_mm = raw_depth_mm
-                    projection_intrinsics = K_color
-                    projection_mode = "pipeline_aligned_to_color"
-                else:
-                    projection_depth_mm = raw_depth_mm
-                    projection_intrinsics = K_depth
-                    projection_mode = "raw_depth"
-
-                if not self._has_sent_intrinsics and projection_intrinsics is not None:
-                    self.intrinsics_ready.emit(projection_intrinsics.copy())
-                    self._has_sent_intrinsics = True
-                    self.log_signal.emit(f"✅ 当前回投影内参已就绪: {projection_mode}")
-
-                payload = {
-                    "projection_depth_mm": projection_depth_mm,
-                    "projection_intrinsics": projection_intrinsics,
-                    "projection_mode": projection_mode,
-                    "aligned_depth_mm": aligned_depth_mm,
-                    "raw_depth_mm": raw_depth_mm,
-                    "color_size": (color_frame.get_width(), color_frame.get_height()),
-                    "depth_size": (depth_frame.get_width(), depth_frame.get_height()),
-                    "color_intrinsics_K": K_color,
-                    "depth_intrinsics_K": K_depth,
-                }
-
-                self.frame_ready.emit(display_image)
-                self.data_ready.emit(payload)
-                self._read_lrm_data()
-
-        except Exception as e:
-            self.log_signal.emit(f"❌ 工作线程错误: {e}")
-        finally:
-            if self.pipeline:
-                self.pipeline.stop()
-
-    def stop(self) -> None:
-        self._running = False
-        self.wait()
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -889,10 +586,15 @@ class MainWindow(QMainWindow):
         self.last_flange_coord = None
 
         self.ros_available = False
+        self.pick_action_available = False
         self.pick_client = None
         self.simple_move_client = None
         self.simple_move_available = False
         self.last_request_type = None
+
+        self.bridge = CvBridge()
+        self.latest_color_image = None
+        self.latest_color_size = None
 
         self.init_ros()
 
@@ -903,7 +605,11 @@ class MainWindow(QMainWindow):
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
         self.init_ui()
-        self.init_thread()
+        self.init_camera_subscribers()
+
+        self.camera_render_timer = QTimer(self)
+        self.camera_render_timer.timeout.connect(self.flush_latest_frame)
+        self.camera_render_timer.start(max(10, int(1000 / max(1, UI_CFG.render_fps_limit))))
 
         self._toggle_window_shortcut = QShortcut(QKeySequence("F11"), self)
         self._toggle_window_shortcut.activated.connect(self.toggle_window_state)
@@ -918,37 +624,39 @@ class MainWindow(QMainWindow):
 
     def init_ros(self) -> None:
         try:
-            if not rospy.is_shutdown():
+            if not rospy.core.is_initialized():
                 rospy.init_node(ROS_CFG.node_name, anonymous=True, disable_signals=True)
-                self.pick_client = actionlib.SimpleActionClient(
-                    ROS_CFG.action_name, PickTaskAction
-                )
-                if not self.pick_client.wait_for_server(
-                    rospy.Duration(ROS_CFG.action_wait_sec)
-                ):
-                    raise rospy.ROSException(f"{ROS_CFG.action_name} action 不可用")
+            self.ros_available = True
 
-                self.simple_move_client = actionlib.SimpleActionClient(
-                    ROS_CFG.simple_move_action_name, SimpleMoveArmAction
-                )
-                self.simple_move_available = self.simple_move_client.wait_for_server(
-                    rospy.Duration(ROS_CFG.action_wait_sec)
-                )
-                if not self.simple_move_available:
-                    print(
-                        f"[ROS] 警告: {ROS_CFG.simple_move_action_name} action 不可用，返回安全区按钮将不可用"
-                    )
+            self.pick_client = actionlib.SimpleActionClient(
+                ROS_CFG.action_name, PickTaskAction
+            )
+            self.pick_action_available = self.pick_client.wait_for_server(
+                rospy.Duration(ROS_CFG.action_wait_sec)
+            )
+            if not self.pick_action_available:
+                print(f"[ROS] 警告: {ROS_CFG.action_name} action 不可用，写入/执行任务按钮将不可用")
 
-                self.ros_available = True
-                print(f"[ROS] 初始化成功，已连接到 {ROS_CFG.action_name}")
-        except rospy.ROSException as e:
+            self.simple_move_client = actionlib.SimpleActionClient(
+                ROS_CFG.simple_move_action_name, SimpleMoveArmAction
+            )
+            self.simple_move_available = self.simple_move_client.wait_for_server(
+                rospy.Duration(ROS_CFG.action_wait_sec)
+            )
+            if not self.simple_move_available:
+                print(
+                    f"[ROS] 警告: {ROS_CFG.simple_move_action_name} action 不可用，返回安全区按钮将不可用"
+                )
+
+            print(f"[ROS] 节点初始化成功: {ROS_CFG.node_name}")
+        except Exception as e:
             print(f"[ROS] 初始化失败: {e}")
             self.ros_available = False
-        except Exception as e:
-            print(f"[ROS] 未知错误: {e}")
-            self.ros_available = False
+            self.pick_action_available = False
+            self.simple_move_available = False
 
     def flange_point_to_tcp_point(
+
         self,
         x_flange: float,
         y_flange: float,
@@ -1132,7 +840,7 @@ class MainWindow(QMainWindow):
         self.btn_update_group_config.setStyleSheet(
             "background-color: #16a085; color: white; font-size:14px; font-weight:bold;"
         )
-        self.btn_update_group_config.setEnabled(self.ros_available)
+        self.btn_update_group_config.setEnabled(self.pick_action_available)
         action_layout.addWidget(self.btn_update_group_config)
 
         self.btn_upsert_task = QPushButton("写入 / 更新当前任务")
@@ -1150,7 +858,7 @@ class MainWindow(QMainWindow):
         self.btn_execute_group.setStyleSheet(
             "background-color: #8e44ad; color: white; font-size:14px; font-weight:bold;"
         )
-        self.btn_execute_group.setEnabled(self.ros_available)
+        self.btn_execute_group.setEnabled(self.pick_action_available)
         action_layout.addWidget(self.btn_execute_group)
 
         self.btn_cancel_cmd = QPushButton("取消当前执行")
@@ -1190,31 +898,79 @@ class MainWindow(QMainWindow):
             self._parse_int(self.mask_open_kernel_edit, TARGET_CFG.mask_open_kernel),
         )
 
-    def init_thread(self) -> None:
-        self.worker = WorkerThread()
-        self.worker.frame_ready.connect(self.video_label.set_image)
-        self.worker.data_ready.connect(self.receive_data)
-        self.worker.log_signal.connect(lambda s: print(s))
-        self.worker.intrinsics_ready.connect(self.on_intrinsics_received)
-        self.worker.lrm_data_ready.connect(self.on_lrm_data_received)
-        self.worker.start()
+    def init_camera_subscribers(self) -> None:
+        if not self.ros_available:
+            return
 
-    def on_intrinsics_received(self, K: np.ndarray) -> None:
-        self.current_depth_intrinsics = K
+        rospy.Subscriber(
+            ROS_CFG.camera_color_topic,
+            Image,
+            self.on_color_image,
+            queue_size=1,
+            buff_size=2 ** 24,
+        )
+        rospy.Subscriber(
+            ROS_CFG.camera_depth_topic,
+            Image,
+            self.on_depth_image,
+            queue_size=1,
+            buff_size=2 ** 24,
+        )
+        rospy.Subscriber(
+            ROS_CFG.camera_info_topic,
+            CameraInfo,
+            self.on_camera_info,
+            queue_size=1,
+        )
+        rospy.Subscriber(
+            ROS_CFG.camera_lrm_topic,
+            Float32,
+            self.on_lrm_distance,
+            queue_size=1,
+        )
 
-    def receive_data(self, payload) -> None:
-        self.current_depth_data = payload.get("projection_depth_mm")
-        self.current_color_size = payload.get("color_size")
-        K = payload.get("projection_intrinsics")
-        if K is not None:
-            self.current_depth_intrinsics = K
-        self.current_projection_mode = payload.get("projection_mode", "invalid")
+    def on_color_image(self, msg: Image) -> None:
+        try:
+            image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            self.latest_color_image = image.copy()
+            self.latest_color_size = (image.shape[1], image.shape[0])
+            self.current_color_size = self.latest_color_size
+        except Exception as e:
+            print(f"[GUI] 彩色图转换失败: {e}")
 
-    def on_lrm_data_received(self, dist_mm: int, dist_m: float) -> None:
-        self.current_lrm_mm = dist_mm
-        self.current_lrm_m = dist_m
+    def flush_latest_frame(self) -> None:
+        if self.latest_color_image is None:
+            return
+        self.video_label.set_image(self.latest_color_image)
+
+    def on_depth_image(self, msg: Image) -> None:
+        try:
+            depth_m = self.bridge.imgmsg_to_cv2(msg, desired_encoding="32FC1")
+            if depth_m is None:
+                return
+            self.current_depth_data = (depth_m.astype(np.float32) * 1000.0)
+        except Exception as e:
+            print(f"[GUI] 深度图转换失败: {e}")
+
+    def on_camera_info(self, msg: CameraInfo) -> None:
+        try:
+            self.current_depth_intrinsics = np.array(msg.K, dtype=np.float64).reshape(3, 3)
+            self.current_projection_mode = "camera_projection"
+            if msg.width > 0 and msg.height > 0:
+                self.current_color_size = (msg.width, msg.height)
+        except Exception as e:
+            print(f"[GUI] 相机内参解析失败: {e}")
+
+    def on_lrm_distance(self, msg: Float32) -> None:
+        try:
+            self.current_lrm_m = float(msg.data)
+            self.current_lrm_mm = int(round(self.current_lrm_m * 1000.0))
+        except Exception:
+            self.current_lrm_m = 0.0
+            self.current_lrm_mm = 0
 
     def get_valid_depth_around(
+
         self,
         depth_img: np.ndarray,
         u: int,
@@ -1382,7 +1138,7 @@ class MainWindow(QMainWindow):
         goal.group_go_home_after_finish = self.chk_go_home_after_finish.isChecked()
 
     def update_task_group_config(self) -> None:
-        if not self.ros_available or self.pick_client is None:
+        if not self.pick_action_available or self.pick_client is None:
             self.task_status_label.setText("采摘任务状态：ROS 未连接")
             return
 
@@ -1398,7 +1154,7 @@ class MainWindow(QMainWindow):
         self._send_goal(goal)
 
     def upsert_current_task(self) -> None:
-        if not self.ros_available or self.pick_client is None:
+        if not self.pick_action_available or self.pick_client is None:
             self.task_status_label.setText("采摘任务状态：ROS 未连接")
             return
 
@@ -1452,7 +1208,7 @@ class MainWindow(QMainWindow):
         self._send_goal(goal)
 
     def execute_current_group(self) -> None:
-        if not self.ros_available or self.pick_client is None:
+        if not self.pick_action_available or self.pick_client is None:
             self.task_status_label.setText("采摘任务状态：ROS 未连接")
             return
 
@@ -1474,7 +1230,7 @@ class MainWindow(QMainWindow):
         self.upsert_current_task()
 
     def cancel_pick_task(self) -> None:
-        if self.ros_available and self.pick_client is not None:
+        if self.pick_action_available and self.pick_client is not None:
             self.pick_client.cancel_all_goals()
             self.task_status_label.setText("采摘任务状态：已请求取消")
 
@@ -1646,8 +1402,6 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
-        if hasattr(self, "worker"):
-            self.worker.stop()
         if self.ros_available:
             rospy.signal_shutdown("GUI Closed")
         event.accept()
