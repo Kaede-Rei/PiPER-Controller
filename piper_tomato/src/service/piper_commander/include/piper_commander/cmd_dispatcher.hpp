@@ -175,7 +175,14 @@ struct EefCmdFeedback {
  */
 class ArmCmdDispatcher {
 public:
+    /**
+     * @brief ArmCmdDispatcher 构造函数
+     * @param arm 机械臂控制器
+     */
     explicit ArmCmdDispatcher(std::shared_ptr<ArmController> arm);
+    /**
+     * @brief ArmCmdDispatcher 析构函数
+     */
     ~ArmCmdDispatcher();
 
     ArmCmdDispatcher(const ArmCmdDispatcher&) = delete;
@@ -184,10 +191,28 @@ public:
     ArmCmdDispatcher& operator=(ArmCmdDispatcher&&) = delete;
 
     using FeedbackCb = std::function<void(const ArmCmdFeedback&)>;
+    /**
+     * @brief 分发机械臂命令
+     * @param req 命令请求
+     * @param cb 反馈回调
+     * @return 命令结果
+     */
     ArmCmdResult dispatch(const ArmCmdRequest& req, FeedbackCb cb = nullptr);
+    /**
+     * @brief 将机械臂命令类型转换为字符串
+     * @param type 命令类型
+     * @return 字符串名称
+     */
     std::string type_to_string(ArmCmdType type) const;
 
+    /**
+     * @brief 取消当前命令
+     */
     void cancel();
+    /**
+     * @brief 查询是否已取消
+     * @return 是否已取消
+     */
     bool is_cancelled() const;
 
 private:
@@ -200,7 +225,14 @@ private:
  */
 class EefCmdDispatcher {
 public:
+    /**
+     * @brief EefCmdDispatcher 构造函数
+     * @param eef 末端执行器
+     */
     explicit EefCmdDispatcher(std::shared_ptr<EndEffector> eef);
+    /**
+     * @brief EefCmdDispatcher 析构函数
+     */
     ~EefCmdDispatcher();
 
     EefCmdDispatcher(const EefCmdDispatcher&) = delete;
@@ -209,10 +241,28 @@ public:
     EefCmdDispatcher& operator=(EefCmdDispatcher&&) = delete;
 
     using FeedbackCb = std::function<void(const EefCmdFeedback&)>;
+    /**
+     * @brief 分发末端命令
+     * @param req 命令请求
+     * @param cb 反馈回调
+     * @return 命令结果
+     */
     EefCmdResult dispatch(const EefCmdRequest& req, FeedbackCb cb = nullptr);
+    /**
+     * @brief 将末端命令类型转换为字符串
+     * @param type 命令类型
+     * @return 字符串名称
+     */
     std::string type_to_string(EefCmdType type) const;
 
+    /**
+     * @brief 取消当前命令
+     */
     void cancel();
+    /**
+     * @brief 查询是否已取消
+     * @return 是否已取消
+     */
     bool is_cancelled() const;
 
 private:

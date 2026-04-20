@@ -13,11 +13,17 @@ class EndEffector;
 
 // ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
 
+/**
+ * @brief ROS 接口开关配置
+ */
 struct ROSInterfaceSwitch {
     bool enable{ false };
     std::string name;
 };
 
+/**
+ * @brief ROS 接口启动配置
+ */
 struct ROSInterfaceConfig {
     std::string arm_group_name{ "arm" };
 
@@ -40,6 +46,11 @@ struct ROSInterfaceConfig {
 
 class ROSInterface {
 public:
+    /**
+     * @brief ROSInterface 构造函数
+     * @param nh ROS 节点句柄
+     * @param config 接口配置
+     */
     ROSInterface(ros::NodeHandle& nh, const ROSInterfaceConfig& config);
     ~ROSInterface() = default;
 
@@ -49,7 +60,17 @@ public:
     ROSInterface& operator=(ROSInterface&&) = delete;
 
 private:
+    /**
+     * @brief 初始化所有可选 ROS 接口模块
+     * @param nh ROS 节点句柄
+     * @param config 接口配置
+     */
     void init_interfaces(ros::NodeHandle& nh, const ROSInterfaceConfig& config);
+    /**
+     * @brief 初始化末端执行器
+     * @param nh ROS 节点句柄
+     * @param config 接口配置
+     */
     void init_eef(ros::NodeHandle& nh, const ROSInterfaceConfig& config);
     template<typename Module, typename... Args>
     void add_interface(const ROSInterfaceSwitch& interface, Args&&... args);

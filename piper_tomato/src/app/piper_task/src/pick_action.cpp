@@ -1,6 +1,5 @@
 #include "piper_task/pick_action.hpp"
 
-#include <chrono>
 #include <thread>
 
 namespace piper {
@@ -29,10 +28,7 @@ std::string pick_stage_to_text(PickStage stage) {
  * @param arm 机械臂控制器
  * @param action_name Action 名称
  */
-PickTaskAction::PickTaskAction(ros::NodeHandle& nh,
-    std::shared_ptr<TasksManager> tasks_manager,
-    std::shared_ptr<ArmController> arm,
-    const std::string& action_name)
+PickTaskAction::PickTaskAction(ros::NodeHandle& nh, std::shared_ptr<TasksManager> tasks_manager, std::shared_ptr<ArmController> arm, const std::string& action_name)
     : _tasks_manager_(std::move(tasks_manager)), _arm_(std::move(arm)) {
     _as_ = std::make_unique<PickTaskAS>(nh, action_name, false);
     _as_->registerGoalCallback(boost::bind(&PickTaskAction::on_goal, this));
@@ -123,8 +119,7 @@ void PickTaskAction::on_preempt() {
  * @param group_name 任务组名称
  * @return 错误码
  */
-ErrorCode PickTaskAction::apply_goal_task_group_config(const piper_msgs2::PickTaskGoal& goal,
-    const std::string& group_name) {
+ErrorCode PickTaskAction::apply_goal_task_group_config(const piper_msgs2::PickTaskGoal& goal, const std::string& group_name) {
     SortType sort_type = SortType::ID;
     switch(goal.group_sort_type) {
         case piper_msgs2::PickTaskGoal::GROUP_SORT_ID:
@@ -349,7 +344,7 @@ void PickTaskAction::handle_execute_task_group_request(const piper_msgs2::PickTa
     _execute_group_thread_ = std::thread([this, goal_copy]() {
         finish_execute_task_group_request(goal_copy);
         _execute_group_running_.store(false);
-    });
+        });
 }
 
 void PickTaskAction::finish_execute_task_group_request(const piper_msgs2::PickTaskGoal& goal) {
@@ -404,7 +399,7 @@ void PickTaskAction::finish_execute_task_group_request(const piper_msgs2::PickTa
         fb.last_error_code = static_cast<int32_t>(last_code);
         fb.current_pose = get_current_pose_stamped();
         _as_->publishFeedback(fb);
-    };
+        };
 
     code = _tasks_manager_->execute_task_group(group_name, &ctx);
 
@@ -443,9 +438,7 @@ void PickTaskAction::finish_execute_task_group_request(const piper_msgs2::PickTa
  * @param target_frame 输出目标所属坐标系
  * @return 错误码
  */
-ErrorCode PickTaskAction::resolve_goal_target(const piper_msgs2::PickTaskGoal& goal,
-    tl::optional<TargetVariant>& target,
-    std::string& target_frame) const {
+ErrorCode PickTaskAction::resolve_goal_target(const piper_msgs2::PickTaskGoal& goal, tl::optional<TargetVariant>& target, std::string& target_frame) const {
     target = tl::nullopt;
     target_frame.clear();
 
@@ -496,8 +489,7 @@ ErrorCode PickTaskAction::resolve_goal_target(const piper_msgs2::PickTaskGoal& g
  * @param pick_params 输出采摘参数
  * @return 错误码
  */
-ErrorCode PickTaskAction::resolve_goal_pick_params(const piper_msgs2::PickTaskGoal& goal,
-    PickTaskParams& pick_params) const {
+ErrorCode PickTaskAction::resolve_goal_pick_params(const piper_msgs2::PickTaskGoal& goal, PickTaskParams& pick_params) const {
     pick_params.use_place_pose = goal.use_place_pose;
     pick_params.use_eef = goal.use_eef;
     pick_params.go_safe_after_cancel = goal.go_safe_after_cancel;

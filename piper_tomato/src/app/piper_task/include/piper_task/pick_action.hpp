@@ -32,10 +32,7 @@ public:
      * @param arm 机械臂控制器
      * @param action_name Action 名称
      */
-    PickTaskAction(ros::NodeHandle& nh,
-        std::shared_ptr<TasksManager> tasks_manager,
-        std::shared_ptr<ArmController> arm,
-        const std::string& action_name);
+    PickTaskAction(ros::NodeHandle& nh, std::shared_ptr<TasksManager> tasks_manager, std::shared_ptr<ArmController> arm, const std::string& action_name);
     ~PickTaskAction();
 
     PickTaskAction(const PickTaskAction&) = delete;
@@ -65,7 +62,17 @@ private:
      * @param goal Goal 请求
      */
     void handle_execute_task_group_request(const piper_msgs2::PickTaskGoal& goal);
+
+    /**
+     * @brief 完成“执行任务组”请求的后台执行流程
+     * @param goal Goal 请求
+     */
     void finish_execute_task_group_request(const piper_msgs2::PickTaskGoal& goal);
+
+    /**
+     * @brief 处理“仅更新任务组配置”请求
+     * @param goal Goal 请求
+     */
     void handle_update_task_group_config_request(const piper_msgs2::PickTaskGoal& goal);
 
     /**
@@ -75,20 +82,23 @@ private:
      * @param target_frame 输出目标所属坐标系
      * @return 错误码
      */
-    ErrorCode resolve_goal_target(const piper_msgs2::PickTaskGoal& goal,
-        tl::optional<TargetVariant>& target,
-        std::string& target_frame) const;
+    ErrorCode resolve_goal_target(const piper_msgs2::PickTaskGoal& goal, tl::optional<TargetVariant>& target, std::string& target_frame) const;
 
     /**
-     * @brief 从 Goal 中解析放置目标
+     * @brief 从 Goal 中解析采摘参数
      * @param goal Goal 请求
      * @param pick_params 输出采摘参数
      * @return 错误码
      */
-    ErrorCode resolve_goal_pick_params(const piper_msgs2::PickTaskGoal& goal,
-        PickTaskParams& pick_params) const;
-    ErrorCode apply_goal_task_group_config(const piper_msgs2::PickTaskGoal& goal,
-        const std::string& group_name);
+    ErrorCode resolve_goal_pick_params(const piper_msgs2::PickTaskGoal& goal, PickTaskParams& pick_params) const;
+
+    /**
+     * @brief 应用 Goal 中的任务组配置
+     * @param goal Goal 请求
+     * @param group_name 任务组名称
+     * @return 错误码
+     */
+    ErrorCode apply_goal_task_group_config(const piper_msgs2::PickTaskGoal& goal, const std::string& group_name);
 
     /**
      * @brief 获取当前机械臂位姿

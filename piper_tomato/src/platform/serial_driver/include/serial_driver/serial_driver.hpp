@@ -24,16 +24,49 @@ using CanIfReq = struct ifreq;
  */
 class STM32Serial {
 public:
+    /**
+     * @brief STM32 串口通信类构造函数
+     * @param nh ROS 节点句柄
+     * @param port_name 串口名称
+     * @param baud_rate 波特率
+     */
     STM32Serial(ros::NodeHandle& nh, const std::string& port_name, int baud_rate);
+    /**
+     * @brief STM32 串口通信类析构函数
+     */
     ~STM32Serial();
 
     bool isConnected() const { return _is_connected_; }
+    /**
+     * @brief 连接串口
+     * @return 是否连接成功
+     */
     bool connect();
+    /**
+     * @brief 重新连接串口
+     * @return 是否连接成功
+     */
     bool reConnect();
+    /**
+     * @brief 断开串口连接
+     */
     void disConnect();
 
+    /**
+     * @brief 发送字符串数据到串口
+     * @param data 待发送数据
+     * @return 是否发送成功
+     */
     bool sendData(const std::string& data);
+    /**
+     * @brief 接收串口数据
+     * @param timeout_ms 超时时间，单位毫秒
+     * @return 接收到的数据
+     */
     std::string rcvdData(uint32_t timeout_ms = 0);
+    /**
+     * @brief 清空串口缓冲区
+     */
     void clearBuffer(void);
 
 private:

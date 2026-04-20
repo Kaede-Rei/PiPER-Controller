@@ -1,5 +1,6 @@
 #include "piper_controller/arm_controller.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <queue>
@@ -127,6 +128,7 @@ ArmController::ArmController(const std::string& group_name)
  * @brief 析构函数：等待异步线程退出
  */
 ArmController::~ArmController() {
+    request_cancel();
     if(_async_thread_.joinable()) {
         _async_thread_.join();
     }
@@ -284,21 +286,7 @@ ErrorCode ArmController::rotate_end(double angle) {
  * @return 错误码
  */
 ErrorCode ArmController::plan(moveit::planning_interface::MoveGroupInterface::Plan& plan) {
-    if(_is_planning_or_executing_) {
-        ROS_WARN("当前已有异步任务正在执行，无法进行新的规划");
-        return ErrorCode::ASYNC_TASK_RUNNING;
-    }
-
-    ROS_INFO("正在规划...");
-
-    moveit::core::MoveItErrorCode err_code = _arm_.plan(plan);
-    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
-        ROS_WARN("规划失败，错误码：%d", err_code.val);
-        return ErrorCode::PLANNING_FAILED;
-    }
-
-    ROS_INFO("规划成功");
-    return ErrorCode::SUCCESS;
+    return plan_checked(plan, CancelChecker{});
 }
 
 /**
@@ -307,21 +295,7 @@ ErrorCode ArmController::plan(moveit::planning_interface::MoveGroupInterface::Pl
  * @return 错误码
  */
 ErrorCode ArmController::execute(const moveit::planning_interface::MoveGroupInterface::Plan& plan) {
-    if(_is_planning_or_executing_) {
-        ROS_WARN("当前已有异步任务正在执行，无法执行新的规划结果");
-        return ErrorCode::ASYNC_TASK_RUNNING;
-    }
-
-    ROS_INFO("正在执行规划结果...");
-
-    moveit::core::MoveItErrorCode err_code = _arm_.execute(plan);
-    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
-        ROS_WARN("执行失败，错误码：%d", err_code.val);
-        return ErrorCode::EXECUTION_FAILED;
-    }
-
-    ROS_INFO("执行成功");
-    return ErrorCode::SUCCESS;
+    return execute_checked(plan, CancelChecker{});
 }
 
 /**
@@ -329,30 +303,7 @@ ErrorCode ArmController::execute(const moveit::planning_interface::MoveGroupInte
  * @return 错误码
  */
 ErrorCode ArmController::plan_and_execute() {
-    if(_is_planning_or_executing_) {
-        ROS_WARN("当前已有异步任务正在执行，无法进行新的规划和执行");
-        return ErrorCode::ASYNC_TASK_RUNNING;
-    }
-
-    ROS_INFO("正在规划...");
-
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
-
-    moveit::core::MoveItErrorCode err_code = _arm_.plan(plan);
-    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
-        ROS_WARN("规划失败，错误码：%d", err_code.val);
-        return ErrorCode::PLANNING_FAILED;
-    }
-
-    ROS_INFO("规划成功，正在执行...");
-    err_code = _arm_.execute(plan);
-    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
-        ROS_WARN("执行失败，错误码：%d", err_code.val);
-        return ErrorCode::EXECUTION_FAILED;
-    }
-
-    ROS_INFO("执行成功");
-    return ErrorCode::SUCCESS;
+    return plan_and_execute_checked(CancelChecker{});
 }
 
 /**
@@ -361,53 +312,46 @@ ErrorCode ArmController::plan_and_execute() {
  * @return 错误码
  */
 ErrorCode ArmController::async_plan_and_execute(std::function<void(ErrorCode)> callback) {
-    if(_is_planning_or_executing_) {
-        ROS_WARN("当前已有异步任务正在执行，请稍后再试");
-        return ErrorCode::ASYNC_TASK_RUNNING;
-    }
-
-    if(_async_thread_.joinable()) {
-        _async_thread_.join();
-    }
-
-    _is_planning_or_executing_ = true;
-    ROS_INFO("正在异步规划...");
-
-    _async_thread_ = std::thread([this, callback]() {
-        moveit::planning_interface::MoveGroupInterface::Plan plan;
-        moveit::core::MoveItErrorCode err_code = _arm_.plan(plan);
-        if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
-            ROS_WARN("异步规划失败，错误码：%d", err_code.val);
-            _is_planning_or_executing_ = false;
-            if(callback) callback(ErrorCode::PLANNING_FAILED);
-            return;
-        }
-
-        ROS_INFO("异步规划成功，正在执行...");
-        err_code = _arm_.execute(plan);
-        if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
-            ROS_WARN("异步执行失败，错误码：%d", err_code.val);
-            _is_planning_or_executing_ = false;
-            if(callback) callback(ErrorCode::EXECUTION_FAILED);
-            return;
-        }
-
-        ROS_INFO("异步执行成功");
-        _is_planning_or_executing_ = false;
-        if(callback) callback(ErrorCode::SUCCESS);
-        });
-
-    return ErrorCode::SUCCESS;
+    return async_plan_and_execute(CancelChecker{}, std::move(callback));
 }
 
-/**
- * @brief 停止当前运动
- */
+ErrorCode ArmController::plan_checked(moveit::planning_interface::MoveGroupInterface::Plan& plan, CancelChecker should_cancel) {
+    return run_async_and_wait([this, &plan, should_cancel]() {
+        return plan_impl(plan, should_cancel);
+    }, should_cancel);
+}
+
+ErrorCode ArmController::execute_checked(const moveit::planning_interface::MoveGroupInterface::Plan& plan, CancelChecker should_cancel) {
+    return run_async_and_wait([this, &plan, should_cancel]() {
+        return execute_plan_impl(plan, should_cancel);
+    }, should_cancel);
+}
+
+ErrorCode ArmController::plan_and_execute_checked(CancelChecker should_cancel) {
+    return run_async_and_wait([this, should_cancel]() {
+        return plan_and_execute_impl(should_cancel);
+    }, should_cancel);
+}
+
+ErrorCode ArmController::async_plan_and_execute(CancelChecker should_cancel, std::function<void(ErrorCode)> callback) {
+    return start_async_work([this, should_cancel]() {
+        return plan_and_execute_impl(should_cancel);
+    }, std::move(callback));
+}
+
 void ArmController::stop() {
     _arm_.stop();
     ROS_INFO("已停止当前运动");
 }
 
+/**
+ * @brief 对轨迹做时间参数化
+ * @param trajectory 轨迹输入输出
+ * @param method 时间参数化方法
+ * @param vel_scale 速度缩放
+ * @param acc_scale 加速度缩放
+ * @return 错误码
+ */
 /**
  * @brief 对轨迹做时间参数化
  * @param trajectory 轨迹输入输出
@@ -629,24 +573,7 @@ DescartesResult ArmController::set_bezier_curve(const TargetVariant& start, cons
  * @return 错误码
  */
 ErrorCode ArmController::execute(const moveit_msgs::RobotTrajectory& trajectory) {
-    if(_is_planning_or_executing_) {
-        ROS_WARN("当前已有异步任务正在执行，无法执行新轨迹");
-        return ErrorCode::ASYNC_TASK_RUNNING;
-    }
-
-    ROS_INFO("正在按预设轨迹执行...");
-
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
-    plan.trajectory_ = trajectory;
-
-    moveit::core::MoveItErrorCode err_code = _arm_.execute(plan);
-    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
-        ROS_WARN("执行失败，错误码：%d", err_code.val);
-        return ErrorCode::EXECUTION_FAILED;
-    }
-
-    ROS_INFO("执行成功");
-    return ErrorCode::SUCCESS;
+    return execute_trajectory_checked(trajectory, CancelChecker{});
 }
 
 /**
@@ -656,38 +583,24 @@ ErrorCode ArmController::execute(const moveit_msgs::RobotTrajectory& trajectory)
  * @return 错误码
  */
 ErrorCode ArmController::async_execute(const moveit_msgs::RobotTrajectory& trajectory, std::function<void(ErrorCode)> callback) {
-    if(_is_planning_or_executing_) {
-        ROS_WARN("当前已有异步任务正在执行，请稍后再试");
-        return ErrorCode::ASYNC_TASK_RUNNING;
-    }
-
-    if(_async_thread_.joinable()) {
-        _async_thread_.join();
-    }
-
-    _is_planning_or_executing_ = true;
-    ROS_INFO("正在异步按预设轨迹执行...");
-
-    _async_thread_ = std::thread([this, trajectory, callback]() {
-        moveit::planning_interface::MoveGroupInterface::Plan plan;
-        plan.trajectory_ = trajectory;
-
-        moveit::core::MoveItErrorCode err_code = _arm_.execute(plan);
-        if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
-            ROS_WARN("异步执行失败，错误码：%d", err_code.val);
-            _is_planning_or_executing_ = false;
-            if(callback) callback(ErrorCode::EXECUTION_FAILED);
-        }
-        else {
-            ROS_INFO("异步执行成功");
-            _is_planning_or_executing_ = false;
-            if(callback) callback(ErrorCode::SUCCESS);
-        }
-        });
-
-    return ErrorCode::SUCCESS;
+    return async_execute(trajectory, CancelChecker{}, std::move(callback));
 }
 
+ErrorCode ArmController::execute_trajectory_checked(const moveit_msgs::RobotTrajectory& trajectory, CancelChecker should_cancel) {
+    return run_async_and_wait([this, trajectory, should_cancel]() {
+        return execute_trajectory_impl(trajectory, should_cancel);
+    }, should_cancel);
+}
+
+ErrorCode ArmController::async_execute(const moveit_msgs::RobotTrajectory& trajectory, CancelChecker should_cancel, std::function<void(ErrorCode)> callback) {
+    return start_async_work([this, trajectory, should_cancel]() {
+        return execute_trajectory_impl(trajectory, should_cancel);
+    }, std::move(callback));
+}
+
+/**
+ * @brief 添加姿态约束
+ */
 /**
  * @brief 添加姿态约束
  */
@@ -782,7 +695,16 @@ void ArmController::clear_constraints() {
  * @brief 查询异步任务状态
  */
 bool ArmController::is_planning_or_executing() const {
-    return _is_planning_or_executing_;
+    return _is_planning_or_executing_.load();
+}
+
+bool ArmController::cancel_requested() const {
+    return _cancel_requested_.load();
+}
+
+void ArmController::request_cancel() {
+    _cancel_requested_.store(true);
+    _arm_.stop();
 }
 
 /**
@@ -790,16 +712,18 @@ bool ArmController::is_planning_or_executing() const {
  * @return 错误码
  */
 ErrorCode ArmController::cancel_async() {
-    if(!_is_planning_or_executing_) {
-        ROS_INFO("当前没有正在进行的异步任务");
-        return ErrorCode::SUCCESS;
-    }
-
-    ROS_INFO("正在取消异步任务...");
-    _arm_.stop();
+    request_cancel();
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 在当前姿态基础上相对旋转 RPY 角度并转换为四元数（底座坐标系）
+ * @param q_in 当前姿态四元数
+ * @param roll 旋转角度（弧度）
+ * @param pitch 旋转角度（弧度）
+ * @param yaw 旋转角度（弧度）
+ * @return 旋转后的姿态四元数
+ */
 /**
  * @brief 在当前姿态基础上相对旋转 RPY 角度并转换为四元数（底座坐标系）
  * @param q_in 当前姿态四元数
@@ -1084,6 +1008,247 @@ ErrorCode ArmController::reset_to_zero() {
     }
 
     return plan_and_execute();
+}
+
+bool ArmController::should_cancel(const CancelChecker& should_cancel_fn) const {
+    return _cancel_requested_.load() || static_cast<bool>(should_cancel_fn && should_cancel_fn());
+}
+
+void ArmController::reset_cancel_state() {
+    _cancel_requested_.store(false);
+    _async_done_.store(true);
+    _async_result_.store(static_cast<int>(ErrorCode::SUCCESS));
+}
+
+ErrorCode ArmController::start_async_work(AsyncWork work, std::function<void(ErrorCode)> callback) {
+    if(_is_planning_or_executing_.load()) {
+        ROS_WARN("当前已有异步任务正在执行，请稍后再试");
+        return ErrorCode::ASYNC_TASK_RUNNING;
+    }
+
+    if(_async_thread_.joinable()) {
+        _async_thread_.join();
+    }
+
+    reset_cancel_state();
+    _async_done_.store(false);
+    _async_result_.store(static_cast<int>(ErrorCode::FAILURE));
+    _is_planning_or_executing_.store(true);
+
+    _async_thread_ = std::thread([this, work = std::move(work), callback = std::move(callback)]() mutable {
+        ErrorCode result = ErrorCode::FAILURE;
+        try {
+            result = work ? work() : ErrorCode::FAILURE;
+        }
+        catch(const std::exception& e) {
+            ROS_ERROR("异步任务异常：%s", e.what());
+            result = ErrorCode::FAILURE;
+        }
+        catch(...) {
+            ROS_ERROR("异步任务发生未知异常");
+            result = ErrorCode::FAILURE;
+        }
+
+        if(_cancel_requested_.load() && result != ErrorCode::SUCCESS) {
+            result = ErrorCode::CANCELLED;
+        }
+
+        _async_result_.store(static_cast<int>(result));
+        _async_done_.store(true);
+        _is_planning_or_executing_.store(false);
+        _async_cv_.notify_all();
+
+        if(callback) callback(result);
+    });
+
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode ArmController::wait_async_result(CancelChecker should_cancel_fn) {
+    using namespace std::chrono_literals;
+
+    std::unique_lock<std::mutex> lock(_async_mutex_);
+    while(!_async_done_.load()) {
+        if(should_cancel(should_cancel_fn)) {
+            lock.unlock();
+            request_cancel();
+            lock.lock();
+        }
+        _async_cv_.wait_for(lock, 20ms, [this]() { return _async_done_.load(); });
+    }
+    lock.unlock();
+
+    if(_async_thread_.joinable()) {
+        _async_thread_.join();
+    }
+
+    const bool canceled = should_cancel(should_cancel_fn) || _cancel_requested_.load();
+    const ErrorCode result = static_cast<ErrorCode>(_async_result_.load());
+
+    // 取消结果已经通过返回值传递给上层，这里顺手清理内部取消态，
+    // 防止下一轮新的 checked 操作被上一轮残留状态直接短路。
+    if(canceled) {
+        reset_cancel_state();
+        return ErrorCode::CANCELLED;
+    }
+
+    reset_cancel_state();
+    return result;
+}
+
+ErrorCode ArmController::run_async_and_wait(AsyncWork work, CancelChecker should_cancel_fn) {
+    const bool external_cancel = static_cast<bool>(should_cancel_fn && should_cancel_fn());
+
+    // 上一轮取消处理完成后，若当前没有异步任务在跑，允许清掉“陈旧的内部取消标志”。
+    // 否则下一轮新的同步/受检操作会在 start_async_work() 之前就被 should_cancel() 直接拦掉。
+    if(!external_cancel && !_is_planning_or_executing_.load() && _cancel_requested_.load()) {
+        reset_cancel_state();
+    }
+
+    if(should_cancel(should_cancel_fn)) {
+        return ErrorCode::CANCELLED;
+    }
+
+    ErrorCode code = start_async_work(std::move(work), nullptr);
+    if(code != ErrorCode::SUCCESS) {
+        return code;
+    }
+
+    return wait_async_result(should_cancel_fn);
+}
+
+ErrorCode ArmController::plan_impl(moveit::planning_interface::MoveGroupInterface::Plan& plan, const CancelChecker& should_cancel_fn) {
+    if(should_cancel(should_cancel_fn)) {
+        return ErrorCode::CANCELLED;
+    }
+
+    ROS_INFO("正在规划...");
+    moveit::core::MoveItErrorCode err_code = _arm_.plan(plan);
+
+    if(should_cancel(should_cancel_fn)) {
+        _arm_.stop();
+        return ErrorCode::CANCELLED;
+    }
+
+    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+        ROS_WARN("规划失败，错误码：%d", err_code.val);
+        return ErrorCode::PLANNING_FAILED;
+    }
+
+    ROS_INFO("规划成功");
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode ArmController::execute_plan_impl(const moveit::planning_interface::MoveGroupInterface::Plan& plan, const CancelChecker& should_cancel_fn) {
+    if(should_cancel(should_cancel_fn)) {
+        return ErrorCode::CANCELLED;
+    }
+
+    ROS_INFO("正在执行规划结果...");
+    moveit::core::MoveItErrorCode err_code = _arm_.execute(plan);
+
+    if(should_cancel(should_cancel_fn)) {
+        _arm_.stop();
+        return ErrorCode::CANCELLED;
+    }
+
+    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+        ROS_WARN("执行失败，错误码：%d", err_code.val);
+        return ErrorCode::EXECUTION_FAILED;
+    }
+
+    ROS_INFO("执行成功");
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode ArmController::plan_and_execute_impl(const CancelChecker& should_cancel_fn) {
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    ErrorCode code = plan_impl(plan, should_cancel_fn);
+    if(code != ErrorCode::SUCCESS) return code;
+    return execute_plan_impl(plan, should_cancel_fn);
+}
+
+ErrorCode ArmController::execute_trajectory_impl(const moveit_msgs::RobotTrajectory& trajectory, const CancelChecker& should_cancel_fn) {
+    if(should_cancel(should_cancel_fn)) {
+        return ErrorCode::CANCELLED;
+    }
+
+    ROS_INFO("正在按预设轨迹执行...");
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    plan.trajectory_ = trajectory;
+
+    moveit::core::MoveItErrorCode err_code = _arm_.execute(plan);
+
+    if(should_cancel(should_cancel_fn)) {
+        _arm_.stop();
+        return ErrorCode::CANCELLED;
+    }
+
+    if(err_code != moveit::core::MoveItErrorCode::SUCCESS) {
+        ROS_WARN("执行失败，错误码：%d", err_code.val);
+        return ErrorCode::EXECUTION_FAILED;
+    }
+
+    ROS_INFO("执行成功");
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode ArmController::plan_target_impl(const TargetVariant& target, moveit::planning_interface::MoveGroupInterface::Plan& plan, const CancelChecker& should_cancel_fn) {
+    if(should_cancel(should_cancel_fn)) {
+        return ErrorCode::CANCELLED;
+    }
+
+    clear_constraints();
+    clear_target();
+
+    ErrorCode code = set_target(target);
+    if(code != ErrorCode::SUCCESS) {
+        clear_target();
+        return code;
+    }
+
+    code = plan_impl(plan, should_cancel_fn);
+    clear_target();
+    return code;
+}
+
+ErrorCode ArmController::plan_target_and_execute_impl(const TargetVariant& target, const CancelChecker& should_cancel_fn) {
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    ErrorCode code = plan_target_impl(target, plan, should_cancel_fn);
+    if(code != ErrorCode::SUCCESS) return code;
+    return execute_plan_impl(plan, should_cancel_fn);
+}
+
+ErrorCode ArmController::plan_target_checked(const TargetVariant& target, moveit::planning_interface::MoveGroupInterface::Plan& plan, CancelChecker should_cancel_fn) {
+    const bool external_cancel = static_cast<bool>(should_cancel_fn && should_cancel_fn());
+
+    // 与 run_async_and_wait() 同理：新一轮任务开始前，若外部未取消且当前不在执行中，
+    // 则允许清理上一轮残留的内部取消标志，避免直接误判为 CANCELLED。
+    if(!external_cancel && !_is_planning_or_executing_.load() && _cancel_requested_.load()) {
+        reset_cancel_state();
+    }
+
+    if(should_cancel(should_cancel_fn)) {
+        return ErrorCode::CANCELLED;
+    }
+
+    clear_target();
+    ErrorCode code = set_target(target);
+    if(code != ErrorCode::SUCCESS) {
+        clear_target();
+        return code;
+    }
+
+    code = plan_checked(plan, should_cancel_fn);
+    clear_target();
+    return code;
+}
+
+ErrorCode ArmController::plan_target_and_execute_checked(const TargetVariant& target, CancelChecker should_cancel_fn) {
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    ErrorCode code = plan_target_checked(target, plan, should_cancel_fn);
+    if(code != ErrorCode::SUCCESS) return code;
+    return execute_checked(plan, should_cancel_fn);
 }
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //

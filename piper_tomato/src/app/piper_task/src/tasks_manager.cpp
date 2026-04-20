@@ -134,9 +134,7 @@ tl::optional<geometry_msgs::Pose> exact_pick_pose_from_target(const TargetVarian
  * @param current_pose 当前末端位姿（base_link）
  * @return 候选最终采摘位姿集合
  */
-std::vector<geometry_msgs::Pose> build_pick_pose_candidates(
-    const TargetVariant& target_in_base,
-    const geometry_msgs::Pose& current_pose) {
+std::vector<geometry_msgs::Pose> build_pick_pose_candidates(const TargetVariant& target_in_base, const geometry_msgs::Pose& current_pose) {
 
     std::vector<geometry_msgs::Pose> out;
 
@@ -193,10 +191,7 @@ double joint_l1_distance(const std::vector<double>& a, const std::vector<double>
  * @param extra_penalty 额外惩罚
  * @return 分数，越小越好
  */
-double score_plan_with_current_joints(
-    const MoveItPlan& plan,
-    const std::vector<double>& current_joints,
-    double extra_penalty = 0.0) {
+double score_plan_with_current_joints(const MoveItPlan& plan, const std::vector<double>& current_joints, double extra_penalty = 0.0) {
 
     const auto& jt = plan.trajectory_.joint_trajectory;
     if(jt.points.empty()) return std::numeric_limits<double>::infinity();
@@ -541,19 +536,19 @@ ErrorCode TasksManager::execute_task(Task& task) {
 ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
     ROS_INFO("开始执行任务 ID %u: %s", task.id, task.desc.c_str());
 
-    auto is_task_cancel_requested = [&]() -> bool {
+    auto cancel_checker = [&]() -> bool {
         return ctx && ctx->cancel_requested && ctx->cancel_requested->load();
         };
 
     if(task.type == TaskType::MOVE_ONLY) {
-        if(is_task_cancel_requested()) {
-            ROS_INFO("任务 ID %u 执行前收到取消请求", task.id);
-            return ErrorCode::CANCELLED;
-        }
-
         if(!task.target) {
             ROS_WARN("任务 ID %u 没有设置目标，无法执行", task.id);
             return ErrorCode::INVALID_PARAMETER;
+        }
+
+        if(cancel_checker()) {
+            ROS_INFO("任务 ID %u 执行前收到取消请求", task.id);
+            return ErrorCode::CANCELLED;
         }
 
         TargetVariant target_in_base;
@@ -563,44 +558,16 @@ ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
             return code;
         }
 
-        if(is_task_cancel_requested()) {
-            ROS_INFO("任务 ID %u 设置目标前收到取消请求", task.id);
-            return ErrorCode::CANCELLED;
-        }
-
         report_pick_feedback(task, PickStage::PICK_MOVE_TO_PRE_PICK, false, ErrorCode::SUCCESS, "移动到目标位", ctx);
-
-        code = _arm_->set_target(target_in_base);
-        if(code != ErrorCode::SUCCESS) {
-            report_pick_feedback(task, PickStage::PICK_FAILED, false, code, "移动到目标位：设置目标失败", ctx);
-            ROS_WARN("执行任务 ID %u 失败，无法设置目标，错误码：%s", task.id, err_to_string(code).c_str());
+        code = _arm_->plan_target_and_execute_checked(target_in_base, cancel_checker);
+        if(code == ErrorCode::CANCELLED) {
+            ROS_INFO("任务 ID %u 在 MOVE_ONLY 阶段被取消", task.id);
             return code;
         }
-
-        if(is_task_cancel_requested()) {
-            ROS_INFO("任务 ID %u 设置目标后收到取消请求", task.id);
-            _arm_->clear_target();
-            _arm_->cancel_async();
-            _arm_->stop();
-            return ErrorCode::CANCELLED;
-        }
-
-        const ErrorCode exec_code = _arm_->plan_and_execute();
-        if(exec_code != ErrorCode::SUCCESS) {
-            if(is_task_cancel_requested()) {
-                ROS_INFO("任务 ID %u 在规划/执行过程中被取消", task.id);
-                _arm_->cancel_async();
-                _arm_->stop();
-                return ErrorCode::CANCELLED;
-            }
-            report_pick_feedback(task, PickStage::PICK_FAILED, false, exec_code, "移动到目标位：执行失败", ctx);
-            ROS_WARN("执行任务 ID %u 失败，无法规划执行，错误码：%s", task.id, err_to_string(exec_code).c_str());
-            return exec_code;
-        }
-
-        if(is_task_cancel_requested()) {
-            ROS_INFO("任务 ID %u 执行完成后检测到取消请求", task.id);
-            return ErrorCode::CANCELLED;
+        if(code != ErrorCode::SUCCESS) {
+            report_pick_feedback(task, PickStage::PICK_FAILED, false, code, "移动到目标位：执行失败", ctx);
+            ROS_WARN("执行任务 ID %u 失败，错误码：%s", task.id, err_to_string(code).c_str());
+            return code;
         }
 
         report_pick_feedback(task, PickStage::PICK_MOVE_TO_PRE_PICK, true, ErrorCode::SUCCESS, "移动到目标位：完成", ctx);
@@ -1038,10 +1005,7 @@ void TasksManager::report_pick_feedback(Task& task, PickStage stage, bool ok, Er
  * @param frozen_frame 输出冻结后的坐标系
  * @return 错误码
  */
-ErrorCode TasksManager::freeze_target_to_base(const TargetVariant& target,
-    const std::string& target_frame,
-    TargetVariant& frozen_target,
-    std::string& frozen_frame) const {
+ErrorCode TasksManager::freeze_target_to_base(const TargetVariant& target, const std::string& target_frame, TargetVariant& frozen_target, std::string& frozen_frame) const {
 
     std::string source_frame;
     const ErrorCode code = std::visit(variant_visitor{
@@ -1098,10 +1062,7 @@ ErrorCode TasksManager::freeze_target_to_base(const TargetVariant& target,
  * @param frozen_frame 输出冻结后的坐标系
  * @return 错误码
  */
-ErrorCode TasksManager::freeze_target_to_base(const tl::optional<TargetVariant>& target,
-    const std::string& target_frame,
-    tl::optional<TargetVariant>& frozen_target,
-    std::string& frozen_frame) const {
+ErrorCode TasksManager::freeze_target_to_base(const tl::optional<TargetVariant>& target, const std::string& target_frame, tl::optional<TargetVariant>& frozen_target, std::string& frozen_frame) const {
     frozen_frame = _arm_->get_base_link();
     if(!target) {
         frozen_target = tl::nullopt;
@@ -1180,30 +1141,25 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     pp.canceled = false;
     pp.current_stage = PickStage::PICK_IDLE;
 
-    auto check_cancel = [&]() -> ErrorCode {
-        if(!is_cancel_requested(task, ctx)) return ErrorCode::SUCCESS;
+    auto cancel_checker = [&]() -> bool {
+        return is_cancel_requested(task, ctx);
+        };
 
-        pp.canceled = true;
-        pp.completed = false;
-        report_pick_feedback(task, PickStage::PICK_CANCELED, false, ErrorCode::CANCELLED, "任务已取消", ctx);
+    auto handle_cancel = [&]() -> ErrorCode {
+        if(!pp.canceled) {
+            pp.canceled = true;
+            pp.completed = false;
+            pp.current_stage = PickStage::PICK_CANCELED;
+            report_pick_feedback(task, PickStage::PICK_CANCELED, false, ErrorCode::CANCELLED, "任务已取消", ctx);
+        }
+
+        _arm_->cancel_async();
+        _arm_->stop();
 
         if(pp.go_safe_after_cancel) {
-            _arm_->cancel_async();
-            for(int i = 0; i < 50; ++i) {
-                if(!_arm_->is_planning_or_executing()) break;
-                ros::Duration(0.02).sleep();
-            }
-
             const ErrorCode safe_code = _arm_->home();
             if(safe_code != ErrorCode::SUCCESS) {
                 ROS_WARN("任务 ID %u 取消后回安全位失败，错误码：%s", task.id, err_to_string(safe_code).c_str());
-            }
-
-            if(_eef_) {
-                auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
-                if(gripper_if) {
-                    gripper_if.value().close();
-                }
             }
         }
 
@@ -1215,189 +1171,87 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         pp.completed = false;
         report_pick_feedback(task, PickStage::PICK_FAILED, false, ec, text, ctx);
         ROS_WARN("任务 ID %u 在阶段[%s]失败：%s (%s)",
-            task.id, pick_stage_to_string(stage), text.c_str(), err_to_string(ec).c_str());
+            task.id,
+            pick_stage_to_string(stage),
+            text.c_str(),
+            err_to_string(ec).c_str());
         return ec;
         };
 
-    auto run_with_retry = [&](const std::function<ErrorCode()>& fn, PickStage stage) -> ErrorCode {
-        ErrorCode last = ErrorCode::FAILURE;
-        const uint16_t total_attempts = static_cast<uint16_t>(pp.retry_times) + 1;
+    auto run_stage = [&](PickStage stage,
+        const std::string& text,
+        const std::function<ErrorCode()>& action) -> ErrorCode {
+            const uint16_t total_attempts = static_cast<uint16_t>(pp.retry_times) + 1;
+            ErrorCode last = ErrorCode::FAILURE;
 
-        for(uint16_t attempt = 1; attempt <= total_attempts; ++attempt) {
-            ErrorCode cancel_code = check_cancel();
-            if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
+            for(uint16_t attempt = 1; attempt <= total_attempts; ++attempt) {
+                if(cancel_checker()) return handle_cancel();
 
-            last = fn();
-            if(last == ErrorCode::SUCCESS) return ErrorCode::SUCCESS;
-            if(last == ErrorCode::CANCELLED) return last;
+                pp.current_stage = stage;
+                report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
 
-            cancel_code = check_cancel();
-            if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
-
-            ROS_WARN("任务 ID %u 阶段[%s] 第 %u/%u 次尝试失败：%s",
-                task.id,
-                pick_stage_to_string(stage),
-                static_cast<unsigned int>(attempt),
-                static_cast<unsigned int>(total_attempts),
-                err_to_string(last).c_str());
-        }
-
-        return last;
-        };
-
-    auto exec_planned_move = [&](const MoveItPlan& plan,
-        PickStage stage,
-        const std::string& text) -> ErrorCode {
-            ErrorCode cancel_code = check_cancel();
-            if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
-
-            report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
-
-            std::atomic<bool> done{ false };
-            std::atomic<int> result_code{ static_cast<int>(ErrorCode::FAILURE) };
-
-            ErrorCode ec = _arm_->async_execute(plan.trajectory_, [&](ErrorCode async_code) {
-                result_code.store(static_cast<int>(async_code));
-                done.store(true);
-                });
-            if(ec != ErrorCode::SUCCESS) {
-                return fail_stage(stage, ec, text + "：启动异步执行失败");
-            }
-
-            ros::Rate rate(50.0);
-            while(ros::ok() && !done.load()) {
-                if(is_cancel_requested(task, ctx)) {
-                    _arm_->cancel_async();
-                    return check_cancel();
+                last = action();
+                if(last == ErrorCode::SUCCESS) {
+                    report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text + "：完成", ctx);
+                    return ErrorCode::SUCCESS;
                 }
-                rate.sleep();
+                if(last == ErrorCode::CANCELLED || cancel_checker()) {
+                    return handle_cancel();
+                }
+
+                if(attempt < total_attempts) {
+                    ROS_WARN("任务 ID %u 阶段[%s] 第 %u/%u 次尝试失败：%s",
+                        task.id,
+                        pick_stage_to_string(stage),
+                        static_cast<unsigned int>(attempt),
+                        static_cast<unsigned int>(total_attempts),
+                        err_to_string(last).c_str());
+                }
             }
 
-            ec = static_cast<ErrorCode>(result_code.load());
-            if(ec != ErrorCode::SUCCESS) {
-                cancel_code = check_cancel();
-                if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
-                return fail_stage(stage, ec, text + "：执行失败");
-            }
-
-            report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text + "：完成", ctx);
-            return ErrorCode::SUCCESS;
+            return fail_stage(stage, last, text + "：执行失败");
         };
 
-    auto plan_pose_once = [&](const geometry_msgs::Pose& pose, MoveItPlan& plan) -> ErrorCode {
-        ErrorCode cancel_code = check_cancel();
-        if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
-
-        _arm_->clear_constraints();
-        _arm_->clear_target();
-
-        const ErrorCode set_code = _arm_->set_target(TargetVariant{ pose });
-        if(set_code != ErrorCode::SUCCESS) {
-            _arm_->clear_target();
-            return set_code;
-        }
-
-        cancel_code = check_cancel();
-        if(cancel_code != ErrorCode::SUCCESS) {
-            _arm_->clear_target();
-            _arm_->cancel_async();
-            _arm_->stop();
-            return cancel_code;
-        }
-
-        const ErrorCode plan_code = _arm_->plan(plan);
-        _arm_->clear_target();
-        if(is_cancel_requested(task, ctx)) {
-            _arm_->cancel_async();
-            _arm_->stop();
-            return check_cancel();
-        }
-        return plan_code;
+    auto exec_gripper_stage = [&](bool open, PickStage stage, const std::string& text) -> ErrorCode {
+        return run_stage(stage, text, [&]() -> ErrorCode {
+            if(!_eef_) return ErrorCode::INVALID_INTERFACE;
+            auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
+            if(!gripper_if) return ErrorCode::INVALID_INTERFACE;
+            return open ? gripper_if.value().open() : gripper_if.value().close();
+            });
         };
 
-    auto exec_cartesian_line = [&](const geometry_msgs::Pose& start_pose,
+    auto exec_cartesian_stage = [&](const geometry_msgs::Pose& start_pose,
         const geometry_msgs::Pose& end_pose,
         PickStage stage,
         const std::string& text) -> ErrorCode {
-            ErrorCode cancel_code = check_cancel();
-            if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
-
-            report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
-
-            const DescartesResult dr = _arm_->set_line(
-                TargetVariant{ start_pose },
-                TargetVariant{ end_pose },
-                pp.cartesian_eef_step,
-                TimeParamMethod::TOTG,
-                pp.cartesian_vel_scale,
-                pp.cartesian_acc_scale);
-
-            if(dr.error_code != ErrorCode::SUCCESS) {
-                cancel_code = check_cancel();
-                if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
-                return fail_stage(stage, dr.error_code, text + "：笛卡尔规划失败");
-            }
-
-            std::atomic<bool> done{ false };
-            std::atomic<int> result_code{ static_cast<int>(ErrorCode::FAILURE) };
-
-            ErrorCode ec = _arm_->async_execute(dr.trajectory, [&](ErrorCode async_code) {
-                result_code.store(static_cast<int>(async_code));
-                done.store(true);
-                });
-            if(ec != ErrorCode::SUCCESS) {
-                return fail_stage(stage, ec, text + "：启动异步执行失败");
-            }
-
-            ros::Rate rate(50.0);
-            while(ros::ok() && !done.load()) {
-                if(is_cancel_requested(task, ctx)) {
-                    _arm_->cancel_async();
-                    return check_cancel();
+            return run_stage(stage, text, [&]() -> ErrorCode {
+                const DescartesResult dr = _arm_->set_line(
+                    TargetVariant{ start_pose },
+                    TargetVariant{ end_pose },
+                    pp.cartesian_eef_step,
+                    TimeParamMethod::TOTG,
+                    pp.cartesian_vel_scale,
+                    pp.cartesian_acc_scale);
+                if(dr.error_code != ErrorCode::SUCCESS) {
+                    return dr.error_code;
                 }
-                rate.sleep();
-            }
-
-            ec = static_cast<ErrorCode>(result_code.load());
-            if(ec != ErrorCode::SUCCESS) {
-                cancel_code = check_cancel();
-                if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
-                return fail_stage(stage, ec, text + "：执行失败");
-            }
-
-            report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text + "：完成", ctx);
-            return ErrorCode::SUCCESS;
+                return _arm_->execute_trajectory_checked(dr.trajectory, cancel_checker);
+                });
         };
 
-    auto exec_eef = [&](bool open, PickStage stage, const std::string& text) -> ErrorCode {
-        ErrorCode cancel_code = check_cancel();
-        if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
-
-        if(!_eef_) return fail_stage(stage, ErrorCode::INVALID_INTERFACE, text + "：末端执行器未初始化");
-        auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
-        if(!gripper_if) return fail_stage(stage, ErrorCode::INVALID_INTERFACE, text + "：末端执行器不支持夹爪接口");
-
-        report_pick_feedback(task, stage, false, ErrorCode::SUCCESS, text, ctx);
-        const ErrorCode ec = open ? gripper_if.value().open() : gripper_if.value().close();
-        if(ec != ErrorCode::SUCCESS) return fail_stage(stage, ec, text + "：执行失败");
-        report_pick_feedback(task, stage, true, ErrorCode::SUCCESS, text + "：完成", ctx);
-        return ErrorCode::SUCCESS;
-        };
+    ErrorCode code = ErrorCode::SUCCESS;
 
     if(pp.use_eef) {
-        if(!_eef_) return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_INTERFACE, "末端执行器未初始化，无法执行采摘任务");
-        auto gripper_if = find_eef_interface<GripperEefInterface>(*_eef_);
-        if(!gripper_if) return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_INTERFACE, "末端执行器不支持夹爪接口，无法执行采摘任务");
-
-        gripper_if.value().open();
-        report_pick_feedback(task, PickStage::PICK_START, true, ErrorCode::SUCCESS, "开始", ctx);
+        code = exec_gripper_stage(true, PickStage::PICK_START, "开始");
+        if(code != ErrorCode::SUCCESS) return code;
     }
     else {
+        pp.current_stage = PickStage::PICK_START;
         report_pick_feedback(task, PickStage::PICK_START, true, ErrorCode::SUCCESS, "开始：跳过末端初始化动作", ctx);
     }
 
-    ErrorCode code = check_cancel();
-    if(code != ErrorCode::SUCCESS) return code;
+    if(cancel_checker()) return handle_cancel();
 
     TargetVariant target_in_base;
     code = get_frozen_task_target_in_base(task, target_in_base);
@@ -1407,16 +1261,14 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
 
     const geometry_msgs::Pose current_pose = _arm_->get_current_pose();
     const std::vector<double> current_joints = _arm_->get_current_joints();
-
-    PickApproachChoice best_choice;
     const std::vector<geometry_msgs::Pose> pick_candidates = build_pick_pose_candidates(target_in_base, current_pose);
     if(pick_candidates.empty()) {
         return fail_stage(PickStage::PICK_START, ErrorCode::INVALID_TARGET_TYPE, "PICK 任务目标必须是 Pose / Point / PoseStamped");
     }
 
+    PickApproachChoice best_choice;
     for(std::size_t i = 0; i < pick_candidates.size(); ++i) {
-        code = check_cancel();
-        if(code != ErrorCode::SUCCESS) return code;
+        if(cancel_checker()) return handle_cancel();
 
         const geometry_msgs::Pose& final_pick_pose = pick_candidates[i];
         const geometry_msgs::Pose pre_pick_pose = pp.use_pre_pick
@@ -1424,9 +1276,9 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
             : final_pick_pose;
 
         MoveItPlan plan;
-        const ErrorCode plan_code = plan_pose_once(pre_pick_pose, plan);
+        const ErrorCode plan_code = _arm_->plan_target_checked(TargetVariant{ pre_pick_pose }, plan, cancel_checker);
         if(plan_code == ErrorCode::CANCELLED) {
-            return plan_code;
+            return handle_cancel();
         }
         if(plan_code != ErrorCode::SUCCESS) {
             continue;
@@ -1434,7 +1286,6 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
 
         const double penalty = static_cast<double>(i) * 0.1;
         const double score = score_plan_with_current_joints(plan, current_joints, penalty);
-
         if(score < best_choice.score) {
             best_choice.valid = true;
             best_choice.final_pick_pose = final_pick_pose;
@@ -1445,74 +1296,46 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     }
 
     if(!best_choice.valid) {
-        return fail_stage(
-            PickStage::PICK_MOVE_TO_PRE_PICK,
+        return fail_stage(PickStage::PICK_MOVE_TO_PRE_PICK,
             ErrorCode::PLANNING_FAILED,
             pp.use_pre_pick ? "未找到可达的预采摘位姿" : "未找到可达的采摘位姿");
     }
 
-    code = run_with_retry(
-        [&]() {
-            return exec_planned_move(
-                best_choice.pre_pick_plan,
-                PickStage::PICK_MOVE_TO_PRE_PICK,
-                pp.use_pre_pick ? "移动到预采摘位" : "移动到采摘位");
-        },
-        PickStage::PICK_MOVE_TO_PRE_PICK);
-    if(code != ErrorCode::SUCCESS) return code;
-
-    code = check_cancel();
+    code = run_stage(
+        PickStage::PICK_MOVE_TO_PRE_PICK,
+        pp.use_pre_pick ? "移动到预采摘位" : "移动到采摘位",
+        [&]() -> ErrorCode {
+            return _arm_->execute_checked(best_choice.pre_pick_plan, cancel_checker);
+        });
     if(code != ErrorCode::SUCCESS) return code;
 
     if(pp.use_pre_pick) {
-        code = run_with_retry(
-            [&]() {
-                return exec_cartesian_line(
-                    best_choice.pre_pick_pose,
-                    best_choice.final_pick_pose,
-                    PickStage::PICK_APPROACH_PICK,
-                    "直线接近采摘位");
-            },
-            PickStage::PICK_APPROACH_PICK);
+        code = exec_cartesian_stage(
+            best_choice.pre_pick_pose,
+            best_choice.final_pick_pose,
+            PickStage::PICK_APPROACH_PICK,
+            "直线接近采摘位");
         if(code != ErrorCode::SUCCESS) return code;
     }
 
-    code = check_cancel();
-    if(code != ErrorCode::SUCCESS) return code;
-
     if(pp.use_eef) {
-        code = run_with_retry(
-            [&]() {
-                return exec_eef(false, PickStage::PICK_PICKING, "采摘中");
-            },
-            PickStage::PICK_PICKING);
+        code = exec_gripper_stage(false, PickStage::PICK_PICKING, "采摘中");
         if(code != ErrorCode::SUCCESS) return code;
     }
     else {
+        pp.current_stage = PickStage::PICK_PICKING;
         report_pick_feedback(task, PickStage::PICK_PICKING, true, ErrorCode::SUCCESS, "采摘中：跳过末端动作", ctx);
     }
 
-    code = check_cancel();
-    if(code != ErrorCode::SUCCESS) return code;
-
     if(pp.use_pre_pick) {
-        const geometry_msgs::Pose retreat_pose =
-            pose_with_local_z_offset(best_choice.final_pick_pose, -std::abs(pp.retreat_offset));
-
-        code = run_with_retry(
-            [&]() {
-                return exec_cartesian_line(
-                    best_choice.final_pick_pose,
-                    retreat_pose,
-                    PickStage::PICK_RETREAT_FROM_PICK,
-                    "直线退出采摘位");
-            },
-            PickStage::PICK_RETREAT_FROM_PICK);
+        const geometry_msgs::Pose retreat_pose = pose_with_local_z_offset(best_choice.final_pick_pose, -std::abs(pp.retreat_offset));
+        code = exec_cartesian_stage(
+            best_choice.final_pick_pose,
+            retreat_pose,
+            PickStage::PICK_RETREAT_FROM_PICK,
+            "直线退出采摘位");
         if(code != ErrorCode::SUCCESS) return code;
     }
-
-    code = check_cancel();
-    if(code != ErrorCode::SUCCESS) return code;
 
     if(pp.use_place_pose && pp.place_target) {
         TargetVariant place_target_in_base;
@@ -1521,57 +1344,17 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
             return fail_stage(PickStage::PICK_MOVE_TO_PLACE, code, "获取冻结放置目标失败");
         }
 
-        code = run_with_retry(
-            [&]() -> ErrorCode {
-                MoveItPlan place_plan;
-                _arm_->clear_constraints();
-                _arm_->clear_target();
-
-                ErrorCode cancel_code = check_cancel();
-                if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
-
-                ErrorCode ec = _arm_->set_target(place_target_in_base);
-                if(ec != ErrorCode::SUCCESS) {
-                    _arm_->clear_target();
-                    return fail_stage(PickStage::PICK_MOVE_TO_PLACE, ec, "移动到放置位：设置目标失败");
-                }
-
-                cancel_code = check_cancel();
-                if(cancel_code != ErrorCode::SUCCESS) {
-                    _arm_->clear_target();
-                    _arm_->cancel_async();
-                    _arm_->stop();
-                    return cancel_code;
-                }
-
-                ec = _arm_->plan(place_plan);
-                _arm_->clear_target();
-                if(is_cancel_requested(task, ctx)) {
-                    _arm_->cancel_async();
-                    _arm_->stop();
-                    return check_cancel();
-                }
-                if(ec != ErrorCode::SUCCESS) {
-                    return fail_stage(PickStage::PICK_MOVE_TO_PLACE, ec, "移动到放置位：规划失败");
-                }
-
-                return exec_planned_move(place_plan, PickStage::PICK_MOVE_TO_PLACE, "移动到放置位");
-            },
-            PickStage::PICK_MOVE_TO_PLACE);
-        if(code != ErrorCode::SUCCESS) return code;
-
-        code = check_cancel();
+        code = run_stage(PickStage::PICK_MOVE_TO_PLACE, "移动到放置位", [&]() -> ErrorCode {
+            return _arm_->plan_target_and_execute_checked(place_target_in_base, cancel_checker);
+            });
         if(code != ErrorCode::SUCCESS) return code;
 
         if(pp.use_eef) {
-            code = run_with_retry(
-                [&]() {
-                    return exec_eef(true, PickStage::PICK_PLACING, "放置中");
-                },
-                PickStage::PICK_PLACING);
+            code = exec_gripper_stage(true, PickStage::PICK_PLACING, "放置中");
             if(code != ErrorCode::SUCCESS) return code;
         }
         else {
+            pp.current_stage = PickStage::PICK_PLACING;
             report_pick_feedback(task, PickStage::PICK_PLACING, true, ErrorCode::SUCCESS, "放置中：跳过末端动作", ctx);
         }
     }

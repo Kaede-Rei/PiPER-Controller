@@ -18,7 +18,17 @@ namespace piper {
 
 class EefCmdService : public ROSModuleInterface {
 public:
+    /**
+     * @brief EefCmdService 构造函数
+     * @param nh ROS 节点句柄
+     * @param eef 末端执行器
+     * @param dispatcher 命令分发器
+     * @param service_name Service 名称
+     */
     EefCmdService(ros::NodeHandle& nh, std::shared_ptr<EndEffector> eef, std::shared_ptr<EefCmdDispatcher> dispatcher, std::string service_name);
+    /**
+     * @brief EefCmdService 析构函数
+     */
     ~EefCmdService() = default;
 
     EefCmdService(const EefCmdService&) = delete;

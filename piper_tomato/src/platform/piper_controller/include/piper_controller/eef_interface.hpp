@@ -30,9 +30,29 @@ public:
     GripperEefInterface(GripperEefInterface&&) = delete;
     GripperEefInterface& operator=(GripperEefInterface&&) = delete;
 
+    /**
+     * @brief 打开夹爪
+     * @return 错误码
+     */
     virtual ErrorCode open() = 0;
+
+    /**
+     * @brief 关闭夹爪
+     * @return 错误码
+     */
     virtual ErrorCode close() = 0;
+
+    /**
+     * @brief 设置夹爪开合角度
+     * @param angle 目标角度
+     * @return 错误码
+     */
     virtual ErrorCode set_angle(double angle) = 0;
+
+    /**
+     * @brief 获取当前夹爪角度
+     * @return 当前角度，若不可用则返回空值
+     */
     virtual tl::optional<double> get_angle() const = 0;
 };
 
@@ -127,10 +147,32 @@ public:
     IoEefInterface(IoEefInterface&&) = delete;
     IoEefInterface& operator=(IoEefInterface&&) = delete;
 
+    /**
+     * @brief 获取 IO 名称列表
+     * @return IO 名称列表
+     */
     virtual std::vector<std::string> get_io_names() const = 0;
+    /**
+     * @brief 使能指定 IO
+     * @param io_name IO 名称
+     * @return 错误码
+     */
     virtual ErrorCode enable_io(const std::string& io_name) = 0;
+    /**
+     * @brief 失能指定 IO
+     * @param io_name IO 名称
+     * @return 错误码
+     */
     virtual ErrorCode disable_io(const std::string& io_name) = 0;
+    /**
+     * @brief 使能全部 IO
+     * @return 错误码
+     */
     virtual ErrorCode enable_all() = 0;
+    /**
+     * @brief 失能全部 IO
+     * @return 错误码
+     */
     virtual ErrorCode disable_all() = 0;
 };
 
@@ -147,10 +189,35 @@ public:
     PwmEefInterface(PwmEefInterface&&) = delete;
     PwmEefInterface& operator=(PwmEefInterface&&) = delete;
 
+    /**
+     * @brief 获取 PWM 通道名称列表
+     * @return PWM 通道名称列表
+     */
     virtual std::vector<std::string> get_io_names() const = 0;
+    /**
+     * @brief 设置指定 PWM 通道值
+     * @param io_name 通道名称
+     * @param pwm_value PWM 值
+     * @return 错误码
+     */
     virtual ErrorCode set_pwm(const std::string& io_name, double pwm_value) = 0;
+    /**
+     * @brief 设置全部 PWM 通道值
+     * @param pwm_value PWM 值
+     * @return 错误码
+     */
     virtual ErrorCode set_all_pwm(double pwm_value) = 0;
+    /**
+     * @brief 获取指定 PWM 通道值
+     * @param io_name 通道名称
+     * @return PWM 值，若不可用则返回空值
+     */
     virtual tl::optional<double> get_pwm(const std::string& io_name) const = 0;
+    /**
+     * @brief 获取全部 PWM 通道值
+     * @param pwm_values 输出结果
+     * @return 错误码
+     */
     virtual ErrorCode get_all_pwm(std::map<std::string, double>& pwm_values) const = 0;
 };
 
@@ -167,7 +234,16 @@ public:
     ForceFeedbackEefInterface(ForceFeedbackEefInterface&&) = delete;
     ForceFeedbackEefInterface& operator=(ForceFeedbackEefInterface&&) = delete;
 
+    /**
+     * @brief 获取力反馈通道名称列表
+     * @return 力反馈通道名称列表
+     */
     virtual std::vector<std::string> get_force_names() const = 0;
+    /**
+     * @brief 获取指定力反馈值
+     * @param force_name 力反馈通道名称
+     * @return 力反馈值，若不可用则返回空值
+     */
     virtual tl::optional<double> get_force(const std::string& force_name) const = 0;
 };
 

@@ -27,7 +27,17 @@ namespace piper {
 class ArmMoveAction : public ROSModuleInterface {
 public:
     using MoveArmAS = actionlib::SimpleActionServer<piper_msgs2::MoveArmAction>;
+    /**
+     * @brief ArmMoveAction 构造函数
+     * @param nh ROS 节点句柄
+     * @param arm 机械臂控制器
+     * @param dispatcher 命令分发器
+     * @param action_name Action 名称
+     */
     ArmMoveAction(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string action_name);
+    /**
+     * @brief ArmMoveAction 析构函数
+     */
     ~ArmMoveAction() = default;
 
     ArmMoveAction(const ArmMoveAction&) = delete;
@@ -52,7 +62,17 @@ private:
 class SimpleArmMoveAction : public ROSModuleInterface {
 public:
     using MoveArmAS = actionlib::SimpleActionServer<piper_msgs2::SimpleMoveArmAction>;
+    /**
+     * @brief SimpleArmMoveAction 构造函数
+     * @param nh ROS 节点句柄
+     * @param arm 机械臂控制器
+     * @param dispatcher 命令分发器
+     * @param action_name Action 名称
+     */
     SimpleArmMoveAction(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string action_name);
+    /**
+     * @brief SimpleArmMoveAction 析构函数
+     */
     ~SimpleArmMoveAction() = default;
 
     SimpleArmMoveAction(const SimpleArmMoveAction&) = delete;
@@ -76,7 +96,17 @@ private:
  */
 class ArmConfigService : public ROSModuleInterface {
 public:
+    /**
+     * @brief ArmConfigService 构造函数
+     * @param nh ROS 节点句柄
+     * @param arm 机械臂控制器
+     * @param dispatcher 命令分发器
+     * @param service_name Service 名称
+     */
     ArmConfigService(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string service_name);
+    /**
+     * @brief ArmConfigService 析构函数
+     */
     ~ArmConfigService() = default;
 
     ArmConfigService(const ArmConfigService&) = delete;
@@ -99,7 +129,17 @@ private:
  */
 class ArmQueryService : public ROSModuleInterface {
 public:
+    /**
+     * @brief ArmQueryService 构造函数
+     * @param nh ROS 节点句柄
+     * @param arm 机械臂控制器
+     * @param dispatcher 命令分发器
+     * @param service_name Service 名称
+     */
     ArmQueryService(ros::NodeHandle& nh, std::shared_ptr<ArmController> arm, std::shared_ptr<ArmCmdDispatcher> dispatcher, std::string service_name);
+    /**
+     * @brief ArmQueryService 析构函数
+     */
     ~ArmQueryService() = default;
 
     ArmQueryService(const ArmQueryService&) = delete;
