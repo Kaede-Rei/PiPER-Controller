@@ -132,8 +132,8 @@ class TargetSelectionConfig:
 class ResidualCompensationConfig:
     enabled: bool = True
     dx: float = 0.0200
-    dy: float = 0.0070
-    dz: float = 0.0170
+    dy: float = 0.0200
+    dz: float = 0.0100
 
 
 @dataclass(frozen=True)
