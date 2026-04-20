@@ -1122,8 +1122,6 @@ ErrorCode TasksManager::freeze_target_to_base(const tl::optional<TargetVariant>&
  * @return 预计步骤数量
  */
 uint32_t TasksManager::estimate_task_steps(const Task& task) const {
-    // 这里估算的不是“函数调用次数”，而是 Action 层真正会记为一步的
-    // “唯一 task.id + stage 组合数”。同一 stage 的“开始/完成”两次反馈只算一步。
     if(task.type == TaskType::MOVE_ONLY) {
         return task.target ? 1u : 0u;
     }
@@ -1135,18 +1133,18 @@ uint32_t TasksManager::estimate_task_steps(const Task& task) const {
     const auto& pp = *task.pick_params;
 
     uint32_t steps = 0;
-    steps += 1;  // START
-    steps += 1;  // MOVE_TO_PRE_PICK（未启用预采摘时，此阶段承载“直接移动到采摘位”）
-    if(pp.use_pre_pick) steps += 1;  // APPROACH_PICK
-    steps += 1;  // PICKING
-    if(pp.use_pre_pick) steps += 1;  // RETREAT_FROM_PICK
+    steps += 1;
+    steps += 1;
+    if(pp.use_pre_pick) steps += 1;
+    steps += 1;
+    if(pp.use_pre_pick) steps += 1;
 
     if(pp.use_place_pose && pp.place_target) {
-        steps += 1;  // MOVE_TO_PLACE
-        steps += 1;  // PLACING
+        steps += 1;
+        steps += 1;
     }
 
-    steps += 1;  // FINISH
+    steps += 1;
     return steps;
 }
 

@@ -13,7 +13,12 @@ import tf2_ros
 import tf2_geometry_msgs  # noqa: F401
 from tf.transformations import quaternion_from_euler
 from geometry_msgs.msg import PoseStamped, PointStamped
-from piper_msgs2.msg import PickTaskAction, PickTaskGoal
+from piper_msgs2.msg import (
+    PickTaskAction,
+    PickTaskGoal,
+    SimpleMoveArmAction,
+    SimpleMoveArmGoal,
+)
 from pyorbbecsdk import (
     OBAlignMode,
     OBFormat,
@@ -57,6 +62,7 @@ from PyQt5.QtWidgets import (
     QShortcut,
     QScrollArea,
     QSizePolicy,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -94,6 +100,7 @@ class CameraConfig:
 class RosConfig:
     node_name: str = "tomato_picking_gui"
     action_name: str = "/pick_action"
+    simple_move_action_name: str = "/simple_move_arm"
     pick_group_name: str = "gui_pick"
     flange_frame: str = "link6"
     tcp_frame: str = "link_tcp"
@@ -883,6 +890,8 @@ class MainWindow(QMainWindow):
 
         self.ros_available = False
         self.pick_client = None
+        self.simple_move_client = None
+        self.simple_move_available = False
         self.last_request_type = None
 
         self.init_ros()
@@ -918,6 +927,17 @@ class MainWindow(QMainWindow):
                     rospy.Duration(ROS_CFG.action_wait_sec)
                 ):
                     raise rospy.ROSException(f"{ROS_CFG.action_name} action 不可用")
+
+                self.simple_move_client = actionlib.SimpleActionClient(
+                    ROS_CFG.simple_move_action_name, SimpleMoveArmAction
+                )
+                self.simple_move_available = self.simple_move_client.wait_for_server(
+                    rospy.Duration(ROS_CFG.action_wait_sec)
+                )
+                if not self.simple_move_available:
+                    print(
+                        f"[ROS] 警告: {ROS_CFG.simple_move_action_name} action 不可用，返回安全区按钮将不可用"
+                    )
 
                 self.ros_available = True
                 print(f"[ROS] 初始化成功，已连接到 {ROS_CFG.action_name}")
@@ -997,6 +1017,18 @@ class MainWindow(QMainWindow):
         )
         control_column.addWidget(self.task_status_label)
 
+        control_tabs = QTabWidget()
+        control_column.addWidget(control_tabs)
+
+        config_tab = QWidget()
+        config_layout = QVBoxLayout(config_tab)
+
+        action_tab = QWidget()
+        action_layout = QVBoxLayout(action_tab)
+
+        control_tabs.addTab(config_tab, "参数配置")
+        control_tabs.addTab(action_tab, "操作执行")
+
         task_group = QGroupBox("任务组配置")
         task_layout = QFormLayout(task_group)
         self.group_name_edit = QLineEdit(ROS_CFG.pick_group_name)
@@ -1027,7 +1059,7 @@ class MainWindow(QMainWindow):
         task_layout.addRow("重试次数（不含第一次执行）", self.retry_times_edit)
         task_layout.addRow(self.chk_use_eef)
         task_layout.addRow(self.chk_go_safe_after_cancel)
-        control_column.addWidget(task_group)
+        config_layout.addWidget(task_group)
 
         place_group = QGroupBox("放置区配置（base_link）")
         place_layout = QFormLayout(place_group)
@@ -1054,7 +1086,7 @@ class MainWindow(QMainWindow):
         place_layout.addRow("Roll", self.place_roll_edit)
         place_layout.addRow("Pitch", self.place_pitch_edit)
         place_layout.addRow("Yaw", self.place_yaw_edit)
-        control_column.addWidget(place_group)
+        config_layout.addWidget(place_group)
 
         target_group = QGroupBox("取点 / TCP补偿")
         target_layout = QFormLayout(target_group)
@@ -1083,7 +1115,8 @@ class MainWindow(QMainWindow):
         target_layout.addRow("补偿 X", self.tcp_comp_x_edit)
         target_layout.addRow("补偿 Y", self.tcp_comp_y_edit)
         target_layout.addRow("补偿 Z", self.tcp_comp_z_edit)
-        control_column.addWidget(target_group)
+        config_layout.addWidget(target_group)
+        config_layout.addStretch()
 
         self.btn_reset = QPushButton("重置选择")
         self.btn_reset.clicked.connect(self.video_label.clear_selection)
@@ -1091,7 +1124,7 @@ class MainWindow(QMainWindow):
         self.btn_reset.setStyleSheet(
             "background-color: #3498db; color: white; font-size:14px; font-weight:bold;"
         )
-        control_column.addWidget(self.btn_reset)
+        action_layout.addWidget(self.btn_reset)
 
         self.btn_update_group_config = QPushButton("仅更新任务组配置")
         self.btn_update_group_config.clicked.connect(self.update_task_group_config)
@@ -1100,7 +1133,7 @@ class MainWindow(QMainWindow):
             "background-color: #16a085; color: white; font-size:14px; font-weight:bold;"
         )
         self.btn_update_group_config.setEnabled(self.ros_available)
-        control_column.addWidget(self.btn_update_group_config)
+        action_layout.addWidget(self.btn_update_group_config)
 
         self.btn_upsert_task = QPushButton("写入 / 更新当前任务")
         self.btn_upsert_task.clicked.connect(self.manual_send_command)
@@ -1109,7 +1142,7 @@ class MainWindow(QMainWindow):
             "background-color: #27ae60; color: white; font-size:14px; font-weight:bold;"
         )
         self.btn_upsert_task.setEnabled(False)
-        control_column.addWidget(self.btn_upsert_task)
+        action_layout.addWidget(self.btn_upsert_task)
 
         self.btn_execute_group = QPushButton("执行当前任务组")
         self.btn_execute_group.clicked.connect(self.execute_current_group)
@@ -1118,7 +1151,7 @@ class MainWindow(QMainWindow):
             "background-color: #8e44ad; color: white; font-size:14px; font-weight:bold;"
         )
         self.btn_execute_group.setEnabled(self.ros_available)
-        control_column.addWidget(self.btn_execute_group)
+        action_layout.addWidget(self.btn_execute_group)
 
         self.btn_cancel_cmd = QPushButton("取消当前执行")
         self.btn_cancel_cmd.clicked.connect(self.cancel_pick_task)
@@ -1126,8 +1159,18 @@ class MainWindow(QMainWindow):
         self.btn_cancel_cmd.setStyleSheet(
             "background-color: #c0392b; color: white; font-size:14px; font-weight:bold;"
         )
-        control_column.addWidget(self.btn_cancel_cmd)
+        action_layout.addWidget(self.btn_cancel_cmd)
 
+        self.btn_go_home = QPushButton("返回安全区")
+        self.btn_go_home.clicked.connect(self.go_home_to_safe)
+        self.btn_go_home.setMinimumHeight(40)
+        self.btn_go_home.setStyleSheet(
+            "background-color: #d35400; color: white; font-size:14px; font-weight:bold;"
+        )
+        self.btn_go_home.setEnabled(self.ros_available and self.simple_move_available)
+        action_layout.addWidget(self.btn_go_home)
+
+        action_layout.addStretch()
         control_column.addStretch()
         self._sync_pick_config_to_view()
         self.point_method_box.currentIndexChanged.connect(
@@ -1434,6 +1477,43 @@ class MainWindow(QMainWindow):
         if self.ros_available and self.pick_client is not None:
             self.pick_client.cancel_all_goals()
             self.task_status_label.setText("采摘任务状态：已请求取消")
+
+    def go_home_to_safe(self) -> None:
+        if (
+            not self.ros_available
+            or self.simple_move_client is None
+            or not self.simple_move_available
+        ):
+            self.task_status_label.setText(
+                "采摘任务状态：返回安全区失败，/simple_move_arm 未连接"
+            )
+            return
+
+        goal = SimpleMoveArmGoal()
+        goal.command_type = SimpleMoveArmGoal.MOVE_TO_ZERO
+        goal.target_type = SimpleMoveArmGoal.TARGET_POSE
+        goal.x = [0.0]
+        goal.y = [0.0]
+        goal.z = [0.0]
+        goal.roll = [0.0]
+        goal.pitch = [0.0]
+        goal.yaw = [0.0]
+
+        self.task_status_label.setText("采摘任务状态：正在返回安全区")
+        self.simple_move_client.send_goal(goal, done_cb=self._on_go_home_done)
+
+    def _on_go_home_done(self, state, result) -> None:
+        success = bool(getattr(result, "success", False))
+        msg = getattr(result, "message", "")
+        if success:
+            self.task_status_label.setText("采摘任务状态：返回安全区成功")
+            return
+
+        if msg:
+            self.task_status_label.setText(f"采摘任务状态：返回安全区失败 - {msg}")
+            return
+
+        self.task_status_label.setText(f"采摘任务状态：返回安全区失败，state={state}")
 
     def _on_pick_active(self) -> None:
         if self.last_request_type == PickTaskGoal.UPSERT_TASK:
