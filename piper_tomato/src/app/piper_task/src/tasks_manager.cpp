@@ -578,14 +578,19 @@ ErrorCode TasksManager::execute_task(Task& task, ExecutionContext* ctx) {
         }
 
         if(is_task_cancel_requested()) {
-            ROS_INFO("任务 ID %u 规划执行前收到取消请求", task.id);
+            ROS_INFO("任务 ID %u 设置目标后收到取消请求", task.id);
+            _arm_->clear_target();
+            _arm_->cancel_async();
+            _arm_->stop();
             return ErrorCode::CANCELLED;
         }
 
         const ErrorCode exec_code = _arm_->plan_and_execute();
         if(exec_code != ErrorCode::SUCCESS) {
             if(is_task_cancel_requested()) {
-                ROS_INFO("任务 ID %u 在执行过程中被取消", task.id);
+                ROS_INFO("任务 ID %u 在规划/执行过程中被取消", task.id);
+                _arm_->cancel_async();
+                _arm_->stop();
                 return ErrorCode::CANCELLED;
             }
             report_pick_feedback(task, PickStage::PICK_FAILED, false, exec_code, "移动到目标位：执行失败", ctx);
@@ -1282,6 +1287,9 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         };
 
     auto plan_pose_once = [&](const geometry_msgs::Pose& pose, MoveItPlan& plan) -> ErrorCode {
+        ErrorCode cancel_code = check_cancel();
+        if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
+
         _arm_->clear_constraints();
         _arm_->clear_target();
 
@@ -1291,8 +1299,21 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
             return set_code;
         }
 
+        cancel_code = check_cancel();
+        if(cancel_code != ErrorCode::SUCCESS) {
+            _arm_->clear_target();
+            _arm_->cancel_async();
+            _arm_->stop();
+            return cancel_code;
+        }
+
         const ErrorCode plan_code = _arm_->plan(plan);
         _arm_->clear_target();
+        if(is_cancel_requested(task, ctx)) {
+            _arm_->cancel_async();
+            _arm_->stop();
+            return check_cancel();
+        }
         return plan_code;
         };
 
@@ -1314,6 +1335,8 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
                 pp.cartesian_acc_scale);
 
             if(dr.error_code != ErrorCode::SUCCESS) {
+                cancel_code = check_cancel();
+                if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
                 return fail_stage(stage, dr.error_code, text + "：笛卡尔规划失败");
             }
 
@@ -1394,6 +1417,9 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     }
 
     for(std::size_t i = 0; i < pick_candidates.size(); ++i) {
+        code = check_cancel();
+        if(code != ErrorCode::SUCCESS) return code;
+
         const geometry_msgs::Pose& final_pick_pose = pick_candidates[i];
         const geometry_msgs::Pose pre_pick_pose = pp.use_pre_pick
             ? pose_with_local_z_offset(final_pick_pose, -std::abs(pp.pre_pick_offset))
@@ -1401,6 +1427,9 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
 
         MoveItPlan plan;
         const ErrorCode plan_code = plan_pose_once(pre_pick_pose, plan);
+        if(plan_code == ErrorCode::CANCELLED) {
+            return plan_code;
+        }
         if(plan_code != ErrorCode::SUCCESS) {
             continue;
         }
@@ -1500,14 +1529,30 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
                 _arm_->clear_constraints();
                 _arm_->clear_target();
 
+                ErrorCode cancel_code = check_cancel();
+                if(cancel_code != ErrorCode::SUCCESS) return cancel_code;
+
                 ErrorCode ec = _arm_->set_target(place_target_in_base);
                 if(ec != ErrorCode::SUCCESS) {
                     _arm_->clear_target();
                     return fail_stage(PickStage::PICK_MOVE_TO_PLACE, ec, "移动到放置位：设置目标失败");
                 }
 
+                cancel_code = check_cancel();
+                if(cancel_code != ErrorCode::SUCCESS) {
+                    _arm_->clear_target();
+                    _arm_->cancel_async();
+                    _arm_->stop();
+                    return cancel_code;
+                }
+
                 ec = _arm_->plan(place_plan);
                 _arm_->clear_target();
+                if(is_cancel_requested(task, ctx)) {
+                    _arm_->cancel_async();
+                    _arm_->stop();
+                    return check_cancel();
+                }
                 if(ec != ErrorCode::SUCCESS) {
                     return fail_stage(PickStage::PICK_MOVE_TO_PLACE, ec, "移动到放置位：规划失败");
                 }
