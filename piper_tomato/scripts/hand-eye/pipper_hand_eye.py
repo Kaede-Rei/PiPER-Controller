@@ -19,9 +19,11 @@ OUTPUT_ROOT = Path("./outputs")
 
 DEFAULT_IMAGE_NAME = "image.jpg"
 DEFAULT_POSE_NAME = "pose.json"
+DEFAULT_CAMERA_INFO_NAME = "camera_info.json"
 DEFAULT_DETECTION_NAME = "board_detection.json"
 DEFAULT_ANNOTATED_NAME = "annotated.jpg"
 
+# 兼容旧数据集的兜底内参。新数据优先使用每个样本目录内的 camera_info.json。
 CAMERA_MATRIX = np.array(
     [
         [612.28741455, 0.0, 638.46850586],
@@ -190,6 +192,7 @@ class SampleRecord:
     detection: BoardDetection
     pose_source: str = "unknown"
     pose_format: str = ROBOT_POSE_FORMAT
+    camera_model_source: str = "unknown"
     excluded_reason: Optional[str] = None
 
 
@@ -248,6 +251,79 @@ def write_json(path: Path, payload: Dict[str, Any]) -> None:
     ensure_dir(path.parent)
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def read_json(path: Path) -> Dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _normalize_dist_coeffs(raw: Any) -> np.ndarray:
+    if raw is None:
+        return DIST_COEFFS.copy()
+    coeffs = np.asarray(raw, dtype=np.float64).reshape(-1)
+    if coeffs.size == 0:
+        return DIST_COEFFS.copy()
+    return coeffs
+
+
+def board_config_from_camera_payload(
+    payload: Dict[str, Any],
+    chessboard_size: Tuple[int, int],
+    square_size_m: float,
+) -> BoardConfig:
+    K = np.array(payload.get("K") or payload.get("camera_matrix"), dtype=np.float64)
+    if K.shape != (3, 3):
+        raise ValueError("camera payload 内缺少合法 3x3 内参矩阵")
+    D = _normalize_dist_coeffs(payload.get("D") or payload.get("dist_coeffs"))
+    return BoardConfig(
+        chessboard_size=chessboard_size,
+        square_size_m=float(square_size_m),
+        camera_matrix=K,
+        dist_coeffs=D,
+    )
+
+
+def load_board_config_from_sample(sample_dir: Path, fallback: BoardConfig) -> Tuple[BoardConfig, str]:
+    camera_info_path = sample_dir / DEFAULT_CAMERA_INFO_NAME
+    if camera_info_path.exists():
+        payload = read_json(camera_info_path)
+        return (
+            board_config_from_camera_payload(
+                payload,
+                fallback.chessboard_size,
+                fallback.square_size_m,
+            ),
+            str(payload.get("source") or DEFAULT_CAMERA_INFO_NAME),
+        )
+
+    detection_path = sample_dir / DEFAULT_DETECTION_NAME
+    if detection_path.exists():
+        payload = read_json(detection_path)
+        if payload.get("camera_matrix") is not None:
+            return (
+                board_config_from_camera_payload(
+                    payload,
+                    tuple(payload.get("board_config", {}).get("chessboard_size", fallback.chessboard_size)),
+                    float(payload.get("board_config", {}).get("square_size_m", fallback.square_size_m)),
+                ),
+                str(payload.get("camera_model_source") or DEFAULT_DETECTION_NAME),
+            )
+
+    pose_path = sample_dir / DEFAULT_POSE_NAME
+    if pose_path.exists():
+        payload = read_json(pose_path)
+        if payload.get("camera_matrix") is not None:
+            return (
+                board_config_from_camera_payload(
+                    payload,
+                    fallback.chessboard_size,
+                    fallback.square_size_m,
+                ),
+                str(payload.get("camera_model_source") or DEFAULT_POSE_NAME),
+            )
+
+    return fallback, "config_fallback"
 
 
 def pose_to_dict(pose: RobotPose) -> Dict[str, float]:
@@ -583,7 +659,8 @@ def load_sample_record(
     loaded_pose = load_pose_json(
         pose_path, pose_format_override or cfg.pose_format, formula
     )
-    detection = detect_board_pose(image, cfg.board)
+    sample_board_cfg, camera_model_source = load_board_config_from_sample(sample_dir, cfg.board)
+    detection = detect_board_pose(image, sample_board_cfg)
     if not detection.ok:
         return None
 
@@ -603,6 +680,7 @@ def load_sample_record(
         detection=detection,
         pose_source=loaded_pose.source,
         pose_format=loaded_pose.pose_format,
+        camera_model_source=camera_model_source,
     )
 
 
@@ -655,7 +733,11 @@ def evaluate_candidate_constraints(
             hard_failed=False,
             penalty=0.0,
             violations=[],
-            translation_m=(float(translation[0]), float(translation[1]), float(translation[2])),
+            translation_m=(
+                float(translation[0]),
+                float(translation[1]),
+                float(translation[2]),
+            ),
             z_axis_in_flange=(float(z_axis[0]), float(z_axis[1]), float(z_axis[2])),
             z_axis_cos_to_flange_z=z_axis_cos,
         )
@@ -754,6 +836,7 @@ def _compute_candidate_metrics(
                 "translation_deviation_to_mean_m": float(dist_m),
                 "translation_deviation_to_mean_mm": float(dist_m * 1000.0),
                 "rotation_deviation_to_first_deg": float(rot_deg),
+                "camera_model_source": record.camera_model_source,
             }
         )
     diagnostics.sort(
@@ -790,7 +873,9 @@ def _calibrate_one_combo(
     metrics, translations, rot_list, diagnostics = _compute_candidate_metrics(
         records, T_cam_to_flange
     )
-    constraint_eval = evaluate_candidate_constraints(T_cam_to_flange, physical_constraints)
+    constraint_eval = evaluate_candidate_constraints(
+        T_cam_to_flange, physical_constraints
+    )
     return CalibrationCandidate(
         method_name=method_name,
         rotation_formula=rotation_formula,
@@ -806,7 +891,9 @@ def _calibrate_one_combo(
     )
 
 
-def _rank_key(candidate: CalibrationCandidate) -> Tuple[float, float, float, float, float]:
+def _rank_key(
+    candidate: CalibrationCandidate,
+) -> Tuple[float, float, float, float, float]:
     failed_flag = 0.0 if candidate.constraint_eval.passed else 1.0
     return (
         failed_flag,
@@ -830,9 +917,7 @@ def _candidate_improved(
     max_gain = (
         old.metrics.translation_max_to_mean_m - new.metrics.translation_max_to_mean_m
     )
-    passed_upgrade = (
-        not old.constraint_eval.passed and new.constraint_eval.passed
-    )
+    passed_upgrade = not old.constraint_eval.passed and new.constraint_eval.passed
     penalty_gain = old.constraint_eval.penalty - new.constraint_eval.penalty
     return (
         passed_upgrade
@@ -859,7 +944,10 @@ def _auto_prune_candidate(
     )
     pruned: List[int] = []
 
-    if cfg.physical_constraints.mode == CONSTRAINT_MODE_HARD and best_candidate.constraint_eval.hard_failed:
+    if (
+        cfg.physical_constraints.mode == CONSTRAINT_MODE_HARD
+        and best_candidate.constraint_eval.hard_failed
+    ):
         raise ValueError(
             f"候选 {method_name}/{rotation_formula} 不满足硬约束: {best_candidate.constraint_eval.violations}"
         )
@@ -986,7 +1074,8 @@ def calibrate_from_dataset(
         if cfg.physical_constraints.mode == CONSTRAINT_MODE_HARD and hard_fail_messages:
             suffix = "；当前硬约束过于严格，所有候选都被过滤"
         raise ValueError(
-            "在当前数据集上无法得到有效 hand-eye 结果，请检查样本数量、棋盘格检测和位姿定义" + suffix
+            "在当前数据集上无法得到有效 hand-eye 结果，请检查样本数量、棋盘格检测和位姿定义"
+            + suffix
         )
 
     ranked.sort(key=_rank_key)
@@ -1035,15 +1124,21 @@ def save_calibration_outputs(
         "config": {
             "pose_format": None if cfg is None else cfg.pose_format,
             "rotation_formula": None if cfg is None else cfg.rotation_formula,
-            "max_reprojection_error_px": None if cfg is None else cfg.max_reprojection_error_px,
+            "max_reprojection_error_px": (
+                None if cfg is None else cfg.max_reprojection_error_px
+            ),
             "auto_prune_outliers": None if cfg is None else cfg.auto_prune_outliers,
             "min_valid_samples": None if cfg is None else cfg.min_valid_samples,
             "max_prune_rounds": None if cfg is None else cfg.max_prune_rounds,
             "min_rms_improvement_m": None if cfg is None else cfg.min_rms_improvement_m,
-            "min_max_dist_improvement_m": None if cfg is None else cfg.min_max_dist_improvement_m,
-            "physical_constraints": None
-            if cfg is None
-            else physical_constraints_to_jsonable(cfg.physical_constraints),
+            "min_max_dist_improvement_m": (
+                None if cfg is None else cfg.min_max_dist_improvement_m
+            ),
+            "physical_constraints": (
+                None
+                if cfg is None
+                else physical_constraints_to_jsonable(cfg.physical_constraints)
+            ),
         },
         "best": candidate_to_jsonable(best),
         "ranked_count": len(ranked),

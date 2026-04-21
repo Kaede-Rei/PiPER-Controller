@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-import rospy
+from __future__ import annotations
+
+import math
+from typing import Any, Dict, List, Optional
+
 import cv2
 import numpy as np
-
+import rospy
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Float32
 
 from pyorbbecsdk import (
@@ -25,18 +29,21 @@ except ImportError:
     OBStreamType = None
 
 
-def intrinsic_to_matrix(intrinsic: VideoFrame.Intrinsic) -> np.ndarray:
+DEFAULT_ZERO_DISTORTION = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+
+def intrinsic_to_matrix(intrinsic: Any) -> np.ndarray:
     return np.array(
         [
-            [intrinsic.fx, 0.0, intrinsic.cx],
-            [0.0, intrinsic.fy, intrinsic.cy],
+            [float(intrinsic.fx), 0.0, float(intrinsic.cx)],
+            [0.0, float(intrinsic.fy), float(intrinsic.cy)],
             [0.0, 0.0, 1.0],
         ],
         dtype=np.float64,
     )
 
 
-def frame_to_bgr_image(frame: VideoFrame) -> np.ndarray:
+def frame_to_bgr_image(frame: VideoFrame) -> Optional[np.ndarray]:
     width = frame.get_width()
     height = frame.get_height()
     color_format = frame.get_format()
@@ -60,10 +67,16 @@ def frame_to_bgr_image(frame: VideoFrame) -> np.ndarray:
     return None
 
 
+def rotate_intrinsics_180(K: np.ndarray, width: int, height: int) -> np.ndarray:
+    rotated = np.array(K, dtype=np.float64, copy=True)
+    rotated[0, 2] = float(width - 1) - float(K[0, 2])
+    rotated[1, 2] = float(height - 1) - float(K[1, 2])
+    return rotated
+
+
 class PiperOrbbec:
     def __init__(self):
         rospy.init_node("piper_orbbec")
-
         self.bridge = CvBridge()
 
         self.color_width = rospy.get_param("~color_width", 1280)
@@ -74,11 +87,31 @@ class PiperOrbbec:
         self.depth_height = rospy.get_param("~depth_height", 800)
         self.depth_fps = rospy.get_param("~depth_fps", 30)
 
-        self.rotate_180 = rospy.get_param("~rotate_180", False)
-        self.min_depth_m = rospy.get_param("~min_depth_m", 0.10)
-        self.max_depth_m = rospy.get_param("~max_depth_m", 10.0)
-        self.enable_lrm = rospy.get_param("~enable_lrm", True)
-        self.frame_id = rospy.get_param("~frame_id", "eef_camera_link")
+        self.rotate_180 = bool(rospy.get_param("~rotate_180", False))
+        self.min_depth_m = float(rospy.get_param("~min_depth_m", 0.10))
+        self.max_depth_m = float(rospy.get_param("~max_depth_m", 10.0))
+        self.enable_lrm = bool(rospy.get_param("~enable_lrm", True))
+        self.publish_rate = float(
+            rospy.get_param("~publish_rate", max(1.0, self.color_fps))
+        )
+
+        self.color_frame_id = rospy.get_param(
+            "~color_frame_id", "eef_camera_color_optical_frame"
+        )
+        self.depth_frame_id = rospy.get_param(
+            "~depth_frame_id", "eef_camera_depth_optical_frame"
+        )
+        self.depth_registered_frame_id = rospy.get_param(
+            "~depth_registered_frame_id", self.color_frame_id
+        )
+
+        self.distortion_model = rospy.get_param("~distortion_model", "plumb_bob")
+        self.color_distortion_override = self._normalize_distortion_param(
+            rospy.get_param("~color_distortion", DEFAULT_ZERO_DISTORTION)
+        )
+        self.depth_distortion_override = self._normalize_distortion_param(
+            rospy.get_param("~depth_distortion", DEFAULT_ZERO_DISTORTION)
+        )
 
         self.pipeline = None
         self.device = None
@@ -87,19 +120,41 @@ class PiperOrbbec:
         self.color_pub = rospy.Publisher(
             "/piper/camera/orbbec/color/image_raw", Image, queue_size=1
         )
-        self.depth_pub = rospy.Publisher(
-            "/piper/camera/orbbec/depth/image_projection", Image, queue_size=1
+        self.color_info_pub = rospy.Publisher(
+            "/piper/camera/orbbec/color/camera_info", CameraInfo, queue_size=1
         )
-        self.info_pub = rospy.Publisher(
-            "/piper/camera/orbbec/info", CameraInfo, queue_size=1
+        self.depth_raw_pub = rospy.Publisher(
+            "/piper/camera/orbbec/depth/image_raw", Image, queue_size=1
+        )
+        self.depth_raw_info_pub = rospy.Publisher(
+            "/piper/camera/orbbec/depth/camera_info", CameraInfo, queue_size=1
+        )
+        self.depth_registered_pub = rospy.Publisher(
+            "/piper/camera/orbbec/depth_registered/image_raw", Image, queue_size=1
+        )
+        self.depth_registered_info_pub = rospy.Publisher(
+            "/piper/camera/orbbec/depth_registered/camera_info",
+            CameraInfo,
+            queue_size=1,
         )
         self.lrm_pub = rospy.Publisher(
             "/piper/camera/orbbec/lrm_distance", Float32, queue_size=1
         )
 
-    def _select_color_profile(
-        self, profile_list: VideoFrame.StreamProfileList
-    ) -> VideoFrame.VideoStreamProfile:
+        self.color_model_source = "unknown"
+        self.depth_model_source = "unknown"
+
+    @staticmethod
+    def _normalize_distortion_param(raw: Any) -> List[float]:
+        if raw is None:
+            return list(DEFAULT_ZERO_DISTORTION)
+        if isinstance(raw, (int, float)):
+            return [float(raw)]
+        if isinstance(raw, (list, tuple)):
+            return [float(v) for v in raw]
+        return list(DEFAULT_ZERO_DISTORTION)
+
+    def _select_color_profile(self, profile_list):
         try:
             return profile_list.get_video_stream_profile(
                 self.color_width, self.color_height, OBFormat.RGB, self.color_fps
@@ -112,9 +167,7 @@ class PiperOrbbec:
             except Exception:
                 return profile_list.get_default_video_stream_profile()
 
-    def _select_depth_profile(
-        self, profile_list: VideoFrame.StreamProfileList
-    ) -> VideoFrame.VideoStreamProfile:
+    def _select_depth_profile(self, profile_list):
         try:
             return profile_list.get_video_stream_profile(
                 self.depth_width, self.depth_height, OBFormat.Y16, self.depth_fps
@@ -136,8 +189,8 @@ class PiperOrbbec:
             applied = self.device.get_int_property(prop)
             rospy.loginfo("视差搜索范围模式值: %s", applied)
             return applied == 2
-        except Exception as e:
-            rospy.logwarn("视差搜索范围设置失败: %s", e)
+        except Exception as exc:
+            rospy.logwarn("视差搜索范围设置失败: %s", exc)
             return False
 
     def _build_depth_m(self, depth_frame: VideoFrame) -> np.ndarray:
@@ -149,58 +202,128 @@ class PiperOrbbec:
             depth_u16.astype(np.float32) * float(depth_frame.get_depth_scale()) / 1000.0
         )
         depth_m = np.where(
-            (depth_m > self.min_depth_m) & (depth_m < self.max_depth_m),
-            depth_m,
-            0.0,
+            (depth_m > self.min_depth_m) & (depth_m < self.max_depth_m), depth_m, 0.0
         ).astype(np.float32)
         return depth_m
 
+    def _extract_distortion_from_profile(self, profile: Any) -> Optional[List[float]]:
+        candidates = []
+        for getter_name in (
+            "get_distortion",
+            "get_distortion_param",
+            "get_distortion_params",
+            "get_camera_param",
+            "get_camera_intrinsic",
+        ):
+            getter = getattr(profile, getter_name, None)
+            if callable(getter):
+                try:
+                    candidates.append(getter())
+                except Exception:
+                    pass
+
+        for candidate in candidates:
+            parsed = self._parse_distortion_object(candidate)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _parse_distortion_object(self, obj: Any) -> Optional[List[float]]:
+        if obj is None:
+            return None
+        if isinstance(obj, (list, tuple, np.ndarray)):
+            values = [float(v) for v in obj]
+            if len(values) >= 4:
+                return values
+        if hasattr(obj, "coeffs"):
+            return self._parse_distortion_object(getattr(obj, "coeffs"))
+        fields = []
+        for name in ("k1", "k2", "p1", "p2", "k3", "k4", "k5", "k6"):
+            if hasattr(obj, name):
+                fields.append(float(getattr(obj, name)))
+        if len(fields) >= 4:
+            return fields
+        for name in (
+            "color_distortion",
+            "depth_distortion",
+            "rgb_distortion",
+            "distortion",
+        ):
+            if hasattr(obj, name):
+                parsed = self._parse_distortion_object(getattr(obj, name))
+                if parsed is not None:
+                    return parsed
+        return None
+
+    def _resolve_distortion(
+        self, profile: Any, override: List[float], label: str
+    ) -> List[float]:
+        extracted = self._extract_distortion_from_profile(profile)
+        if extracted is not None:
+            source = "sdk_profile"
+            distortion = extracted
+        else:
+            distortion = list(override)
+            source = "override_param"
+            if not any(abs(v) > 1e-12 for v in distortion):
+                source = "override_zero"
+
+        if label == "color":
+            self.color_model_source = source
+        else:
+            self.depth_model_source = source
+        return distortion
+
     def _build_camera_info(
-        self, width: int, height: int, K: np.ndarray, stamp: rospy.Time
+        self,
+        width: int,
+        height: int,
+        K: np.ndarray,
+        D: List[float],
+        frame_id: str,
+        stamp: rospy.Time,
     ) -> CameraInfo:
         msg = CameraInfo()
         msg.header.stamp = stamp
-        msg.header.frame_id = self.frame_id
-        msg.width = width
-        msg.height = height
-        msg.distortion_model = "plumb_bob"
-        msg.D = []
+        msg.header.frame_id = frame_id
+        msg.width = int(width)
+        msg.height = int(height)
+        msg.distortion_model = self.distortion_model
+        msg.D = [float(v) for v in D]
         msg.K = [
-            K[0, 0],
+            float(K[0, 0]),
             0.0,
-            K[0, 2],
+            float(K[0, 2]),
             0.0,
-            K[1, 1],
-            K[1, 2],
-            0.0,
-            0.0,
-            1.0,
-        ]
-        msg.R = [
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
+            float(K[1, 1]),
+            float(K[1, 2]),
             0.0,
             0.0,
             1.0,
         ]
+        msg.R = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         msg.P = [
-            K[0, 0],
+            float(K[0, 0]),
             0.0,
-            K[0, 2],
+            float(K[0, 2]),
             0.0,
             0.0,
-            K[1, 1],
-            K[1, 2],
+            float(K[1, 1]),
+            float(K[1, 2]),
             0.0,
             0.0,
             0.0,
             1.0,
             0.0,
         ]
+        return msg
+
+    def _to_msg(
+        self, image: np.ndarray, encoding: str, stamp: rospy.Time, frame_id: str
+    ) -> Image:
+        msg = self.bridge.cv2_to_imgmsg(image, encoding=encoding)
+        msg.header.stamp = stamp
+        msg.header.frame_id = frame_id
         return msg
 
     def setup(self):
@@ -248,11 +371,13 @@ class PiperOrbbec:
                     align_to_stream=OBStreamType.COLOR_STREAM
                 )
                 rospy.loginfo("已启用 AlignFilter: Depth -> Color")
-            except Exception as e:
+            except Exception as exc:
                 self.align_filter = None
-                rospy.logwarn("AlignFilter 初始化失败: %s", e)
+                rospy.logwarn("AlignFilter 初始化失败: %s", exc)
         else:
-            rospy.logwarn("当前 pyorbbecsdk 未暴露 AlignFilter，将回退到原始 depth")
+            rospy.logwarn(
+                "当前 pyorbbecsdk 未暴露 AlignFilter，将不发布 depth_registered"
+            )
 
         disparity_ok = self._set_disparity_search_range_256()
 
@@ -260,13 +385,20 @@ class PiperOrbbec:
             try:
                 self.device.set_bool_property(OBPropertyID.OB_PROP_LDP_BOOL, True)
                 rospy.loginfo("LRM 激光补盲模块已开启")
-            except Exception as e:
-                rospy.logwarn("LRM 开启失败: %s", e)
+            except Exception as exc:
+                rospy.logwarn("LRM 开启失败: %s", exc)
 
-        rospy.loginfo("相机启动成功, disp256=%s", "OK" if disparity_ok else "NO")
+        rospy.loginfo(
+            "相机启动成功, disp256=%s, rotate_180=%s, color_frame=%s, depth_frame=%s, depth_registered_frame=%s",
+            "OK" if disparity_ok else "NO",
+            self.rotate_180,
+            self.color_frame_id,
+            self.depth_frame_id,
+            self.depth_registered_frame_id,
+        )
 
     def spin(self):
-        rate = rospy.Rate(self.color_fps)
+        rate = rospy.Rate(self.publish_rate)
 
         while not rospy.is_shutdown():
             frames = self.pipeline.wait_for_frames(100)
@@ -288,8 +420,8 @@ class PiperOrbbec:
                         aligned_depth_frame = (
                             aligned_frames.as_frame_set().get_depth_frame()
                         )
-                except Exception as e:
-                    rospy.logwarn_throttle(2.0, "AlignFilter 处理失败: %s", e)
+                except Exception as exc:
+                    rospy.logwarn_throttle(2.0, "AlignFilter 处理失败: %s", exc)
                     aligned_depth_frame = None
 
             color_image = frame_to_bgr_image(color_frame)
@@ -297,75 +429,103 @@ class PiperOrbbec:
                 rate.sleep()
                 continue
 
-            if self.rotate_180:
-                color_image = cv2.rotate(color_image, cv2.ROTATE_180)
-
             raw_depth_m = self._build_depth_m(depth_frame)
             aligned_depth_m = None
             if aligned_depth_frame is not None:
                 try:
                     aligned_depth_m = self._build_depth_m(aligned_depth_frame)
-                except Exception as e:
-                    rospy.logwarn_throttle(2.0, "对齐深度解析失败: %s", e)
+                except Exception as exc:
+                    rospy.logwarn_throttle(2.0, "对齐深度解析失败: %s", exc)
+                    aligned_depth_m = None
 
-            color_video_profile = (
-                color_frame.get_stream_profile().as_video_stream_profile()
+            color_profile = color_frame.get_stream_profile().as_video_stream_profile()
+            depth_profile = depth_frame.get_stream_profile().as_video_stream_profile()
+            K_color = intrinsic_to_matrix(color_profile.get_intrinsic())
+            K_depth = intrinsic_to_matrix(depth_profile.get_intrinsic())
+            D_color = self._resolve_distortion(
+                color_profile, self.color_distortion_override, "color"
             )
-            depth_video_profile = (
-                depth_frame.get_stream_profile().as_video_stream_profile()
+            D_depth = self._resolve_distortion(
+                depth_profile, self.depth_distortion_override, "depth"
             )
-            K_color = intrinsic_to_matrix(color_video_profile.get_intrinsic())
-            K_depth = intrinsic_to_matrix(depth_video_profile.get_intrinsic())
-
-            projection_depth_m = None
-            projection_K = None
-
-            if aligned_depth_m is not None and aligned_depth_m.shape[:2] == (
-                color_frame.get_height(),
-                color_frame.get_width(),
-            ):
-                projection_depth_m = aligned_depth_m
-                projection_K = K_color
-            elif raw_depth_m.shape[:2] == (
-                color_frame.get_height(),
-                color_frame.get_width(),
-            ):
-                projection_depth_m = raw_depth_m
-                projection_K = K_color
-            else:
-                projection_depth_m = raw_depth_m
-                projection_K = K_depth
 
             if self.rotate_180:
-                projection_depth_m = cv2.rotate(projection_depth_m, cv2.ROTATE_180)
+                color_image = cv2.rotate(color_image, cv2.ROTATE_180)
+                raw_depth_m = cv2.rotate(raw_depth_m, cv2.ROTATE_180)
+                K_color = rotate_intrinsics_180(
+                    K_color, color_image.shape[1], color_image.shape[0]
+                )
+                K_depth = rotate_intrinsics_180(
+                    K_depth, raw_depth_m.shape[1], raw_depth_m.shape[0]
+                )
+                if aligned_depth_m is not None:
+                    aligned_depth_m = cv2.rotate(aligned_depth_m, cv2.ROTATE_180)
+
+            publish_registered = False
+            if (
+                aligned_depth_m is not None
+                and aligned_depth_m.shape[:2] == color_image.shape[:2]
+            ):
+                publish_registered = True
+            elif aligned_depth_m is not None:
+                rospy.logwarn_throttle(
+                    2.0,
+                    "depth_registered 尺寸异常: aligned=%s color=%s，当前帧不发布 depth_registered",
+                    aligned_depth_m.shape[:2],
+                    color_image.shape[:2],
+                )
 
             now = rospy.Time.now()
 
-            color_msg = self.bridge.cv2_to_imgmsg(color_image, encoding="bgr8")
-            color_msg.header.stamp = now
-            color_msg.header.frame_id = self.frame_id
-
-            depth_msg = self.bridge.cv2_to_imgmsg(projection_depth_m, encoding="32FC1")
-            depth_msg.header.stamp = now
-            depth_msg.header.frame_id = self.frame_id
-
-            info_msg = self._build_camera_info(
-                projection_depth_m.shape[1],
-                projection_depth_m.shape[0],
-                projection_K,
+            color_msg = self._to_msg(color_image, "bgr8", now, self.color_frame_id)
+            color_info_msg = self._build_camera_info(
+                color_image.shape[1],
+                color_image.shape[0],
+                K_color,
+                D_color,
+                self.color_frame_id,
+                now,
+            )
+            depth_raw_msg = self._to_msg(raw_depth_m, "32FC1", now, self.depth_frame_id)
+            depth_raw_info_msg = self._build_camera_info(
+                raw_depth_m.shape[1],
+                raw_depth_m.shape[0],
+                K_depth,
+                D_depth,
+                self.depth_frame_id,
                 now,
             )
 
             self.color_pub.publish(color_msg)
-            self.depth_pub.publish(depth_msg)
-            self.info_pub.publish(info_msg)
+            self.color_info_pub.publish(color_info_msg)
+            self.depth_raw_pub.publish(depth_raw_msg)
+            self.depth_raw_info_pub.publish(depth_raw_info_msg)
+
+            if publish_registered:
+                K_depth_registered = np.array(K_color, dtype=np.float64, copy=True)
+                depth_registered_msg = self._to_msg(
+                    aligned_depth_m,
+                    "32FC1",
+                    now,
+                    self.depth_registered_frame_id,
+                )
+                depth_registered_info_msg = self._build_camera_info(
+                    aligned_depth_m.shape[1],
+                    aligned_depth_m.shape[0],
+                    K_depth_registered,
+                    D_color,
+                    self.depth_registered_frame_id,
+                    now,
+                )
+                self.depth_registered_pub.publish(depth_registered_msg)
+                self.depth_registered_info_pub.publish(depth_registered_info_msg)
 
             if self.enable_lrm:
                 try:
                     lrm_dist_mm = self.device.get_int_property(
                         OBPropertyID.OB_PROP_LDP_MEASURE_DISTANCE_INT
                     )
-                    self.lrm_pub.publish(Float32(data=lrm_dist_mm / 1000.0))
+                    self.lrm_pub.publish(Float32(data=float(lrm_dist_mm) / 1000.0))
                 except Exception:
                     pass
 

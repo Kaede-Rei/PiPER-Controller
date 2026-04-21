@@ -86,8 +86,11 @@ class RosConfig:
     result_wait_sec: float = 10.0
     tf_wait_sec: float = 0.2
     camera_color_topic: str = "/piper/camera/orbbec/color/image_raw"
-    camera_depth_topic: str = "/piper/camera/orbbec/depth/image_projection"
-    camera_info_topic: str = "/piper/camera/orbbec/info"
+    camera_color_info_topic: str = "/piper/camera/orbbec/color/camera_info"
+    camera_depth_raw_topic: str = "/piper/camera/orbbec/depth/image_raw"
+    camera_depth_raw_info_topic: str = "/piper/camera/orbbec/depth/camera_info"
+    camera_depth_registered_topic: str = "/piper/camera/orbbec/depth_registered/image_raw"
+    camera_depth_registered_info_topic: str = "/piper/camera/orbbec/depth_registered/camera_info"
     camera_lrm_topic: str = "/piper/camera/orbbec/lrm_distance"
 
 
@@ -573,8 +576,13 @@ class MainWindow(QMainWindow):
         )
 
         self.current_depth_data = None
+        self.current_depth_raw_data = None
+        self.current_depth_registered_data = None
         self.current_color_size = None
-        self.current_depth_intrinsics = DEFAULT_INTRINSICS.copy()
+        self.current_depth_intrinsics = None
+        self.current_depth_raw_intrinsics = None
+        self.current_depth_registered_intrinsics = None
+        self.current_color_intrinsics = None
         self.current_projection_mode = "invalid"
         self.current_lrm_mm = 0
         self.current_lrm_m = 0.0
@@ -913,16 +921,35 @@ class MainWindow(QMainWindow):
             buff_size=2**24,
         )
         rospy.Subscriber(
-            ROS_CFG.camera_depth_topic,
+            ROS_CFG.camera_color_info_topic,
+            CameraInfo,
+            self.on_color_camera_info,
+            queue_size=1,
+        )
+        rospy.Subscriber(
+            ROS_CFG.camera_depth_raw_topic,
             Image,
-            self.on_depth_image,
+            self.on_depth_raw_image,
             queue_size=1,
             buff_size=2**24,
         )
         rospy.Subscriber(
-            ROS_CFG.camera_info_topic,
+            ROS_CFG.camera_depth_raw_info_topic,
             CameraInfo,
-            self.on_camera_info,
+            self.on_depth_raw_camera_info,
+            queue_size=1,
+        )
+        rospy.Subscriber(
+            ROS_CFG.camera_depth_registered_topic,
+            Image,
+            self.on_depth_registered_image,
+            queue_size=1,
+            buff_size=2**24,
+        )
+        rospy.Subscriber(
+            ROS_CFG.camera_depth_registered_info_topic,
+            CameraInfo,
+            self.on_depth_registered_camera_info,
             queue_size=1,
         )
         rospy.Subscriber(
@@ -946,25 +973,49 @@ class MainWindow(QMainWindow):
             return
         self.video_label.set_image(self.latest_color_image)
 
-    def on_depth_image(self, msg: Image) -> None:
+    def on_color_camera_info(self, msg: CameraInfo) -> None:
+        try:
+            self.current_color_intrinsics = np.array(msg.K, dtype=np.float64).reshape(3, 3)
+            if msg.width > 0 and msg.height > 0:
+                self.current_color_size = (msg.width, msg.height)
+        except Exception as e:
+            print(f"[GUI] 彩色相机内参解析失败: {e}")
+
+    def on_depth_raw_image(self, msg: Image) -> None:
         try:
             depth_m = self.bridge.imgmsg_to_cv2(msg, desired_encoding="32FC1")
             if depth_m is None:
                 return
-            self.current_depth_data = depth_m.astype(np.float32) * 1000.0
+            self.current_depth_raw_data = depth_m.astype(np.float32) * 1000.0
         except Exception as e:
-            print(f"[GUI] 深度图转换失败: {e}")
+            print(f"[GUI] 原始深度图转换失败: {e}")
 
-    def on_camera_info(self, msg: CameraInfo) -> None:
+    def on_depth_raw_camera_info(self, msg: CameraInfo) -> None:
         try:
-            self.current_depth_intrinsics = np.array(msg.K, dtype=np.float64).reshape(
-                3, 3
-            )
-            self.current_projection_mode = "camera_projection"
-            if msg.width > 0 and msg.height > 0:
-                self.current_color_size = (msg.width, msg.height)
+            self.current_depth_raw_intrinsics = np.array(msg.K, dtype=np.float64).reshape(3, 3)
         except Exception as e:
-            print(f"[GUI] 相机内参解析失败: {e}")
+            print(f"[GUI] 原始深度内参解析失败: {e}")
+
+    def on_depth_registered_image(self, msg: Image) -> None:
+        try:
+            depth_m = self.bridge.imgmsg_to_cv2(msg, desired_encoding="32FC1")
+            if depth_m is None:
+                return
+            self.current_depth_registered_data = depth_m.astype(np.float32) * 1000.0
+            self.current_depth_data = self.current_depth_registered_data
+            if self.current_depth_registered_intrinsics is not None:
+                self.current_depth_intrinsics = self.current_depth_registered_intrinsics
+            self.current_projection_mode = "depth_registered"
+        except Exception as e:
+            print(f"[GUI] 对齐深度图转换失败: {e}")
+
+    def on_depth_registered_camera_info(self, msg: CameraInfo) -> None:
+        try:
+            self.current_depth_registered_intrinsics = np.array(msg.K, dtype=np.float64).reshape(3, 3)
+            self.current_depth_intrinsics = self.current_depth_registered_intrinsics
+            self.current_projection_mode = "depth_registered"
+        except Exception as e:
+            print(f"[GUI] 对齐深度内参解析失败: {e}")
 
     def on_lrm_distance(self, msg: Float32) -> None:
         try:

@@ -1,4 +1,4 @@
-camera_name: gemeni335l
+camera_name: gemini335l
 
 color_width: 1280
 color_height: 720
@@ -17,4 +17,10 @@ max_depth_m: 10.0
 enable_lrm: true
 publish_rate: 30.0
 
-frame_id: eef_camera_link
+distortion_model: plumb_bob
+color_distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+depth_distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+color_frame_id: eef_camera_color_optical_frame
+depth_frame_id: eef_camera_depth_optical_frame
+depth_registered_frame_id: eef_camera_color_optical_frame

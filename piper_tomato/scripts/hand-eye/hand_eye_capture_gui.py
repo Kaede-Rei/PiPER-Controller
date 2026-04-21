@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
-from PyQt5.QtCore import QThread, QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -40,6 +40,7 @@ from pipper_hand_eye import (
     CONSTRAINT_MODE_DISABLED,
     DATASET_ROOT,
     DEFAULT_ANNOTATED_NAME,
+    DEFAULT_CAMERA_INFO_NAME,
     DEFAULT_DETECTION_NAME,
     DEFAULT_HAND_EYE_METHOD,
     DEFAULT_IMAGE_NAME,
@@ -73,33 +74,18 @@ from pipper_hand_eye import (
 )
 
 try:
-    from pyorbbecsdk import (
-        Config,
-        OBAlignMode,
-        OBFormat,
-        OBSensorType,
-        Pipeline,
-        VideoFrame,
-    )
-
-    HAS_ORBBEC = True
-except Exception:
-    HAS_ORBBEC = False
-    Config = None
-    OBAlignMode = None
-    OBFormat = None
-    OBSensorType = None
-    Pipeline = None
-    VideoFrame = object
-
-try:
     import rospy
     import tf2_ros
+    from cv_bridge import CvBridge
+    from sensor_msgs.msg import CameraInfo, Image
 
     HAS_ROS = True
 except Exception:
     rospy = None
     tf2_ros = None
+    CvBridge = None
+    CameraInfo = object
+    Image = object
     HAS_ROS = False
 
 
@@ -117,13 +103,9 @@ class UiConfig:
 
 
 @dataclass(frozen=True)
-class CaptureDefaults:
-    color_width: int = 1280
-    color_height: int = 720
-    color_fps: int = 30
-    cv_device_index: int = 0
-    rotate_180: bool = False
-    prefer_orbbec: bool = True
+class RosCameraDefaults:
+    color_topic: str = "/piper/camera/orbbec/color/image_raw"
+    camera_info_topic: str = "/piper/camera/orbbec/color/camera_info"
 
 
 @dataclass(frozen=True)
@@ -134,18 +116,8 @@ class RosDefaults:
     tf_timeout_sec: float = 0.30
 
 
-@dataclass(frozen=True)
-class CaptureRuntimeConfig:
-    color_width: int
-    color_height: int
-    color_fps: int
-    cv_device_index: int
-    rotate_180: bool
-    prefer_orbbec: bool
-
-
 UI_CFG = UiConfig()
-CAPTURE_DEFAULTS = CaptureDefaults()
+ROS_CAMERA_DEFAULTS = RosCameraDefaults()
 ROS_DEFAULTS = RosDefaults()
 
 
@@ -212,111 +184,11 @@ class VideoWidget(QLabel):
         self.setPixmap(scaled)
 
 
-class CameraWorker(QThread):
-    frame_ready = pyqtSignal(object)
-    status = pyqtSignal(str)
-
-    def __init__(self, cfg: CaptureRuntimeConfig):
-        super().__init__()
-        self.cfg = cfg
-        self._running = False
-        self.pipeline = None
-        self.cap = None
-        self.latest_frame: Optional[np.ndarray] = None
-        self.backend_name = "uninitialized"
-
-    def run(self):
-        self._running = True
-        if self.cfg.prefer_orbbec and HAS_ORBBEC:
-            try:
-                self._run_orbbec()
-                return
-            except Exception as exc:
-                self.status.emit(f"Orbbec 打开失败，回退到 OpenCV: {exc}")
-        self._run_opencv()
-
-    def _run_orbbec(self):
-        self.backend_name = "OrbbecSDK"
-        self.pipeline = Pipeline()
-        config = Config()
-        profile_list = self.pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-        try:
-            profile = profile_list.get_video_stream_profile(
-                self.cfg.color_width,
-                self.cfg.color_height,
-                OBFormat.RGB,
-                self.cfg.color_fps,
-            )
-        except Exception:
-            profile = profile_list.get_default_video_stream_profile()
-        config.enable_stream(profile)
-        if OBAlignMode is not None:
-            config.set_align_mode(OBAlignMode.SW_MODE)
-        self.pipeline.start(config)
-        self.status.emit("相机已打开: OrbbecSDK")
-
-        while self._running:
-            frames = self.pipeline.wait_for_frames(100)
-            if frames is None:
-                continue
-            color_frame = frames.get_color_frame()
-            if color_frame is None:
-                continue
-            image = self._frame_to_bgr(color_frame)
-            if image is None:
-                continue
-            if self.cfg.rotate_180:
-                image = cv2.rotate(image, cv2.ROTATE_180)
-            self.latest_frame = image
-            self.frame_ready.emit(image)
-
-    def _frame_to_bgr(self, frame: VideoFrame) -> Optional[np.ndarray]:
-        width = frame.get_width()
-        height = frame.get_height()
-        fmt = frame.get_format()
-        data = np.frombuffer(frame.get_data(), dtype=np.uint8)
-        if fmt == OBFormat.RGB:
-            image = data.reshape(height, width, 3)
-            return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        if fmt == OBFormat.MJPG:
-            return cv2.imdecode(data, cv2.IMREAD_COLOR)
-        if fmt == OBFormat.YUYV:
-            image = data.reshape(height, width, 2)
-            return cv2.cvtColor(image, cv2.COLOR_YUV2BGR_YUYV)
-        return None
-
-    def _run_opencv(self):
-        self.backend_name = f"OpenCV({self.cfg.cv_device_index})"
-        self.cap = cv2.VideoCapture(self.cfg.cv_device_index)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.color_width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.color_height)
-        self.cap.set(cv2.CAP_PROP_FPS, self.cfg.color_fps)
-        if not self.cap.isOpened():
-            self.status.emit("OpenCV 相机打开失败")
-            return
-        self.status.emit(f"相机已打开: {self.backend_name}")
-        while self._running:
-            ok, frame = self.cap.read()
-            if not ok:
-                continue
-            if self.cfg.rotate_180:
-                frame = cv2.rotate(frame, cv2.ROTATE_180)
-            self.latest_frame = frame
-            self.frame_ready.emit(frame)
-
-    def stop(self) -> None:
-        self._running = False
-        self.wait(2000)
-        if self.pipeline is not None:
-            try:
-                self.pipeline.stop()
-            except Exception:
-                pass
-        if self.cap is not None:
-            self.cap.release()
-
-
 class HandEyeCaptureWindow(QMainWindow):
+    camera_info_updated = pyqtSignal(object)
+    ros_image_received = pyqtSignal(object)
+    log_message = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(UI_CFG.window_title)
@@ -327,7 +199,15 @@ class HandEyeCaptureWindow(QMainWindow):
         self.current_frame: Optional[np.ndarray] = None
         self.current_frame_wall_time: str = ""
         self.last_detection_ok = False
-        self.worker: Optional[CameraWorker] = None
+        self.current_camera_info_payload: Optional[Dict[str, Any]] = None
+        self.current_ros_camera_matrix: Optional[np.ndarray] = None
+        self.current_ros_dist_coeffs: Optional[np.ndarray] = None
+        self.current_camera_info_source: str = "manual_fallback"
+        self.current_image_source: str = "no_stream"
+        self.color_image_sub = None
+        self.color_info_sub = None
+        self.bridge = CvBridge() if HAS_ROS and CvBridge is not None else None
+        self._closing = False
 
         self.ros_available = False
         self.tf_buffer = None
@@ -335,9 +215,18 @@ class HandEyeCaptureWindow(QMainWindow):
         self._init_ros()
 
         self.video_label = VideoWidget()
+        self.camera_info_updated.connect(self._apply_camera_info_payload)
+        self.ros_image_received.connect(self._apply_ros_frame)
+        self.log_message.connect(self._append_log)
         self.init_ui()
         self.refresh_available_indices()
-        self.restart_camera()
+        self._update_stream_status()
+        if self.ros_available:
+            self.log("当前使用 ROS 相机流")
+        else:
+            self.log(
+                "ROS 未就绪：当前无法接收 color/image_raw，请先启动 roscore 与 piper_camera"
+            )
 
         self._toggle_window_shortcut = QShortcut(QKeySequence("F11"), self)
         self._toggle_window_shortcut.activated.connect(self.toggle_window_state)
@@ -352,11 +241,26 @@ class HandEyeCaptureWindow(QMainWindow):
                 )
             self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(30.0))
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+            self.color_info_sub = rospy.Subscriber(
+                ROS_CAMERA_DEFAULTS.camera_info_topic,
+                CameraInfo,
+                self.on_color_camera_info,
+                queue_size=1,
+            )
+            self.color_image_sub = rospy.Subscriber(
+                ROS_CAMERA_DEFAULTS.color_topic,
+                Image,
+                self.on_ros_color_image,
+                queue_size=1,
+                buff_size=2**24,
+            )
             self.ros_available = True
         except Exception:
             self.ros_available = False
             self.tf_buffer = None
             self.tf_listener = None
+            self.color_info_sub = None
+            self.color_image_sub = None
 
     def toggle_window_state(self) -> None:
         if self.isMaximized() or self.isFullScreen():
@@ -381,8 +285,8 @@ class HandEyeCaptureWindow(QMainWindow):
         )
         help_map = {
             "项目": "dataset_root：样本目录\noutput_root：标定结果输出目录\n当前保存索引：下一次采样写入的编号\n已存在索引：当前目录下已检测到的样本编号\n采集成功后索引自动 +1：保存成功后自动切换到下一个编号",
-            "相机": "优先使用 OrbbecSDK：优先走 Orbbec 相机链路\ncolor_width / color_height / color_fps：采样分辨率与帧率\ncv_device_index：OpenCV 相机设备号\n采样图像旋转 180°：仅影响采样画面方向\n当前后端：当前实际启用的采集后端",
-            "棋盘/内参": "board_cols / board_rows：棋盘内角点列数与行数\nsquare_size_m：单个方格边长，单位 m\nfx fy cx cy：用于 solvePnP 的相机内参\ndist0~dist3：相机畸变参数",
+            "相机": "当前版本订阅 ROS 图像流\ncolor_topic：采样图像话题\ncamera_info_topic：相机模型话题\n当前后端：当前接收到的图像源\n要求：先启动 roscore 和 piper_camera，再启动本 GUI",
+            "棋盘/内参": "board_cols / board_rows：棋盘内角点列数与行数\nsquare_size_m：单个方格边长，单位 m\n优先使用 /piper/camera/orbbec/color/camera_info 同步的相机模型\nfx fy cx cy 与 dist：仅作为离线 fallback 或手工覆盖",
             "ROS/位姿": "ROS：当前 ROS/T F 是否可用\n采样时自动从 TF 读取位姿：保存样本时直接读取当前 TF\nbase_frame / tool_frame：TF 查询使用的坐标系名称\ntf_timeout_sec：TF 查询超时\npose_format：位姿数据的语义格式\nrotation_formula：欧拉角转旋转矩阵的顺序\nx/y/z/rx/ry/rz：手动输入或回显的当前机械臂位姿",
             "标定": "min_index / max_index：参与标定的样本编号范围\nrotation_formula / handeye_method：旋转顺序与手眼方法，可选 AUTO\nexclude_indices：额外排除的样本编号\nmax_reprojection_error_px：角点重投影误差阈值\nauto_prune_outliers：是否自动剔除离群样本\nmin_valid_samples：最少有效样本数\nmax_prune_rounds：最多剔除轮数\nmin_rms_improvement_m / min_max_dist_improvement_m：继续剔除所需的最小改善量",
             "物理约束": "constraint_mode：DISABLED 为关闭，SOFT_PREFER 为排序偏好，HARD_FILTER 为严格过滤\nexpected_tx_sign / expected_ty_sign / expected_tz_sign：期望平移符号\nsign_tolerance_m：符号判断容差\nenable_tx/ty/tz_range：是否启用对应轴的平移范围约束\ntx/ty/tz min/max：对应轴允许范围，单位 m\nrequire_z_axis_same_direction：要求相机 z 轴与 flange z 轴同向\nz_axis_cos_min：z 轴夹角余弦阈值",
@@ -411,7 +315,7 @@ class HandEyeCaptureWindow(QMainWindow):
         )
         right_layout.addWidget(self.page_help_label)
 
-        self.capture_status_label = QLabel("采集状态：等待相机")
+        self.capture_status_label = QLabel("采集状态：等待 ROS 图像流")
         self.capture_status_label.setWordWrap(True)
         self.capture_status_label.setFont(
             QFont(UI_CFG.info_font_name, UI_CFG.info_font_size)
@@ -479,29 +383,18 @@ class HandEyeCaptureWindow(QMainWindow):
     def _build_camera_tab(self) -> None:
         page = QWidget()
         layout = QFormLayout(page)
-        self.prefer_orbbec_checkbox = QCheckBox("优先使用 OrbbecSDK")
-        self.prefer_orbbec_checkbox.setChecked(
-            CAPTURE_DEFAULTS.prefer_orbbec and HAS_ORBBEC
-        )
-        self.camera_width_edit = self._new_line_edit(str(CAPTURE_DEFAULTS.color_width))
-        self.camera_height_edit = self._new_line_edit(
-            str(CAPTURE_DEFAULTS.color_height)
-        )
-        self.camera_fps_edit = self._new_line_edit(str(CAPTURE_DEFAULTS.color_fps))
-        self.cv_index_edit = self._new_line_edit(str(CAPTURE_DEFAULTS.cv_device_index))
-        self.rotate_180_checkbox = QCheckBox("采样图像旋转 180°")
-        self.rotate_180_checkbox.setChecked(CAPTURE_DEFAULTS.rotate_180)
-        self.camera_backend_label = QLabel("未启动")
-        btn_restart = QPushButton("应用并重启相机")
-        btn_restart.clicked.connect(self.restart_camera)
-        layout.addRow(self.prefer_orbbec_checkbox)
-        layout.addRow("color_width", self.camera_width_edit)
-        layout.addRow("color_height", self.camera_height_edit)
-        layout.addRow("color_fps", self.camera_fps_edit)
-        layout.addRow("cv_device_index", self.cv_index_edit)
-        layout.addRow(self.rotate_180_checkbox)
+        self.camera_topic_label = QLabel(ROS_CAMERA_DEFAULTS.color_topic)
+        self.camera_info_topic_label = QLabel(ROS_CAMERA_DEFAULTS.camera_info_topic)
+        self.camera_backend_label = QLabel("ROS 未连接")
+        self.camera_requirements_label = QLabel("请先启动 roscore 与 piper_camera")
+        self.camera_requirements_label.setWordWrap(True)
+        btn_update = QPushButton("刷新流状态")
+        btn_update.clicked.connect(self._update_stream_status)
+        layout.addRow("color_topic", self.camera_topic_label)
+        layout.addRow("camera_info_topic", self.camera_info_topic_label)
         layout.addRow("当前后端", self.camera_backend_label)
-        layout.addRow(btn_restart)
+        layout.addRow(self.camera_requirements_label)
+        layout.addRow(btn_update)
         self.tabs.addTab(self._wrap_tab(page), "相机")
 
     def _build_board_tab(self) -> None:
@@ -510,6 +403,12 @@ class HandEyeCaptureWindow(QMainWindow):
         self.board_cols_edit = self._new_line_edit("11")
         self.board_rows_edit = self._new_line_edit("8")
         self.square_size_edit = self._new_line_edit("0.02")
+        self.camera_info_source_label = QLabel(self.current_camera_info_source)
+        self.camera_info_resolution_label = QLabel("unknown")
+        self.camera_info_dist_model_label = QLabel("unknown")
+        self.btn_sync_camera_info = QPushButton("从 ROS color/camera_info 同步")
+        self.btn_sync_camera_info.clicked.connect(self.sync_ros_camera_info_to_fields)
+        self.btn_sync_camera_info.setEnabled(self.ros_available)
         self.fx_edit = self._new_line_edit(f"{float(CAMERA_MATRIX[0, 0]):.8f}")
         self.fy_edit = self._new_line_edit(f"{float(CAMERA_MATRIX[1, 1]):.8f}")
         self.cx_edit = self._new_line_edit(f"{float(CAMERA_MATRIX[0, 2]):.8f}")
@@ -518,9 +417,14 @@ class HandEyeCaptureWindow(QMainWindow):
         self.dist1_edit = self._new_line_edit(f"{float(DIST_COEFFS[1]):.8f}")
         self.dist2_edit = self._new_line_edit(f"{float(DIST_COEFFS[2]):.8f}")
         self.dist3_edit = self._new_line_edit(f"{float(DIST_COEFFS[3]):.8f}")
+        self.dist4_edit = self._new_line_edit("0.00000000")
         layout.addRow("棋盘列数(内角点)", self.board_cols_edit)
         layout.addRow("棋盘行数(内角点)", self.board_rows_edit)
         layout.addRow("square_size_m", self.square_size_edit)
+        layout.addRow("相机模型来源", self.camera_info_source_label)
+        layout.addRow("当前分辨率", self.camera_info_resolution_label)
+        layout.addRow("distortion_model", self.camera_info_dist_model_label)
+        layout.addRow(self.btn_sync_camera_info)
         layout.addRow("fx", self.fx_edit)
         layout.addRow("fy", self.fy_edit)
         layout.addRow("cx", self.cx_edit)
@@ -529,6 +433,7 @@ class HandEyeCaptureWindow(QMainWindow):
         layout.addRow("dist[1]", self.dist1_edit)
         layout.addRow("dist[2]", self.dist2_edit)
         layout.addRow("dist[3]", self.dist3_edit)
+        layout.addRow("dist[4]", self.dist4_edit)
         self.tabs.addTab(self._wrap_tab(page), "棋盘/内参")
 
     def _build_ros_pose_tab(self) -> None:
@@ -665,15 +570,133 @@ class HandEyeCaptureWindow(QMainWindow):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_text.appendPlainText(f"[{timestamp}] {message}")
 
-    def current_capture_cfg(self) -> CaptureRuntimeConfig:
-        return CaptureRuntimeConfig(
-            color_width=int(self.camera_width_edit.text().strip()),
-            color_height=int(self.camera_height_edit.text().strip()),
-            color_fps=int(self.camera_fps_edit.text().strip()),
-            cv_device_index=int(self.cv_index_edit.text().strip()),
-            rotate_180=self.rotate_180_checkbox.isChecked(),
-            prefer_orbbec=self.prefer_orbbec_checkbox.isChecked(),
-        )
+    def _set_intrinsics_fields(
+        self, camera_matrix: np.ndarray, dist_coeffs: np.ndarray
+    ) -> None:
+        self.fx_edit.setText(f"{float(camera_matrix[0, 0]):.8f}")
+        self.fy_edit.setText(f"{float(camera_matrix[1, 1]):.8f}")
+        self.cx_edit.setText(f"{float(camera_matrix[0, 2]):.8f}")
+        self.cy_edit.setText(f"{float(camera_matrix[1, 2]):.8f}")
+        coeffs = np.asarray(dist_coeffs, dtype=np.float64).reshape(-1)
+        padded = np.zeros(5, dtype=np.float64)
+        padded[: min(5, coeffs.size)] = coeffs[:5]
+        self.dist0_edit.setText(f"{float(padded[0]):.8f}")
+        self.dist1_edit.setText(f"{float(padded[1]):.8f}")
+        self.dist2_edit.setText(f"{float(padded[2]):.8f}")
+        self.dist3_edit.setText(f"{float(padded[3]):.8f}")
+        self.dist4_edit.setText(f"{float(padded[4]):.8f}")
+
+    def _camera_info_payload_from_msg(self, msg: CameraInfo) -> Dict[str, Any]:
+        K = np.array(msg.K, dtype=np.float64).reshape(3, 3)
+        D = np.array(list(msg.D), dtype=np.float64).reshape(-1)
+        return {
+            "width": int(msg.width),
+            "height": int(msg.height),
+            "frame_id": str(msg.header.frame_id),
+            "distortion_model": str(msg.distortion_model or "plumb_bob"),
+            "K": K.tolist(),
+            "D": D.tolist(),
+            "R": list(msg.R),
+            "P": list(msg.P),
+            "source": "/piper/camera/orbbec/color/camera_info",
+            "stream_name": "color",
+        }
+
+    def log(self, message: str) -> None:
+        if self._closing:
+            return
+        self.log_message.emit(message)
+
+    def _append_log(self, message: str) -> None:
+        if self._closing:
+            return
+        if not hasattr(self, "log_text") or self.log_text is None:
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        try:
+            self.log_text.appendPlainText(f"[{timestamp}] {message}")
+        except RuntimeError:
+            pass
+
+    def _update_stream_status(self) -> None:
+        if self.current_frame is not None:
+            self.capture_status_label.setText(
+                f"采集状态：ROS 图像在线，来源={self.current_image_source}"
+            )
+            self.camera_backend_label.setText(self.current_image_source)
+            return
+        if self.ros_available:
+            self.capture_status_label.setText("采集状态：等待 ROS 图像流")
+            self.camera_backend_label.setText("ROS 订阅中")
+        else:
+            self.capture_status_label.setText("采集状态：ROS 未连接")
+            self.camera_backend_label.setText("ROS 未连接")
+
+    def on_ros_color_image(self, msg: Image) -> None:
+        if self.bridge is None:
+            return
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            self.current_frame_wall_time = datetime.now().isoformat(
+                timespec="milliseconds"
+            )
+            self.current_image_source = ROS_CAMERA_DEFAULTS.color_topic
+            if not self._closing:
+                self.ros_image_received.emit(frame)
+        except Exception as exc:
+            self.log(f"ROS 彩图解析失败: {exc}")
+
+    def _apply_ros_frame(self, frame: np.ndarray) -> None:
+        if self._closing:
+            return
+        try:
+            self.current_frame = frame.copy()
+            self.video_label.set_frame(frame)
+            self._update_stream_status()
+        except RuntimeError:
+            pass
+
+    def _apply_camera_info_payload(self, payload: Dict[str, Any]) -> None:
+        if self._closing:
+            return
+        try:
+            self.camera_info_source_label.setText(self.current_camera_info_source)
+            self.camera_info_resolution_label.setText(
+                f"{payload['width']} x {payload['height']} @ {payload['frame_id']}"
+            )
+            self.camera_info_dist_model_label.setText(payload["distortion_model"])
+            if self.current_ros_camera_matrix is not None:
+                dist = self.current_ros_dist_coeffs
+                if dist is None or dist.size == 0:
+                    dist = np.zeros(5, dtype=np.float64)
+                self._set_intrinsics_fields(self.current_ros_camera_matrix, dist)
+        except RuntimeError:
+            pass
+
+    def on_color_camera_info(self, msg: CameraInfo) -> None:
+        try:
+            payload = self._camera_info_payload_from_msg(msg)
+            self.current_camera_info_payload = payload
+            self.current_ros_camera_matrix = np.array(payload["K"], dtype=np.float64)
+            self.current_ros_dist_coeffs = np.array(payload["D"], dtype=np.float64)
+            self.current_camera_info_source = payload["source"]
+            if not self._closing:
+                self.camera_info_updated.emit(payload)
+        except Exception as exc:
+            self.log(f"color/camera_info 解析失败: {exc}")
+
+    def sync_ros_camera_info_to_fields(self) -> None:
+        if (
+            self.current_camera_info_payload is None
+            or self.current_ros_camera_matrix is None
+        ):
+            QMessageBox.warning(self, "提示", "当前尚未收到 ROS color/camera_info")
+            return
+        dist = self.current_ros_dist_coeffs
+        if dist is None or dist.size == 0:
+            dist = np.zeros(5, dtype=np.float64)
+        self._set_intrinsics_fields(self.current_ros_camera_matrix, dist)
+        self.log("已将 ROS color/camera_info 同步到棋盘/内参页面")
 
     def current_board_cfg(self) -> BoardConfig:
         camera_matrix = np.array(
@@ -698,6 +721,7 @@ class HandEyeCaptureWindow(QMainWindow):
                 float(self.dist1_edit.text().strip()),
                 float(self.dist2_edit.text().strip()),
                 float(self.dist3_edit.text().strip()),
+                float(self.dist4_edit.text().strip()),
             ],
             dtype=np.float64,
         )
@@ -731,17 +755,6 @@ class HandEyeCaptureWindow(QMainWindow):
             z_axis_cos_min=float(self.z_axis_cos_min_edit.text().strip()),
         )
 
-    def on_frame_ready(self, frame: np.ndarray) -> None:
-        self.current_frame = frame.copy()
-        self.current_frame_wall_time = datetime.now().isoformat(timespec="milliseconds")
-        self.video_label.set_frame(frame)
-        ros_note = " | ROS在线" if self.ros_available else " | ROS离线"
-        backend = self.worker.backend_name if self.worker is not None else "unknown"
-        self.capture_status_label.setText(
-            f"采集状态：相机在线，后端={backend}{ros_note}"
-        )
-        self.camera_backend_label.setText(backend)
-
     def refresh_available_indices(self) -> None:
         dataset_root = self.dataset_root()
         indices = list_available_dataset_indices(dataset_root)
@@ -760,26 +773,6 @@ class HandEyeCaptureWindow(QMainWindow):
         self.current_index_edit.setText(str(next_index))
         self.min_index_edit.setText(str(min(indices)))
         self.max_index_edit.setText(str(max(indices)))
-
-    def restart_camera(self) -> None:
-        try:
-            cfg = self.current_capture_cfg()
-        except Exception as exc:
-            QMessageBox.critical(self, "相机配置错误", str(exc))
-            return
-
-        if self.worker is not None:
-            self.worker.stop()
-            self.worker = None
-
-        self.worker = CameraWorker(cfg)
-        self.worker.frame_ready.connect(self.on_frame_ready)
-        self.worker.status.connect(self.log)
-        self.worker.start()
-        self.camera_backend_label.setText("启动中")
-        self.log(
-            f"重启相机：{cfg.color_width}x{cfg.color_height}@{cfg.color_fps}, rotate_180={cfg.rotate_180}, prefer_orbbec={cfg.prefer_orbbec}"
-        )
 
     def _parse_pose(self) -> RobotPose:
         return RobotPose(
@@ -891,8 +884,6 @@ class HandEyeCaptureWindow(QMainWindow):
         try:
             if self.current_frame is None:
                 raise ValueError("当前没有可用视频帧")
-            if self.worker is None:
-                raise ValueError("相机线程尚未初始化")
 
             sample_index = int(self.current_index_edit.text().strip())
             if sample_index <= 0:
@@ -900,7 +891,6 @@ class HandEyeCaptureWindow(QMainWindow):
 
             frame = self.current_frame.copy()
             board_cfg = self.current_board_cfg()
-            capture_cfg = self.current_capture_cfg()
             if self.auto_tf_checkbox.isChecked():
                 pose_payload = self._lookup_tf_transform()
                 pose_note = "ROS TF"
@@ -916,13 +906,13 @@ class HandEyeCaptureWindow(QMainWindow):
             else:
                 pose_payload = self._build_manual_pose_payload()
                 pose_note = "手动输入"
-                pose = self._parse_pose()
 
             dataset_root = ensure_dir(self.dataset_root())
             sample_dir = ensure_dir(dataset_root / str(sample_index))
 
             image_path = sample_dir / DEFAULT_IMAGE_NAME
             pose_path = sample_dir / DEFAULT_POSE_NAME
+            camera_info_path = sample_dir / DEFAULT_CAMERA_INFO_NAME
             detect_path = sample_dir / DEFAULT_DETECTION_NAME
             annotated_path = sample_dir / DEFAULT_ANNOTATED_NAME
 
@@ -930,22 +920,61 @@ class HandEyeCaptureWindow(QMainWindow):
                 raise RuntimeError(f"保存图像失败: {image_path}")
 
             det = detect_board_pose(frame, board_cfg)
+            if self.current_camera_info_payload is not None:
+                camera_info_payload = dict(self.current_camera_info_payload)
+            else:
+                camera_info_payload = {
+                    "width": int(frame.shape[1]),
+                    "height": int(frame.shape[0]),
+                    "frame_id": "",
+                    "distortion_model": "plumb_bob",
+                    "K": board_cfg.camera_matrix.tolist(),
+                    "D": board_cfg.dist_coeffs.tolist(),
+                    "R": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    "P": [
+                        float(board_cfg.camera_matrix[0, 0]),
+                        0.0,
+                        float(board_cfg.camera_matrix[0, 2]),
+                        0.0,
+                        0.0,
+                        float(board_cfg.camera_matrix[1, 1]),
+                        float(board_cfg.camera_matrix[1, 2]),
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                        0.0,
+                    ],
+                    "source": self.current_camera_info_source,
+                    "stream_name": "color",
+                }
+            camera_info_payload.update(
+                {
+                    "saved_at": datetime.now().isoformat(timespec="milliseconds"),
+                    "capture_backend": self.current_image_source,
+                    "rotate_180": False,
+                }
+            )
+            write_json(camera_info_path, camera_info_payload)
+
             pose_payload.update(
                 {
                     "frame_requirement": f"默认要求为 ^base T_flange；位置单位 mm；姿态单位 deg；pose_rotation_formula={self.pose_rotation_formula_box.currentText()}",
                     "timestamp": datetime.now().isoformat(timespec="milliseconds"),
                     "image_capture_wall_time": self.current_frame_wall_time,
-                    "camera_backend": self.worker.backend_name,
+                    "camera_backend": self.current_image_source,
                     "image_size": [int(frame.shape[1]), int(frame.shape[0])],
                     "camera_matrix": board_cfg.camera_matrix.tolist(),
                     "dist_coeffs": board_cfg.dist_coeffs.tolist(),
-                    "rotate_180": capture_cfg.rotate_180,
+                    "camera_info_file": camera_info_path.name,
+                    "camera_model_source": camera_info_payload.get(
+                        "source", self.current_camera_info_source
+                    ),
+                    "rotate_180": False,
                     "capture_config": {
-                        "color_width": capture_cfg.color_width,
-                        "color_height": capture_cfg.color_height,
-                        "color_fps": capture_cfg.color_fps,
-                        "cv_device_index": capture_cfg.cv_device_index,
-                        "prefer_orbbec": capture_cfg.prefer_orbbec,
+                        "color_topic": ROS_CAMERA_DEFAULTS.color_topic,
+                        "camera_info_topic": ROS_CAMERA_DEFAULTS.camera_info_topic,
+                        "source_mode": "ros_only",
                     },
                 }
             )
@@ -959,6 +988,8 @@ class HandEyeCaptureWindow(QMainWindow):
                 "image_size": det.image_size,
                 "camera_matrix": board_cfg.camera_matrix.tolist(),
                 "dist_coeffs": board_cfg.dist_coeffs.tolist(),
+                "camera_info_file": DEFAULT_CAMERA_INFO_NAME,
+                "camera_model_source": self.current_camera_info_source,
                 "rvec": det.rvec.reshape(-1).tolist() if det.rvec is not None else None,
                 "tvec_m": (
                     det.tvec.reshape(-1).tolist() if det.tvec is not None else None
@@ -991,8 +1022,6 @@ class HandEyeCaptureWindow(QMainWindow):
                     f"采集状态：样本 {sample_index} 保存成功，但棋盘格检测失败"
                 )
 
-            if self.auto_inc_checkbox.isChecked():
-                self.current_index_edit.setText(str(sample_index + 1))
             self.refresh_available_indices()
             self.current_index_edit.setText(
                 str(
@@ -1097,8 +1126,19 @@ class HandEyeCaptureWindow(QMainWindow):
             QMessageBox.critical(self, "错误", str(exc))
 
     def closeEvent(self, event):
-        if self.worker is not None:
-            self.worker.stop()
+        self._closing = True
+        if self.color_info_sub is not None:
+            try:
+                self.color_info_sub.unregister()
+            except Exception:
+                pass
+            self.color_info_sub = None
+        if self.color_image_sub is not None:
+            try:
+                self.color_image_sub.unregister()
+            except Exception:
+                pass
+            self.color_image_sub = None
         event.accept()
 
 
