@@ -86,7 +86,7 @@ class RosConfig:
     result_wait_sec: float = 10.0
     tf_wait_sec: float = 0.2
     camera_color_topic: str = "/piper/camera/orbbec/color/image_raw"
-    camera_depth_topic: str = "/piper/camera/orbbec/depth/image_raw"
+    camera_depth_topic: str = "/piper/camera/orbbec/depth/image_projection"
     camera_info_topic: str = "/piper/camera/orbbec/info"
     camera_lrm_topic: str = "/piper/camera/orbbec/lrm_distance"
 
@@ -609,7 +609,9 @@ class MainWindow(QMainWindow):
 
         self.camera_render_timer = QTimer(self)
         self.camera_render_timer.timeout.connect(self.flush_latest_frame)
-        self.camera_render_timer.start(max(10, int(1000 / max(1, UI_CFG.render_fps_limit))))
+        self.camera_render_timer.start(
+            max(10, int(1000 / max(1, UI_CFG.render_fps_limit)))
+        )
 
         self._toggle_window_shortcut = QShortcut(QKeySequence("F11"), self)
         self._toggle_window_shortcut.activated.connect(self.toggle_window_state)
@@ -635,7 +637,9 @@ class MainWindow(QMainWindow):
                 rospy.Duration(ROS_CFG.action_wait_sec)
             )
             if not self.pick_action_available:
-                print(f"[ROS] 警告: {ROS_CFG.action_name} action 不可用，写入/执行任务按钮将不可用")
+                print(
+                    f"[ROS] 警告: {ROS_CFG.action_name} action 不可用，写入/执行任务按钮将不可用"
+                )
 
             self.simple_move_client = actionlib.SimpleActionClient(
                 ROS_CFG.simple_move_action_name, SimpleMoveArmAction
@@ -656,7 +660,6 @@ class MainWindow(QMainWindow):
             self.simple_move_available = False
 
     def flange_point_to_tcp_point(
-
         self,
         x_flange: float,
         y_flange: float,
@@ -907,14 +910,14 @@ class MainWindow(QMainWindow):
             Image,
             self.on_color_image,
             queue_size=1,
-            buff_size=2 ** 24,
+            buff_size=2**24,
         )
         rospy.Subscriber(
             ROS_CFG.camera_depth_topic,
             Image,
             self.on_depth_image,
             queue_size=1,
-            buff_size=2 ** 24,
+            buff_size=2**24,
         )
         rospy.Subscriber(
             ROS_CFG.camera_info_topic,
@@ -948,13 +951,15 @@ class MainWindow(QMainWindow):
             depth_m = self.bridge.imgmsg_to_cv2(msg, desired_encoding="32FC1")
             if depth_m is None:
                 return
-            self.current_depth_data = (depth_m.astype(np.float32) * 1000.0)
+            self.current_depth_data = depth_m.astype(np.float32) * 1000.0
         except Exception as e:
             print(f"[GUI] 深度图转换失败: {e}")
 
     def on_camera_info(self, msg: CameraInfo) -> None:
         try:
-            self.current_depth_intrinsics = np.array(msg.K, dtype=np.float64).reshape(3, 3)
+            self.current_depth_intrinsics = np.array(msg.K, dtype=np.float64).reshape(
+                3, 3
+            )
             self.current_projection_mode = "camera_projection"
             if msg.width > 0 and msg.height > 0:
                 self.current_color_size = (msg.width, msg.height)
@@ -970,7 +975,6 @@ class MainWindow(QMainWindow):
             self.current_lrm_mm = 0
 
     def get_valid_depth_around(
-
         self,
         depth_img: np.ndarray,
         u: int,

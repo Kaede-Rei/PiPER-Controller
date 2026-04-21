@@ -25,7 +25,7 @@ except ImportError:
     OBStreamType = None
 
 
-def intrinsic_to_matrix(intrinsic):
+def intrinsic_to_matrix(intrinsic: VideoFrame.Intrinsic) -> np.ndarray:
     return np.array(
         [
             [intrinsic.fx, 0.0, intrinsic.cx],
@@ -36,7 +36,7 @@ def intrinsic_to_matrix(intrinsic):
     )
 
 
-def frame_to_bgr_image(frame):
+def frame_to_bgr_image(frame: VideoFrame) -> np.ndarray:
     width = frame.get_width()
     height = frame.get_height()
     color_format = frame.get_format()
@@ -88,7 +88,7 @@ class PiperOrbbec:
             "/piper/camera/orbbec/color/image_raw", Image, queue_size=1
         )
         self.depth_pub = rospy.Publisher(
-            "/piper/camera/orbbec/depth/image_raw", Image, queue_size=1
+            "/piper/camera/orbbec/depth/image_projection", Image, queue_size=1
         )
         self.info_pub = rospy.Publisher(
             "/piper/camera/orbbec/info", CameraInfo, queue_size=1
@@ -97,7 +97,9 @@ class PiperOrbbec:
             "/piper/camera/orbbec/lrm_distance", Float32, queue_size=1
         )
 
-    def _select_color_profile(self, profile_list):
+    def _select_color_profile(
+        self, profile_list: VideoFrame.StreamProfileList
+    ) -> VideoFrame.VideoStreamProfile:
         try:
             return profile_list.get_video_stream_profile(
                 self.color_width, self.color_height, OBFormat.RGB, self.color_fps
@@ -110,7 +112,9 @@ class PiperOrbbec:
             except Exception:
                 return profile_list.get_default_video_stream_profile()
 
-    def _select_depth_profile(self, profile_list):
+    def _select_depth_profile(
+        self, profile_list: VideoFrame.StreamProfileList
+    ) -> VideoFrame.VideoStreamProfile:
         try:
             return profile_list.get_video_stream_profile(
                 self.depth_width, self.depth_height, OBFormat.Y16, self.depth_fps
@@ -118,7 +122,7 @@ class PiperOrbbec:
         except Exception:
             return profile_list.get_default_video_stream_profile()
 
-    def _set_disparity_search_range_256(self):
+    def _set_disparity_search_range_256(self) -> bool:
         if self.device is None:
             return False
 
@@ -136,7 +140,7 @@ class PiperOrbbec:
             rospy.logwarn("视差搜索范围设置失败: %s", e)
             return False
 
-    def _build_depth_m(self, depth_frame):
+    def _build_depth_m(self, depth_frame: VideoFrame) -> np.ndarray:
         depth_u16 = np.frombuffer(depth_frame.get_data(), dtype=np.uint16).reshape(
             (depth_frame.get_height(), depth_frame.get_width())
         )
@@ -151,7 +155,9 @@ class PiperOrbbec:
         ).astype(np.float32)
         return depth_m
 
-    def _build_camera_info(self, width, height, K, stamp):
+    def _build_camera_info(
+        self, width: int, height: int, K: np.ndarray, stamp: rospy.Time
+    ) -> CameraInfo:
         msg = CameraInfo()
         msg.header.stamp = stamp
         msg.header.frame_id = self.frame_id
