@@ -36,7 +36,7 @@ micromamba create -n ros_env -c conda-forge -c robostack-noetic \
     ros-dev-tools \
     ros-noetic-moveit \
     ros-noetic-pcl-ros \
-    
+    ros-noetic-tf2-sensor-msgs \
     ros-noetic-trac-ik-kinematics-plugin \
     ros-noetic-rosserial \
     ros-noetic-rosserial-python \

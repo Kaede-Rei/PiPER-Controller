@@ -1,0 +1,31 @@
+topics:
+  color_image: /piper/camera/orbbec/color/image_raw
+  depth_image: /piper/camera/orbbec/depth_registered/image_raw
+  camera_info: /piper/camera/orbbec/depth_registered/camera_info
+
+target_frame: base_link
+
+pixel_stride: 4
+frame_skip: 2
+
+depth:
+  min: 0.15
+  max: 1.50
+
+workspace:
+  min_x: 0.00
+  max_x: 0.80
+  min_y: -0.50
+  max_y: 0.50
+  min_z: 0.00
+  max_z: 1.20
+
+filters:
+  voxel_leaf: 0.015
+  sor_mean_k: 20
+  sor_stddev: 1.0
+
+publish:
+  raw: true
+  base: true
+  filtered: true

@@ -1,0 +1,5 @@
+<launch>
+    <node pkg="piper_perception" type="cloud_preprocessor" name="cloud_preprocessor" output="screen">
+        <rosparam command="load" file="$(find piper_perception)/config/piper_perception.yaml" />
+    </node>
+</launch>
