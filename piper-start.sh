@@ -67,77 +67,80 @@ function cleanup() {
         exit 1
     fi
 
-    echo "检测到中断，令机械臂回到零点 ..."
-    python3 - <<'PY' || true
+    echo "检测到中断，尝试令机械臂回到零点 ..."
+    python3 - <<'PY' || echo "跳过回零动作（服务未就绪）"
 import sys
-
 import actionlib
 import rospy
-
 from piper_msgs2.msg import SimpleMoveArmAction, SimpleMoveArmGoal
 
-
-def main() -> int:
-    rospy.init_node("piper_exit_zero", anonymous=True, disable_signals=True)
+def main():
+    # 设置较短的初始化时间，避免退出时阻塞太久
+    rospy.init_node("piper_exit_zero_checker", anonymous=True, disable_signals=True)
     client = actionlib.SimpleActionClient("/simple_move_arm", SimpleMoveArmAction)
-
-    if not client.wait_for_server(rospy.Duration(5.0)):
-        print("[WARN] 未找到 /simple_move_arm action server")
+    
+    # 仅等待 1.5 秒，如果服务不在说明节点已经挂了或未启动
+    if not client.wait_for_server(rospy.Duration(1.5)):
         return 1
 
+    print("检测到服务，正在令机械臂回到零点...")
     goal = SimpleMoveArmGoal()
     goal.command_type = SimpleMoveArmGoal.MOVE_TO_ZERO
-    goal.target_type = SimpleMoveArmGoal.TARGET_POSE
-    goal.x = [0.0]
-    goal.y = [0.0]
-    goal.z = [0.0]
-    goal.roll = [0.0]
-    goal.pitch = [0.0]
-    goal.yaw = [0.0]
-
+    # ... 填充参数
     client.send_goal(goal)
-
-    if not client.wait_for_result(rospy.Duration(15.0)):
+    
+    # 等待执行完成，给定合理的超时
+    if not client.wait_for_result(rospy.Duration(10.0)):
         client.cancel_goal()
-        print("[WARN] 回零动作等待超时")
-        return 1
-
-    result = client.get_result()
-    print(result)
+        print("[WARN] 回零超时")
     return 0
 
-
-sys.exit(main())
+if __name__ == "__main__":
+    sys.exit(main())
 PY
 
-    # 等待自定义时间
+    # 等待缓冲
     sleep "$DELAY_SEC"
 
-    # 可选：失能
+    # 可选失能 (增加服务存在性判断)
     if [[ "$DISABLE_ON_EXIT" == true ]]; then
-        rosservice call /enable_srv "enable_request: false" || true
+        if rosservice list | grep -q "/enable_srv"; then
+            echo "[ACTION] 正在使系统失能..."
+            rosservice call /enable_srv "enable_request: false" >/dev/null 2>&1 || true
+        fi
     fi
 
-    echo "正在关闭 roslaunch ..."
+    # 彻底杀掉 ROS 进程
+    echo "[ACTION] 正在关闭 roslaunch (PID: $ROSLAUNCH_PID)..."
     kill $ROSLAUNCH_PID 2>/dev/null || true
-    wait $ROSLAUNCH_PID 2>/dev/null || true
+    
+    # 给一点宽限时间让进程自行结束，否则强杀
+    sleep 1
+    kill -9 $ROSLAUNCH_PID 2>/dev/null || true
 
     echo "退出完成"
 }
 
+# 捕获信号
 trap cleanup SIGINT SIGTERM
 
 echo "================ 启动 Piper 系统 ================"
 
-# 激活 CAN
+# 配置 CAN 接口 (即便失败也继续)
 echo "[1/2] 配置 CAN 接口"
-sudo "$SCRIPT_DIR/can-activate.sh"
-echo "[CAN] 配置完成"
+if [ -f "$SCRIPT_DIR/can-activate.sh" ]; then
+    # 使用 || true 确保脚本报错不会导致 set -e 退出整个主脚本
+    sudo "$SCRIPT_DIR/can-activate.sh" || echo "[WARN] CAN 配置脚本执行异常，尝试继续启动 ROS..."
+else
+    echo "[WARN] 未找到 can-activate.sh，跳过配置步骤"
+fi
 
-# 启动 ROS
-echo "[2/2] 启动 ROS Launch"
-setsid roslaunch piper_interface piper_start.launch &
+# 启动 ROS Launch
+echo "[2/2] 启动 ROS Launch..."
+# 标记为 SUCCESS 表示清理函数 cleanup 现在可以处理进程回收了
+SUCCESS=true
+roslaunch piper_interface piper_start.launch &
 ROSLAUNCH_PID=$!
-SUCESS=true
 
+# 等待子进程
 wait $ROSLAUNCH_PID

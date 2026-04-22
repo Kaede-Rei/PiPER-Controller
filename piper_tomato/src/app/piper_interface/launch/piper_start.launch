@@ -3,14 +3,16 @@
     <include file="$(find piper)/launch/start_single_piper.launch" />
     <!-- Gemini335L 相机 -->
     <include file="$(find piper_camera)/launch/piper_camera.launch" />
-    <!-- PiPER 感知 -->
-    <include file="$(find piper_perception)/launch/piper_perception.launch" />
     <!-- 延时 -->
-    <node name="delay_for_moveit" pkg="roscpp_tutorials" type="talker" launch-prefix="bash -c 'sleep 3; exec '" output="screen" />
+    <node name="delay_for_piper" pkg="roscpp_tutorials" type="talker" launch-prefix="bash -c 'sleep 3; exec '" output="screen" />
     <!-- 硬件节点 -->
     <include file="$(find piper_with_gripper_moveit)/launch/demo.launch" />
     <!-- 接口节点 -->
     <node pkg="piper_interface" type="piper_start" name="piper_start" output="screen">
         <rosparam command="load" file="$(find piper_interface)/config/config.yaml" />
     </node>
+    <!-- 延时 -->
+    <node name="delay_for_moveit" pkg="roscpp_tutorials" type="talker" launch-prefix="bash -c 'sleep 20; exec '" output="screen" />
+    <!-- PiPER 感知 -->
+    <include file="$(find piper_perception)/launch/piper_perception.launch" />
 </launch>

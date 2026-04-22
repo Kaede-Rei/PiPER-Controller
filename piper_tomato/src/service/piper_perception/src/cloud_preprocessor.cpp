@@ -72,6 +72,8 @@ public:
 
         sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(SyncPolicy(10), color_sub_, depth_sub_, depth_info_sub_);
         sync_->registerCallback(boost::bind(&CloudProprocessor::callback, this, _1, _2, _3));
+
+        ROS_INFO("CloudPreprocessor 已启动，订阅彩色图像: %s, 深度图像: %s, 相机信息: %s", color_sub_.getTopic().c_str(), depth_sub_.getTopic().c_str(), depth_info_sub_.getTopic().c_str());
     }
 
 private:
