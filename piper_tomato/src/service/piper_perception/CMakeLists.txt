@@ -38,7 +38,7 @@ find_package(catkin REQUIRED COMPONENTS ${DEPS})
 # TODO: 如需第三方库，在这里手动添加
 # 例如：find_package(Eigen3 REQUIRED)
 find_package(OpenCV REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common filters)
+find_package(PCL REQUIRED COMPONENTS common filters io octree segmentation surface)
 
 # ========================= catkin 导出配置 ========================= #
 # 自动判断 include 目录是否存在，防止 catkin_package 报错
