@@ -66,9 +66,9 @@ public:
         publish_base_ = get_param<bool>("publish_base", true);
         publish_filtered_ = get_param<bool>("publish_filtered", true);
 
-        raw_pub_ = nh_.advertise <sensor_msgs::PointCloud2 >("/piper/perception/cloud/raw", 1);
-        base_pub_ = nh_.advertise <sensor_msgs::PointCloud2 >("/piper/perception/cloud/base", 1);
-        filtered_pub_ = nh_.advertise <sensor_msgs::PointCloud2 >("/piper/perception/cloud/filtered", 1);
+        raw_pub_ = nh_.advertise <sensor_msgs::PointCloud2>("/piper/perception/cloud/raw", 1);
+        base_pub_ = nh_.advertise <sensor_msgs::PointCloud2>("/piper/perception/cloud/base", 1);
+        filtered_pub_ = nh_.advertise <sensor_msgs::PointCloud2>("/piper/perception/cloud/filtered", 1);
 
         sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(SyncPolicy(10), color_sub_, depth_sub_, depth_info_sub_);
         sync_->registerCallback(boost::bind(&CloudProprocessor::callback, this, _1, _2, _3));
@@ -149,15 +149,38 @@ private:
         if(publish_raw_) raw_pub_.publish(raw_msg);
 
         sensor_msgs::PointCloud2 base_msg = raw_msg;
-        if(!target_frame_.empty() && target_frame_ != raw_msg.header.frame_id) {
+        if(!target_frame_.empty() && raw_msg.header.frame_id != target_frame_) {
+            const ros::Time query_stamp = raw_msg.header.stamp;
+            geometry_msgs::TransformStamped tf;
+            bool tf_ok = false;
+
             try {
-                geometry_msgs::TransformStamped tf = tf_buffer_.lookupTransform(target_frame_, raw_msg.header.frame_id, raw_msg.header.stamp, ros::Duration(0.05));
-                tf2::doTransform(raw_msg, base_msg, tf);
-                base_msg.header.frame_id = target_frame_;
+                tf = tf_buffer_.lookupTransform(target_frame_, raw_msg.header.frame_id, query_stamp, ros::Duration(0.10));
+                tf_ok = true;
+            }
+            catch(const tf2::ExtrapolationException& e) {
+                ROS_WARN("TF extrapolation at image stamp %.6f, fallback to latest transform: %s", query_stamp.toSec(), e.what());
+
+                try {
+                    tf = tf_buffer_.lookupTransform(target_frame_, raw_msg.header.frame_id, ros::Time(0), ros::Duration(0.10));
+                    tf_ok = true;
+                }
+                catch(const tf2::TransformException& e2) {
+                    ROS_WARN("TF fallback failed: %s", e2.what());
+                    return;
+                }
             }
             catch(const tf2::TransformException& e) {
-                ROS_WARN("TF 转换失败: %s", e.what());
+                ROS_WARN("TF transform failed: %s", e.what());
                 return;
+            }
+
+            if(tf_ok) {
+                tf2::doTransform(raw_msg, base_msg, tf);
+                base_msg.header.frame_id = target_frame_;
+
+                if(!tf.header.stamp.isZero()) base_msg.header.stamp = tf.header.stamp;
+                else base_msg.header.stamp = query_stamp;
             }
         }
 

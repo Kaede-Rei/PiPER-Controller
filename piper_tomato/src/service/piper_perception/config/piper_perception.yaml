@@ -3,7 +3,7 @@ topics:
   depth_image: /piper/camera/orbbec/depth_registered/image_raw
   depth_info: /piper/camera/orbbec/depth_registered/camera_info
 
-target_frame: eef_camera_color_optical_frame
+target_frame: base_link
 
 pixel_stride: 4
 frame_skip: 2

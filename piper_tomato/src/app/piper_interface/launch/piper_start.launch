@@ -1,18 +1,28 @@
 <launch>
     <!-- 真机控制 - 启动 PiPER 控制节点 -->
     <include file="$(find piper)/launch/start_single_piper.launch" />
+
     <!-- Gemini335L 相机 -->
     <include file="$(find piper_camera)/launch/piper_camera.launch" />
+
+    <!-- 相机 TF: link6 -> eef_camera_color_optical_frame -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="eef_camera_color_tf_pub" args="0.038744 -0.020338 0.072264 -0.013729 0.003526 0.646240 0.763002 link6 eef_camera_color_optical_frame" />
+    <node pkg="tf2_ros" type="static_transform_publisher" name="eef_camera_depth_tf_pub" args="0.038744 -0.020338 0.072264 -0.013729 0.003526 0.646240 0.763002 link6 eef_camera_depth_optical_frame" />
+
     <!-- 延时 -->
     <node name="delay_for_piper" pkg="roscpp_tutorials" type="talker" launch-prefix="bash -c 'sleep 3; exec '" output="screen" />
+
     <!-- 硬件节点 -->
     <include file="$(find piper_with_gripper_moveit)/launch/demo.launch" />
+
     <!-- 接口节点 -->
     <node pkg="piper_interface" type="piper_start" name="piper_start" output="screen">
         <rosparam command="load" file="$(find piper_interface)/config/config.yaml" />
     </node>
+
     <!-- 延时 -->
     <node name="delay_for_moveit" pkg="roscpp_tutorials" type="talker" launch-prefix="bash -c 'sleep 20; exec '" output="screen" />
+
     <!-- PiPER 感知 -->
     <include file="$(find piper_perception)/launch/piper_perception.launch" />
 </launch>
