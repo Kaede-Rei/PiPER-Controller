@@ -6,13 +6,13 @@
     <include file="$(find piper_camera)/launch/piper_camera.launch" />
 
     <!-- 硬件节点 -->
-    <node name="launch_moveit" pkg="piper_interface" type="bash" args="-c 'sleep 3; roslaunch piper_with_gripper_moveit demo.launch'" output="screen" />
-
-    <!-- 接口节点 -->
-    <node pkg="piper_interface" type="piper_start" name="piper_start" launch-prefix="bash -c 'sleep 8; exec $0 $@' " output="screen">
-        <rosparam command="load" file="$(find piper_interface)/config/config.yaml" />
-    </node>
+    <include file="$(find piper_with_gripper_moveit)/launch/demo.launch" />
 
     <!-- PiPER 感知 -->
-    <node name="launch_perception" pkg="piper_interface" type="bash" args="-c 'sleep 25; roslaunch piper_perception piper_perception.launch'" output="screen" />
+    <include file="$(find piper_perception)/launch/piper_perception.launch" />
+
+    <!-- 接口节点 -->
+    <node pkg="piper_interface" type="piper_start" name="piper_start" launch-prefix="bash -c 'sleep 5; exec $0 $@' " output="screen">
+        <rosparam command="load" file="$(find piper_interface)/config/config.yaml" />
+    </node>
 </launch>
