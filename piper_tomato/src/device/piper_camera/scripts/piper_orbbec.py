@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 import rospy
+import tf2_ros
+from geometry_msgs.msg import TransformStamped
+import tf.transformations as tf_trans
 from cv_bridge import CvBridge
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Float32
@@ -105,6 +108,9 @@ class PiperOrbbec:
             "~depth_registered_frame_id", self.color_frame_id
         )
 
+        self._static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster()
+        self._publish_cam_to_flange_tf()
+
         self.distortion_model = rospy.get_param("~distortion_model", "plumb_bob")
         self.color_distortion_override = self._normalize_distortion_param(
             rospy.get_param("~color_distortion", DEFAULT_ZERO_DISTORTION)
@@ -143,6 +149,39 @@ class PiperOrbbec:
 
         self.color_model_source = "unknown"
         self.depth_model_source = "unknown"
+
+    def _publish_cam_to_flange_tf(self):
+        matrix_raw = rospy.get_param("~hand_eye/T_cam_to_flange", None)
+
+        if matrix_raw is None:
+            rospy.logwarn("未找到手眼标定参数 ~hand_eye/T_cam_to_flange，TF 不发布")
+            return
+
+        try:
+            T = np.array(matrix_raw)
+
+            trans = T[:3, 3]
+            quat = tf_trans.quaternion_from_matrix(T)
+
+            static_transform_stamped = TransformStamped()
+            static_transform_stamped.header.stamp = rospy.Time.now()
+            static_transform_stamped.header.frame_id = rospy.get_param(
+                "~hand_eye/flange_id", "link6"
+            )
+            static_transform_stamped.child_frame_id = self.color_frame_id
+
+            static_transform_stamped.transform.translation.x = float(trans[0])
+            static_transform_stamped.transform.translation.y = float(trans[1])
+            static_transform_stamped.transform.translation.z = float(trans[2])
+            static_transform_stamped.transform.rotation.x = float(quat[0])
+            static_transform_stamped.transform.rotation.y = float(quat[1])
+            static_transform_stamped.transform.rotation.z = float(quat[2])
+            static_transform_stamped.transform.rotation.w = float(quat[3])
+
+            self._static_tf_broadcaster.sendTransform(static_transform_stamped)
+            rospy.loginfo("已发布相机到机械臂法兰的静态 TF")
+        except Exception as exc:
+            rospy.logwarn("手眼标定参数解析失败，TF 不发布: %s", exc)
 
     @staticmethod
     def _normalize_distortion_param(raw: Any) -> List[float]:

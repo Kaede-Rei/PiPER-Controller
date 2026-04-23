@@ -24,3 +24,12 @@ depth_distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
 color_frame_id: eef_camera_color_optical_frame
 depth_frame_id: eef_camera_depth_optical_frame
 depth_registered_frame_id: eef_camera_color_optical_frame
+
+hand_eye:
+  T_cam_to_flange:
+    - [0.164723, -0.986262, -0.012365, 0.038744]
+    - [0.986069, 0.164370, 0.025507, -0.020338]
+    - [-0.023125, -0.016394, 0.999598, 0.072264]
+    - [0.000000, 0.000000, 0.000000, 1.000000]    
+
+  flange_id: link6
