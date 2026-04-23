@@ -82,6 +82,7 @@ class RosConfig:
     flange_frame: str = "link6"
     tcp_frame: str = "link_tcp"
     place_frame: str = "base_link"
+    camera_color_frame: str = "eef_camera_color_optical_frame"
     action_wait_sec: float = 5.0
     result_wait_sec: float = 10.0
     tf_wait_sec: float = 0.2
@@ -89,8 +90,12 @@ class RosConfig:
     camera_color_info_topic: str = "/piper/camera/orbbec/color/camera_info"
     camera_depth_raw_topic: str = "/piper/camera/orbbec/depth/image_raw"
     camera_depth_raw_info_topic: str = "/piper/camera/orbbec/depth/camera_info"
-    camera_depth_registered_topic: str = "/piper/camera/orbbec/depth_registered/image_raw"
-    camera_depth_registered_info_topic: str = "/piper/camera/orbbec/depth_registered/camera_info"
+    camera_depth_registered_topic: str = (
+        "/piper/camera/orbbec/depth_registered/image_raw"
+    )
+    camera_depth_registered_info_topic: str = (
+        "/piper/camera/orbbec/depth_registered/camera_info"
+    )
     camera_lrm_topic: str = "/piper/camera/orbbec/lrm_distance"
 
 
@@ -128,17 +133,6 @@ class ResidualCompensationConfig:
 
 
 @dataclass(frozen=True)
-class HandEyeConfig:
-    # ^flange T_cam
-    T_cam_to_flange: Tuple[Tuple[float, float, float, float], ...] = (
-        (0.164723, -0.986262, -0.012365, 0.038744),
-        (0.986069, 0.164370, 0.025507, -0.020338),
-        (-0.023125, -0.016394, 0.999598, 0.072264),
-        (0.000000, 0.000000, 0.000000, 1.000000),
-    )
-
-
-@dataclass(frozen=True)
 class IntrinsicsConfig:
     fx: float = 612.28741455
     fy: float = 612.24603271
@@ -153,7 +147,6 @@ ROS_CFG = RosConfig()
 UI_CFG = UiConfig()
 TARGET_CFG = TargetSelectionConfig()
 RESIDUAL_COMP_CFG = ResidualCompensationConfig()
-HAND_EYE_CFG = HandEyeConfig()
 INTRINSICS_CFG = IntrinsicsConfig()
 
 DEFAULT_INTRINSICS = np.array(
@@ -165,8 +158,6 @@ DEFAULT_INTRINSICS = np.array(
     dtype=np.float64,
 )
 
-T_CAM_TO_FLANGE = np.array(HAND_EYE_CFG.T_cam_to_flange, dtype=np.float64)
-
 MIN_DEPTH = DEPTH_CFG.min_mm
 MAX_DEPTH = DEPTH_CFG.max_mm
 CAMERA_ROTATE_180 = CAMERA_CFG.rotate_180
@@ -177,11 +168,28 @@ def rotate_point_180(u: int, v: int, width: int, height: int) -> Tuple[int, int]
 
 
 def cam_point_to_flange_point(
-    x_cam: float, y_cam: float, z_cam: float
+    tf_buffer: tf2_ros.Buffer,
+    source_frame_id: str,
+    x_cam: float,
+    y_cam: float,
+    z_cam: float,
 ) -> Tuple[float, float, float]:
-    p_cam_homo = np.array([[x_cam], [y_cam], [z_cam], [1.0]], dtype=np.float64)
-    p_flange_homo = T_CAM_TO_FLANGE @ p_cam_homo
-    return p_flange_homo[0, 0], p_flange_homo[1, 0], p_flange_homo[2, 0]
+    if tf_buffer is None:
+        raise RuntimeError("ROS/TF 未初始化，无法执行 camera -> flange 变换")
+    if not source_frame_id:
+        raise RuntimeError("相机坐标系未就绪，无法执行 camera -> flange 变换")
+
+    pt_cam = PointStamped()
+    pt_cam.header.frame_id = source_frame_id
+    pt_cam.header.stamp = rospy.Time(0)
+    pt_cam.point.x = x_cam
+    pt_cam.point.y = y_cam
+    pt_cam.point.z = z_cam
+
+    pt_flange = tf_buffer.transform(
+        pt_cam, ROS_CFG.flange_frame, rospy.Duration(ROS_CFG.tf_wait_sec)
+    )
+    return pt_flange.point.x, pt_flange.point.y, pt_flange.point.z
 
 
 def get_mask_center(mask: np.ndarray) -> Optional[Tuple[float, float]]:
@@ -584,6 +592,7 @@ class MainWindow(QMainWindow):
         self.current_depth_registered_intrinsics = None
         self.current_color_intrinsics = None
         self.current_projection_mode = "invalid"
+        self.current_depth_frame_id = ROS_CFG.camera_color_frame
         self.current_lrm_mm = 0
         self.current_lrm_m = 0.0
         self.current_cutting_pixel = None
@@ -975,7 +984,9 @@ class MainWindow(QMainWindow):
 
     def on_color_camera_info(self, msg: CameraInfo) -> None:
         try:
-            self.current_color_intrinsics = np.array(msg.K, dtype=np.float64).reshape(3, 3)
+            self.current_color_intrinsics = np.array(msg.K, dtype=np.float64).reshape(
+                3, 3
+            )
             if msg.width > 0 and msg.height > 0:
                 self.current_color_size = (msg.width, msg.height)
         except Exception as e:
@@ -992,7 +1003,9 @@ class MainWindow(QMainWindow):
 
     def on_depth_raw_camera_info(self, msg: CameraInfo) -> None:
         try:
-            self.current_depth_raw_intrinsics = np.array(msg.K, dtype=np.float64).reshape(3, 3)
+            self.current_depth_raw_intrinsics = np.array(
+                msg.K, dtype=np.float64
+            ).reshape(3, 3)
         except Exception as e:
             print(f"[GUI] 原始深度内参解析失败: {e}")
 
@@ -1003,6 +1016,9 @@ class MainWindow(QMainWindow):
                 return
             self.current_depth_registered_data = depth_m.astype(np.float32) * 1000.0
             self.current_depth_data = self.current_depth_registered_data
+            self.current_depth_frame_id = (
+                msg.header.frame_id or ROS_CFG.camera_color_frame
+            )
             if self.current_depth_registered_intrinsics is not None:
                 self.current_depth_intrinsics = self.current_depth_registered_intrinsics
             self.current_projection_mode = "depth_registered"
@@ -1011,8 +1027,13 @@ class MainWindow(QMainWindow):
 
     def on_depth_registered_camera_info(self, msg: CameraInfo) -> None:
         try:
-            self.current_depth_registered_intrinsics = np.array(msg.K, dtype=np.float64).reshape(3, 3)
+            self.current_depth_registered_intrinsics = np.array(
+                msg.K, dtype=np.float64
+            ).reshape(3, 3)
             self.current_depth_intrinsics = self.current_depth_registered_intrinsics
+            self.current_depth_frame_id = (
+                msg.header.frame_id or ROS_CFG.camera_color_frame
+            )
             self.current_projection_mode = "depth_registered"
         except Exception as e:
             print(f"[GUI] 对齐深度内参解析失败: {e}")
@@ -1433,7 +1454,9 @@ class MainWindow(QMainWindow):
 
         depth_m = depth_raw / 1000.0
         cam_xyz = depth_to_pointcloud(du, dv, depth_m, self.current_depth_intrinsics)
-        flange_xyz = cam_point_to_flange_point(*cam_xyz)
+        flange_xyz = cam_point_to_flange_point(
+            self.tf_buffer, self.current_depth_frame_id, *cam_xyz
+        )
 
         try:
             raw_tcp_xyz = self.flange_point_to_tcp_point(*flange_xyz)
