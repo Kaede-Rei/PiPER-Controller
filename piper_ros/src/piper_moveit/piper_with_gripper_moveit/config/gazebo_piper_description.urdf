@@ -122,8 +122,8 @@
         <origin xyz="0.28358 0.028726 0" rpy="-3.1416 0 0" />
         <parent link="link2" />
         <child link="link3" />
-        <axis xyz="0 0 1" />
-        <limit lower="0" upper="2.967" effort="100" velocity="5" />
+        <axis xyz="0 0 -1" />
+        <limit lower="-2.967" upper="0" effort="100" velocity="5" />
     </joint>
     <link name="link4">
         <inertial>
@@ -184,7 +184,7 @@
         <origin xyz="0 0.02392 0.036" rpy="-1.5708 0 0" />
         <parent link="link4" />
         <child link="link5" />
-        <axis xyz="0 0 1" />
+        <axis xyz="0 0 -1" />
         <limit lower="-1.74" upper="1.74" effort="100" velocity="5" />
     </joint>
     <link name="link6">

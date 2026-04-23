@@ -8,16 +8,19 @@ target_frame: base_link
 pixel_stride: 4
 frame_skip: 2
 
-min_depth: 0.15
-max_depth: 1.50
+# 深度图像的有效范围（单位：米）
+min_depth: 0.10
+max_depth: 1.00
 
-min_x: 0.00
-max_x: 0.80
-min_y: -0.50
-max_y: 0.50
-min_z: 0.00
-max_z: 1.20
+# 机械臂工作空间（base_link 单位：米）
+min_x: -1.00
+max_x: 1.00
+min_y: -1.00
+max_y: 1.00
+min_z: -1.00
+max_z: 1.00
 
+# 点云滤波参数
 voxel_leaf: 0.015
 sor_mean_k: 20
 sor_stddev: 1.0
