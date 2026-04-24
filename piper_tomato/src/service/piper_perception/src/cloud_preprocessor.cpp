@@ -268,6 +268,8 @@ private:
             res.message = "Octomap cleared successfully";
         }
 
+        res.success = true;
+        res.message = octomap_enabled_ ? "Octomap enabled" : "Octomap disabled";
         return true;
     }
 
