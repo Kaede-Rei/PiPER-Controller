@@ -19,7 +19,7 @@ add_service_files(
     CommandEef.srv
     ConfigArm.srv
     QueryArm.srv
-    SetOctomapEnabled.srv
+    CommandOctomap.srv
 )
 
 add_action_files(

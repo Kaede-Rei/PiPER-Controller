@@ -1,3 +1,6 @@
+#include <future>
+#include <atomic>
+
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
@@ -20,7 +23,7 @@
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl_conversions/pcl_conversions.h>
 
-#include "piper_msgs2/SetOctomapEnabled.h" // IWYU pragma: keep
+#include "piper_msgs2/CommandOctomap.h" // IWYU pragma: keep
 
 // ! ========================= 宏 定 义 ========================= ! //
 
@@ -244,32 +247,38 @@ private:
         if(publish_filtered_ && octomap_enabled_) filtered_pub_.publish(filtered_msg);
     }
 
-    bool on_request(piper_msgs2::SetOctomapEnabledRequest& req, piper_msgs2::SetOctomapEnabledResponse& res) {
+    bool on_request(piper_msgs2::CommandOctomapRequest& req, piper_msgs2::CommandOctomapResponse& res) {
         octomap_enabled_ = req.enabled;
 
         if(req.clear_octomap) {
-            std_srvs::Empty srv;
-
-            if(!clear_octomap_client_.waitForExistence(ros::Duration(0.5))) {
-                ROS_WARN("等待 clear_octomap 服务超时，无法清除 Octomap");
+            if(octomap_clearing_.exchange(true)) {
+                ROS_WARN("正在清除 Octomap，请稍后再试");
                 res.success = false;
-                res.message = "Clear Octomap failed: clear_octomap service unavailable";
-                return false;
-            }
-            if(!clear_octomap_client_.call(srv)) {
-                ROS_WARN("调用 clear_octomap 服务失败，无法清除 Octomap");
-                res.success = false;
-                res.message = "Clear Octomap failed: service call failed";
-                return false;
+                res.message = "Clear Octomap in progress, please try again later";
+                return true;
             }
 
-            ROS_INFO("Octomap 已清除");
-            res.success = true;
-            res.message = "Octomap cleared successfully";
+            clear_octomap_future_ = std::async(std::launch::async, [this]() {
+                std_srvs::Empty srv;
+                if(!clear_octomap_client_.waitForExistence(ros::Duration(0.5))) {
+                    ROS_WARN("等待 clear_octomap 服务超时，无法清除 Octomap");
+                    octomap_clearing_.store(false);
+                    return;
+                }
+                if(!clear_octomap_client_.call(srv)) {
+                    ROS_WARN("调用 clear_octomap 服务失败，无法清除 Octomap");
+                    octomap_clearing_.store(false);
+                    return;
+                }
+                ROS_INFO("Octomap 已清除");
+                octomap_clearing_.store(false);
+                });
+
+            res.message = "Clearing Octomap...(asynchronous)";
         }
 
         res.success = true;
-        res.message = octomap_enabled_ ? "Octomap enabled" : "Octomap disabled";
+        res.message += octomap_enabled_ ? "; Octomap enabled" : "; Octomap disabled";
         ROS_INFO("Octomap 已%s", octomap_enabled_ ? "启用" : "禁用");
         return true;
     }
@@ -289,6 +298,8 @@ private:
 
     ros::ServiceServer octomap_srv_;
     ros::ServiceClient clear_octomap_client_;
+    std::future<void> clear_octomap_future_;
+    std::atomic<bool> octomap_clearing_{ false };
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
