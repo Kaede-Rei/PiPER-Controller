@@ -3,6 +3,7 @@
 #include <message_filters/sync_policies/approximate_time.h>
 
 #include <ros/ros.h>
+#include <std_srvs/Empty.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -18,6 +19,8 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl_conversions/pcl_conversions.h>
+
+#include "piper_msgs2/SetOctomapEnabled.h" // IWYU pragma: keep
 
 // ! ========================= 宏 定 义 ========================= ! //
 
@@ -69,6 +72,9 @@ public:
         raw_pub_ = nh_.advertise <sensor_msgs::PointCloud2>("/piper/perception/cloud/raw", 1);
         base_pub_ = nh_.advertise <sensor_msgs::PointCloud2>("/piper/perception/cloud/base", 1);
         filtered_pub_ = nh_.advertise <sensor_msgs::PointCloud2>("/piper/perception/cloud/filtered", 1);
+
+        octomap_srv_ = nh_.advertiseService("/piper/perception/set_octomap_enabled", &CloudProprocessor::on_request, this);
+        clear_octomap_client_ = nh_.serviceClient<std_srvs::Empty>("/clear_octomap");
 
         sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(SyncPolicy(10), color_sub_, depth_sub_, depth_info_sub_);
         sync_->registerCallback(boost::bind(&CloudProprocessor::callback, this, _1, _2, _3));
@@ -235,7 +241,34 @@ private:
         filtered_msg.header.stamp = base_msg.header.stamp;
         filtered_msg.header.frame_id = final_cloud_ptr->header.frame_id;
 
-        if(publish_filtered_) filtered_pub_.publish(filtered_msg);
+        if(publish_filtered_ && octomap_enabled_) filtered_pub_.publish(filtered_msg);
+    }
+
+    bool on_request(piper_msgs2::SetOctomapEnabledRequest& req, piper_msgs2::SetOctomapEnabledResponse& res) {
+        octomap_enabled_ = req.enabled;
+
+        if(req.clear_octomap) {
+            std_srvs::Empty srv;
+
+            if(!clear_octomap_client_.waitForExistence(ros::Duration(0.5))) {
+                ROS_WARN("等待 clear_octomap 服务超时，无法清除 Octomap");
+                res.success = false;
+                res.message = "Clear Octomap failed: clear_octomap service unavailable";
+                return false;
+            }
+            if(!clear_octomap_client_.call(srv)) {
+                ROS_WARN("调用 clear_octomap 服务失败，无法清除 Octomap");
+                res.success = false;
+                res.message = "Clear Octomap failed: service call failed";
+                return false;
+            }
+
+            ROS_INFO("Octomap 已清除");
+            res.success = true;
+            res.message = "Octomap cleared successfully";
+        }
+
+        return true;
     }
 
 private:
@@ -250,6 +283,9 @@ private:
     ros::Publisher raw_pub_;
     ros::Publisher base_pub_;
     ros::Publisher filtered_pub_;
+
+    ros::ServiceServer octomap_srv_;
+    ros::ServiceClient clear_octomap_client_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -276,6 +312,7 @@ private:
     bool publish_raw_{ true };
     bool publish_base_{ true };
     bool publish_filtered_{ true };
+    bool octomap_enabled_{ true };
 };
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //

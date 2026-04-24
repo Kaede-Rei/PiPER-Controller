@@ -19,7 +19,7 @@ add_service_files(
     CommandEef.srv
     ConfigArm.srv
     QueryArm.srv
-    OrbbecPixel.srv
+    SetOctomapEnabled.srv
 )
 
 add_action_files(

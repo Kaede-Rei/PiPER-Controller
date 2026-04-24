@@ -31,6 +31,7 @@ set(DEPS
   pcl_conversions
   tf2_ros
   tf2_sensor_msgs
+  piper_msgs2
 )
 
 find_package(catkin REQUIRED COMPONENTS ${DEPS})

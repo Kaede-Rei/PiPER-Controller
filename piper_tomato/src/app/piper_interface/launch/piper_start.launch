@@ -12,7 +12,7 @@
     <include file="$(find piper_perception)/launch/piper_perception.launch" />
 
     <!-- 接口节点 -->
-    <node pkg="piper_interface" type="piper_start" name="piper_start" launch-prefix="bash -c 'sleep 5; exec $0 $@' " output="screen">
+    <node pkg="piper_interface" type="piper_start" name="piper_start" output="screen">
         <rosparam command="load" file="$(find piper_interface)/config/config.yaml" />
     </node>
 </launch>
