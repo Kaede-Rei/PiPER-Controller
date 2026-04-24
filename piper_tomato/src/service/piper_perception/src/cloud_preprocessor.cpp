@@ -270,6 +270,7 @@ private:
 
         res.success = true;
         res.message = octomap_enabled_ ? "Octomap enabled" : "Octomap disabled";
+        ROS_INFO("Octomap 已%s", octomap_enabled_ ? "启用" : "禁用");
         return true;
     }
 
