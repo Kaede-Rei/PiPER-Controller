@@ -46,8 +46,8 @@ public:
     CloudProprocessor()
         : nh_(), pnh_("~"),
         color_sub_(nh_, get_param<std::string>("topics/color_image", "/piper/camera/orbbec/color/image_raw"), 1),
-        depth_sub_(nh_, get_param<std::string>("topics/depth_image", "/piper/camera/orbbec/depth/image_raw"), 1),
-        depth_info_sub_(nh_, get_param<std::string>("topics/depth_info", "/piper/camera/orbbec/depth/camera_info"), 1),
+        depth_sub_(nh_, get_param<std::string>("topics/depth_image", "/piper/camera/orbbec/depth_registered/image_raw"), 1),
+        depth_info_sub_(nh_, get_param<std::string>("topics/depth_info", "/piper/camera/orbbec/depth_registered/camera_info"), 1),
         tf_listener_(tf_buffer_) {
 
         target_frame_ = get_param<std::string>("target_frame", "base_link");
