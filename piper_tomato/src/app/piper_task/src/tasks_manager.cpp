@@ -220,7 +220,7 @@ struct PickApproachChoice {
  * @param eef 末端执行器
  */
 TasksManager::TasksManager(std::shared_ptr<ArmController> arm, std::shared_ptr<EndEffector> eef)
-    : _arm_(std::move(arm)), _eef_(std::move(eef)) {
+    : _arm_(std::move(arm)), _eef_(std::move(eef)), _acm_guard_("link6") {
     if(!_arm_) {
         ROS_ERROR("机械臂控制器不能为空，TasksManager 初始化失败");
         throw std::invalid_argument("ArmController pointer cannot be null");
@@ -473,6 +473,14 @@ ErrorCode TasksManager::set_task_pick_params(const std::string& group_name, unsi
     return ErrorCode::SUCCESS;
 }
 
+/**
+ * @brief 设置任务组 PICK 任务的执行行为
+ * @param group_name 任务组名称
+ * @param use_eef 是否使用末端执行器辅助
+ * @param go_safe_after_cancel 取消后是否回到安全位
+ * @param retry_times 执行失败后的重试次数
+ * @return 错误码
+ */
 ErrorCode TasksManager::set_task_group_pick_execution_behavior(const std::string& group_name, bool use_eef, bool go_safe_after_cancel, uint8_t retry_times) {
     auto group = find_task_group(group_name);
     if(!group) return group.error();
@@ -1141,6 +1149,31 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     pp.canceled = false;
     pp.current_stage = PickStage::PICK_IDLE;
 
+    const bool acm_is_enabled = pp.use_pre_pick;
+    bool acm_activate = false;
+
+    auto disallow_pick_acm = [&]() {
+        if(!acm_is_enabled) return true;
+        if(!acm_activate) return true;
+        if(!_acm_guard_.disallow()) {
+            ROS_WARN("PICK ACM 禁止失败，可能导致碰撞风险，请检查 ACM 状态");
+            return false;
+        }
+        acm_activate = false;
+        return true;
+        };
+
+    auto allow_pick_acm = [&]() {
+        if(!acm_is_enabled) return false;
+        if(acm_activate) return true;
+        if(!_acm_guard_.allow()) {
+            ROS_WARN("PICK ACM 允许失败，请检查 ACM 状态");
+            return false;
+        }
+        acm_activate = true;
+        return true;
+        };
+
     auto cancel_checker = [&]() -> bool {
         return is_cancel_requested(task, ctx);
         };
@@ -1156,7 +1189,14 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         _arm_->cancel_async();
         _arm_->stop();
 
+        auto disallow_acm_result = disallow_pick_acm();
+
         if(pp.go_safe_after_cancel) {
+            if(!disallow_acm_result) {
+                ROS_WARN("任务 ID %u 取消后禁止 PICK ACM 失败，无法保证安全性，建议检查 ACM 状态", task.id);
+                return ErrorCode::CANCELLED;
+            }
+
             const ErrorCode safe_code = _arm_->home();
             if(safe_code != ErrorCode::SUCCESS) {
                 ROS_WARN("任务 ID %u 取消后回安全位失败，错误码：%s", task.id, err_to_string(safe_code).c_str());
@@ -1167,14 +1207,11 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
         };
 
     auto fail_stage = [&](PickStage stage, ErrorCode ec, const std::string& text) -> ErrorCode {
+        disallow_pick_acm();
         pp.current_stage = PickStage::PICK_FAILED;
         pp.completed = false;
         report_pick_feedback(task, PickStage::PICK_FAILED, false, ec, text, ctx);
-        ROS_WARN("任务 ID %u 在阶段[%s]失败：%s (%s)",
-            task.id,
-            pick_stage_to_string(stage),
-            text.c_str(),
-            err_to_string(ec).c_str());
+        ROS_WARN("任务 ID %u 在阶段[%s]失败：%s (%s)", task.id, pick_stage_to_string(stage), text.c_str(), err_to_string(ec).c_str());
         return ec;
         };
 
@@ -1310,11 +1347,10 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
     if(code != ErrorCode::SUCCESS) return code;
 
     if(pp.use_pre_pick) {
-        code = exec_cartesian_stage(
-            best_choice.pre_pick_pose,
-            best_choice.final_pick_pose,
-            PickStage::PICK_APPROACH_PICK,
-            "直线接近采摘位");
+        code = allow_pick_acm() ? ErrorCode::SUCCESS : ErrorCode::FAILURE;
+        if(code != ErrorCode::SUCCESS) return fail_stage(PickStage::PICK_APPROACH_PICK, code, "允许 PICK ACM 失败，无法执行后续采摘动作，请检查 ACM 状态");
+
+        code = exec_cartesian_stage(best_choice.pre_pick_pose, best_choice.final_pick_pose, PickStage::PICK_APPROACH_PICK, "直线接近采摘位");
         if(code != ErrorCode::SUCCESS) return code;
     }
 
@@ -1329,12 +1365,10 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
 
     if(pp.use_pre_pick) {
         const geometry_msgs::Pose retreat_pose = pose_with_local_z_offset(best_choice.final_pick_pose, -std::abs(pp.retreat_offset));
-        code = exec_cartesian_stage(
-            best_choice.final_pick_pose,
-            retreat_pose,
-            PickStage::PICK_RETREAT_FROM_PICK,
-            "直线退出采摘位");
+        code = exec_cartesian_stage(best_choice.final_pick_pose, retreat_pose, PickStage::PICK_RETREAT_FROM_PICK, "直线退出采摘位");
         if(code != ErrorCode::SUCCESS) return code;
+
+        if(!disallow_pick_acm()) return fail_stage(PickStage::PICK_RETREAT_FROM_PICK, ErrorCode::FAILURE, "禁止 PICK ACM 失败，可能导致碰撞风险，请检查 ACM 状态");
     }
 
     if(pp.use_place_pose && pp.place_target) {
@@ -1358,6 +1392,8 @@ ErrorCode TasksManager::execute_pick_task(Task& task, ExecutionContext* ctx) {
             report_pick_feedback(task, PickStage::PICK_PLACING, true, ErrorCode::SUCCESS, "放置中：跳过末端动作", ctx);
         }
     }
+
+    disallow_pick_acm();
 
     pp.completed = true;
     pp.current_stage = PickStage::PICK_FINISH;

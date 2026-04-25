@@ -13,7 +13,7 @@ namespace piper {
 
 class AcmGuard {
 public:
-    AcmGuard(ros::NodeHandle& nh, std::string link_name);
+    AcmGuard(std::string link_name, const ros::NodeHandle& nh = ros::NodeHandle());
     ~AcmGuard(void);
 
     bool allow(void);

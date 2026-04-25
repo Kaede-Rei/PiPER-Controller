@@ -25,15 +25,7 @@
     <depend>piper_controller</depend>
     <depend>roscpp</depend>
     <depend>tl_expected</depend>
-    <!-- <depend>rospy</depend> -->
-    <!-- <depend>std_msgs</depend> -->
-    <!-- <depend>sensor_msgs</depend> -->
-    <!-- <depend>nav_msgs</depend> -->
-    <!-- <depend>tf</depend> -->
-    <!-- <depend>tf2</depend> -->
-    <!-- <depend>tf2_ros</depend> -->
-    <!-- <depend>actionlib</depend> -->
-    <!-- <depend>your_msgs_pkg</depend> -->
+    <depend>piper_acm_guard</depend>
 
     <!-- TODO: 如需更细粒度控制，也可以拆成 build / build_export / exec -->
     <!-- <build_depend>roscpp</build_depend> -->

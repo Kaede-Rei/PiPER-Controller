@@ -28,15 +28,7 @@ find_package(catkin REQUIRED COMPONENTS
   piper_controller
   roscpp
   tl_expected
-  # rospy
-  # std_msgs
-  # sensor_msgs
-  # nav_msgs
-  # tf
-  # tf2
-  # tf2_ros
-  # actionlib
-  # your_msgs_pkg
+  piper_acm_guard
 )
 
 # TODO: 如需第三方库，在这里手动添加
@@ -54,15 +46,7 @@ catkin_package(
     piper_controller
     roscpp
     tl_expected
-    # rospy
-    # std_msgs
-    # sensor_msgs
-    # nav_msgs
-    # tf
-    # tf2
-    # tf2_ros
-    # actionlib
-    # your_msgs_pkg
+    piper_acm_guard
   DEPENDS
     # Eigen3
     # OpenCV

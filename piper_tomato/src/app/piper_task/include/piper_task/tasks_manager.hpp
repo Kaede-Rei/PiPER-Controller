@@ -15,6 +15,7 @@
 #include "piper_controller/types.hpp"
 #include "piper_controller/arm_controller.hpp"
 #include "piper_controller/eef_controller.hpp"  // IWYU pragma: keep
+#include "piper_acm_guard/acm_guard.hpp"
 
 namespace piper {
 
@@ -74,7 +75,7 @@ struct PickTaskParams {
     /// @brief 最大重试次数（不含第一次执行）
     uint8_t retry_times{ 0 };
 
-    /// @brief 预采摘位相对于采摘位的偏移（tcp 坐标系下的 z 轴偏移）
+    /// @brief 是否使用预采摘位
     bool use_pre_pick{ true };
     /// @brief 预采摘位相对于采摘位的偏移距离（tcp 坐标系下的 z 轴偏移，单位：米）
     double pre_pick_offset{ 0.1 };
@@ -209,6 +210,8 @@ private:
 
     /// @brief 任务组集合
     std::map<std::string, TaskGroup> _task_groups_;
+
+    AcmGuard _acm_guard_;
 };
 
 } /* namespace piper */

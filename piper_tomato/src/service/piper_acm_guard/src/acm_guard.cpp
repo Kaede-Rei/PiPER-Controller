@@ -19,11 +19,11 @@ namespace piper {
 
 // ! ========================= 接 口 类 / 函 数 实 现 ========================= ! //
 
-AcmGuard::AcmGuard(ros::NodeHandle& nh, std::string link_name)
+AcmGuard::AcmGuard(std::string link_name, const ros::NodeHandle& nh)
     : nh_(nh), link_name_(std::move(link_name)) {
 
-    scene_client_ = nh_.serviceClient<moveit_msgs::GetPlanningScene>("/get_planning_scene");
-    apply_client_ = nh_.serviceClient<moveit_msgs::ApplyPlanningScene>("/apply_planning_scene");
+    scene_client_ = nh_.serviceClient<moveit_msgs::GetPlanningScene>("get_planning_scene");
+    apply_client_ = nh_.serviceClient<moveit_msgs::ApplyPlanningScene>("apply_planning_scene");
 }
 
 AcmGuard::~AcmGuard(void) {
@@ -81,12 +81,12 @@ bool AcmGuard::get_current_acm(moveit_msgs::AllowedCollisionMatrix& acm) {
     srv.request.components.components = moveit_msgs::PlanningSceneComponents::ALLOWED_COLLISION_MATRIX;
 
     if(!scene_client_.waitForExistence(ros::Duration(0.5))) {
-        ROS_WARN("/get_planning_scene 服务不可用");
+        ROS_WARN("get_planning_scene 服务不可用");
         return false;
     }
 
     if(!scene_client_.call(srv)) {
-        ROS_ERROR("调用 /get_planning_scene 服务失败");
+        ROS_ERROR("调用 get_planning_scene 服务失败");
         return false;
     }
 
