@@ -1,59 +1,100 @@
-
 # PiPER 机械臂接口文档
 
-`piper_tomato/src/app/piper_interface` 当前对外控制接口说明（Action / Service）。
+本文档说明 `piper_tomato` 当前对外 ROS 接口、任务层接口、相机/感知接口、Octomap 控制接口，以及采摘任务流中的 ACM 策略
+
+适用范围：
+
+```text
+piper_tomato/src/app/piper_interface
+piper_tomato/src/app/piper_task
+piper_tomato/src/app/piper_gui
+piper_tomato/src/service/piper_perception
+piper_tomato/src/device/piper_camera
+piper_tomato/src/platform/piper_msgs2
+```
 
 ---
 
 ## 1. 使用前提
 
-- 已完成 `piper_ros` 与 `piper_tomato` 编译。
-- 已激活 CAN 设备（推荐 `can0`，`bitrate=1000000`）。
-- 已加载并 source 当前工作空间：
+启动接口前应完成：
+
+1. 编译 `piper_ros`
+2. 编译 `piper_tomato`
+3. 激活 CAN 设备
+4. 确认 MoveIt 配置可启动
+5. 如使用相机/点云避障，确认 Gemini335L 已连接
+6. 如使用 GUI 采摘，确认 `/pick_action` 可用
+
+启动：
 
 ```bash
+source piper_ros/devel/setup.bash
 source piper_tomato/devel/setup.bash
 roslaunch piper_interface piper_start.launch
 ```
 
-接口节点由 `piper_start` 启动，参数均从私有命名空间 `~start/...` 读取，对应文件为 [piper_tomato/src/app/piper_interface/config/config.yaml](piper_tomato/src/app/piper_interface/config/config.yaml)。
+或：
 
-默认接口名如下：
-
-- `move_arm`
-- `simple_move_arm`
-- `arm_config`
-- `arm_query`
-- `pick_action`
-- `eef_cmd`
-
-当前实现约定：
-
-- 接口层转换函数统一采用 `tl::optional` 语义：转换失败返回 `nullopt`，并中止请求处理。
-- `ArmCmdResult.current_pose` 与 `ArmCmdResult.current_joints` 为 optional 字段，仅在需要时填充。
-- ROS 接口层会在必要时做兜底填充，保证对外消息字段始终可读。
-- 机械臂与末端执行器分开发送：`ArmCmdDispatcher` 负责机械臂命令，`EefCmdDispatcher` 负责末端执行器命令。
-- 内部核心类型采用无后缀命名，例如 `SearchReachablePose`、`ReachablePoseResult`、`AStarNode`。
-
-代码层设计约定：
-
-- 类型名使用 PascalCase，无 `_t/_e` 后缀。
-- 除 `target` 外，优先使用 `tl::optional`。
-- `target` 保持 `variant + monostate`，用于多目标类型分派。
-- 错误语义优先透传真实错误码，不在中间层无差别折叠。
+```bash
+./piper-start.sh
+```
 
 ---
 
-## 2. 启动参数
+## 2. 接口总览
 
-`piper_start.cpp` 当前读取的参数如下：
+### 2.1 Action
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `/move_arm` | `piper_msgs2/MoveArmAction` | 完整机械臂控制接口 |
+| `/simple_move_arm` | `piper_msgs2/SimpleMoveArmAction` | 简化机械臂控制接口 |
+| `/pick_action` | `piper_msgs2/PickTaskAction` | 任务组/采摘任务接口 |
+
+### 2.2 Service
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `/arm_config` | `piper_msgs2/ConfigArm` | 约束配置 |
+| `/arm_query` | `piper_msgs2/QueryArm` | 当前关节、当前位姿查询 |
+| `/eef_cmd` | `piper_msgs2/CommandEef` | 末端执行器命令 |
+| `/piper/perception/set_octomap_enabled` | `piper_msgs2/CommandOctomap` | MoveIt Octomap 点云输入开关与异步清图 |
+
+### 2.3 Camera / Perception Topic
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `/piper/camera/orbbec/color/image_raw` | `sensor_msgs/Image` | 彩色图 |
+| `/piper/camera/orbbec/color/camera_info` | `sensor_msgs/CameraInfo` | 彩色相机内参 |
+| `/piper/camera/orbbec/depth/image_raw` | `sensor_msgs/Image` | 原始深度图，`32FC1`，单位 m |
+| `/piper/camera/orbbec/depth/camera_info` | `sensor_msgs/CameraInfo` | 原始深度内参 |
+| `/piper/camera/orbbec/depth_registered/image_raw` | `sensor_msgs/Image` | 对齐到彩色图的深度图，`32FC1`，单位 m |
+| `/piper/camera/orbbec/depth_registered/camera_info` | `sensor_msgs/CameraInfo` | 对齐深度内参 |
+| `/piper/camera/orbbec/lrm_distance` | `std_msgs/Float32` | LRM 单点测距，单位 m |
+| `/piper/perception/cloud/raw` | `sensor_msgs/PointCloud2` | 相机系原始点云 |
+| `/piper/perception/cloud/base` | `sensor_msgs/PointCloud2` | 转到 `base_link` 的点云 |
+| `/piper/perception/cloud/filtered` | `sensor_msgs/PointCloud2` | 工作空间裁剪和滤波后的点云 |
+
+---
+
+## 3. 启动参数
+
+主要配置文件：
+
+```text
+piper_tomato/src/app/piper_interface/config/config.yaml
+```
+
+典型结构：
 
 ```yaml
 start:
   arm_group_name: "arm"
+
   eef:
     enabled: true
-    type: "servo_gripper"   # two_finger_gripper | servo_gripper
+    type: "servo_gripper"
     name: "gripper"
     serial_port: "/dev/ttyACM0"
     baud_rate: 115200
@@ -61,12 +102,15 @@ start:
   arm_move_action:
     enabled: true
     name: "move_arm"
+
   simple_arm_move_action:
     enabled: true
     name: "simple_move_arm"
+
   arm_config_service:
     enabled: true
     name: "arm_config"
+
   arm_query_service:
     enabled: true
     name: "arm_query"
@@ -82,308 +126,474 @@ start:
 
 说明：
 
-- `eef.enabled=false` 时，末端执行器对象不会初始化；`/eef_cmd` 即使被创建，调用也会返回“控制器未初始化”。
-- `eef.type` 当前支持 `two_finger_gripper` 与 `servo_gripper`。
-- `eef_cmd_service.name` 默认是 `eef_cmd`，不是旧文档中的 `eef_command`。
+- `eef.enabled=false` 时，末端执行器不会初始化
+- `eef.type` 当前主要支持 `servo_gripper` 与 `two_finger_gripper`
+- GUI 默认使用 `/pick_action`，而不是直接调用 `/move_arm`
+- TCP 坐标系由 URDF 中的 `link_tcp` 定义
 
 ---
 
-## 3. 接口总览
+## 4. 机械臂命令编号
 
-### 3.1 Action
+当前 `command_type` 使用 0-based 枚举值
 
-- `/move_arm`：`piper_msgs2/MoveArmAction`
-- `/simple_move_arm`：`piper_msgs2/SimpleMoveArmAction`
-- `/pick_action`：`piper_msgs2/PickTaskAction`（由 `piper_task` 模块提供）
+### 4.1 ArmCmdType
 
-### 3.2 Service
+| 编号 | 命令 | 说明 |
+|:---|---|---|
+| 0 | `HOME` | 回初始/安全位 |
+| 1 | `MOVE_JOINTS` | 关节空间运动 |
+| 2 | `MOVE_TARGET` | 移动到目标 |
+| 3 | `MOVE_TARGET_IN_EEF_FRAME` | 末端坐标系相对目标 |
+| 4 | `TELESCOPIC_END` | 末端伸缩 |
+| 5 | `ROTATE_END` | 末端旋转 |
+| 6 | `MOVE_LINE` | 直线运动 |
+| 7 | `MOVE_BEZIER` | 贝塞尔轨迹 |
+| 8 | `MOVE_DECARTES` | 多点笛卡尔轨迹 |
+| 9 | `SET_ORIENTATION_CONSTRAINT` | 设置姿态约束 |
+| 10 | `SET_POSITION_CONSTRAINT` | 设置位置约束 |
+| 11 | `SET_JOINT_CONSTRAINT` | 设置关节约束 |
+| 12 | `GET_CURRENT_JOINTS` | 查询当前关节 |
+| 13 | `GET_CURRENT_POSE` | 查询当前位姿 |
+| 14 | `MOVE_TO_ZERO` | 回零/安全位 |
 
-- `/arm_config`：`piper_msgs2/ConfigArm`
-- `/arm_query`：`piper_msgs2/QueryArm`
-- `/eef_cmd`：`piper_msgs2/CommandEef`
+### 4.2 EefCmdType
 
-### 3.3 GUI（任务层）
-
-- 可执行脚本：`piper_gui.py`（包：`piper_gui`）
-- 默认动作接口：`/pick_action`（`piper_msgs2/PickTaskAction`）
-- GUI 发送的核心请求类型：
-  - `UPDATE_TASK_GROUP_CONFIG`
-  - `UPSERT_TASK`
-  - `EXECUTE_TASK_GROUP`
-
-说明：GUI 不直接调用 `/move_arm` / `/simple_move_arm`，而是通过任务层 Action 统一管理“写入任务 / 执行任务组 / 取消执行”。
-
----
-
-## 4. 命令编号（command_type）
-
-当前代码使用的是 **0-based** 枚举值，不是从 1 开始。
-
-### 4.1 机械臂命令（`ArmCmdType`）
-
-- `0` HOME
-- `1` MOVE_JOINTS
-- `2` MOVE_TARGET
-- `3` MOVE_TARGET_IN_EEF_FRAME
-- `4` TELESCOPIC_END
-- `5` ROTATE_END
-- `6` MOVE_LINE
-- `7` MOVE_BEZIER
-- `8` MOVE_DECARTES
-- `9` SET_ORIENTATION_CONSTRAINT
-- `10` SET_POSITION_CONSTRAINT
-- `11` SET_JOINT_CONSTRAINT
-- `12` GET_CURRENT_JOINTS
-- `13` GET_CURRENT_POSE
-- `14` MOVE_TO_ZERO
-
-### 4.2 末端命令（`EefCmdType`）
-
-- `0` OPEN_GRIPPER
-- `1` CLOSE_GRIPPER
-- `2` STOP_GRIPPER
-
-说明：
-
-- `command_type` 超出范围会返回 `INVALID_PARAMETER`。
-- 轨迹类命令会额外校验路径点数量和数据完整性。
+| 编号 | 命令 | 说明 |
+|:---|---|---|
+| 0 | `OPEN_GRIPPER` | 打开夹爪 |
+| 1 | `CLOSE_GRIPPER` | 关闭夹爪 |
+| 2 | `STOP_GRIPPER` | 停止末端动作 |
 
 ---
 
-## 5. Action 消息说明
+## 5. `/move_arm`
 
-### 5.1 `MoveArmAction`
+类型：
 
-`goal` 主要字段：
+```text
+piper_msgs2/MoveArmAction
+```
 
-- `command_type`
-- `target_type`
-- `pose` / `point` / `quaternion`
-- `waypoints`
-- `joint_names`
-- `joints`
-- `values`
+主要字段：
+
+```text
+command_type
+target_type
+pose
+point
+quaternion
+waypoints
+joint_names
+joints
+values
+```
 
 `target_type`：
 
-- `0` `TARGET_POSE`
-- `1` `TARGET_POINT`
-- `2` `TARGET_QUATERNION`
+| 编号 | 名称 |
+|:---|---|
+| 0 | `TARGET_POSE` |
+| 1 | `TARGET_POINT` |
+| 2 | `TARGET_QUATERNION` |
 
-执行语义：
+执行约束：
 
-- `MOVE_JOINTS`：`joints` 不能为空。
-- `MOVE_TARGET` / `MOVE_TARGET_IN_EEF_FRAME`：`target` 不能为空。
-- `TELESCOPIC_END`：`values` 需要 1 个元素。
-- `ROTATE_END`：`values` 需要 1 个元素。
-- `MOVE_LINE`：`waypoints.size() == 2`。
-- `MOVE_BEZIER`：`waypoints.size() == 3`。
-- `MOVE_DECARTES`：`waypoints.size() >= 1`。
+- `MOVE_JOINTS`：`joints` 不能为空
+- `MOVE_TARGET`：根据 `target_type` 读取 `pose` / `point` / `quaternion`
+- `MOVE_TARGET_IN_EEF_FRAME`：目标会按末端坐标系相对变换处理
+- `MOVE_LINE`：`waypoints.size() == 2`
+- `MOVE_BEZIER`：`waypoints.size() == 3`
+- `MOVE_DECARTES`：`waypoints.size() >= 1`
+- `TELESCOPIC_END`、`ROTATE_END`：`values` 至少包含 1 个数值
 
 返回字段：
 
-- `success`
-- `message`
-- `error_code`
-- `values`
-- `cur_pose`
-- `cur_joint`
+```text
+success
+message
+error_code
+values
+cur_pose
+cur_joint
+```
 
-反馈字段：
+---
 
-- `stage`
-- `progress`
-- `message`
+## 6. `/simple_move_arm`
 
-### 5.2 `SimpleMoveArmAction`
+类型：
 
-`goal` 主要字段：
+```text
+piper_msgs2/SimpleMoveArmAction
+```
 
-- `command_type`
-- `target_type`
-- `x[] / y[] / z[]`
-- `roll[] / pitch[] / yaw[]`
-- `joint_names`
-- `joints`
-- `values`
+主要字段：
+
+```text
+command_type
+target_type
+x[]
+y[]
+z[]
+roll[]
+pitch[]
+yaw[]
+joint_names[]
+joints[]
+values[]
+```
 
 `target_type`：
 
-- `0` `TARGET_POSE`
-- `1` `TARGET_POINT`
-- `2` `TARGET_ORIENTATION`
+| 编号 | 名称 |
+|:---|---|
+| 0 | `TARGET_POSE` |
+| 1 | `TARGET_POINT` |
+| 2 | `TARGET_ORIENTATION` |
 
-当前实现行为：
+语义：
 
-- `TARGET_POSE`：要求 `x/y/z` 与 `roll/pitch/yaw` 长度一致，且至少 1 个点。
-- `TARGET_POINT`：要求 `x/y/z` 长度一致，且至少 1 个点。
-- `TARGET_ORIENTATION`：要求 `roll/pitch/yaw` 长度一致，且至少 1 个点。
-- 目标会先转换成 `req.target`，路径点会整体写入 `req.waypoints`。
-- `MOVE_LINE` / `MOVE_BEZIER` / `MOVE_DECARTES` 的具体校验仍由分发层完成。
-
-返回字段：
-
-- `success`
-- `message`
-- `error_code`
-- `values`
-- `cur_joint`
-- `cur_x`
-- `cur_y`
-- `cur_z`
-- `cur_roll`
-- `cur_pitch`
-- `cur_yaw`
-
-反馈字段：
-
-- `stage`
-- `progress`
-- `message`
+- `TARGET_POSE`：要求 `x/y/z/roll/pitch/yaw` 长度一致
+- `TARGET_POINT`：要求 `x/y/z` 长度一致
+- `TARGET_ORIENTATION`：要求 `roll/pitch/yaw` 长度一致
+- `MOVE_LINE`、`MOVE_BEZIER`、`MOVE_DECARTES` 的点数约束由分发层继续校验
 
 ---
 
-## 6. Service 消息说明
+## 7. `/arm_config`
 
-### 6.1 `/arm_config`（`piper_msgs2/ConfigArm`）
+类型：
 
-Request：
-
-- `command_type`
-- `point`
-- `quaternion`
-- `joint_names[]`
-- `joints[]`
-- `values[]`
-
-Response：
-
-- `success`
-- `message`
-- `error_code`
-
-命令约束：
-
-- `SET_ORIENTATION_CONSTRAINT(9)`：使用 `quaternion`，目标必须是 Quaternion。
-- `SET_POSITION_CONSTRAINT(10)`：使用 `point`，`values` 必须正好 3 个元素（x/y/z 约束范围）。
-- `SET_JOINT_CONSTRAINT(11)`：
-  - `joint_names.size() == joints.size()`
-  - `values.size() == joint_names.size() * 2`
-  - 每个关节对应两个容差参数（下界、上界）。
-
-### 6.2 `/arm_query`（`piper_msgs2/QueryArm`）
+```text
+piper_msgs2/ConfigArm
+```
 
 Request：
 
-- `command_type`
-- `values[]`
+```text
+command_type
+point
+quaternion
+joint_names[]
+joints[]
+values[]
+```
 
 Response：
 
-- `success`
-- `message`
-- `error_code`
-- `cur_pose`
-- `cur_joint[]`
+```text
+success
+message
+error_code
+```
 
 命令约束：
 
-- `GET_CURRENT_JOINTS(12)`：返回 `cur_joint[]`。
-- `GET_CURRENT_POSE(13)`：返回 `cur_pose`。
-
-返回语义：
-
-- 优先返回分发层提供的当前状态。
-- 若分发层没有填充 `current_pose/current_joints`，接口层会回退读取控制器当前状态。
-
-### 6.3 `/eef_cmd`（`piper_msgs2/CommandEef`）
-
-Request：
-
-- `command_type`
-- `values[]`
-
-Response：
-
-- `success`
-- `message`
-- `error_code`
-
-命令约束：
-
-- `OPEN_GRIPPER(0)`：需要末端支持 `JointEefInterface::open()`。
-- `CLOSE_GRIPPER(1)`：需要末端支持 `JointEefInterface::close()`。
-- `STOP_GRIPPER(2)`：直接调用 `EndEffector::stop()`。
-
-说明：
-
-- 如果末端执行器未初始化，服务返回“控制器未初始化”。
-- 如果末端不支持关节式夹爪接口，`OPEN_GRIPPER` / `CLOSE_GRIPPER` 会返回 `INVALID_INTERFACE`。
+- `SET_ORIENTATION_CONSTRAINT(9)`：使用 `quaternion` 作为目标姿态
+- `SET_POSITION_CONSTRAINT(10)`：使用 `point` 作为参考点，`values` 正好 3 个元素，对应 xyz 约束范围
+- `SET_JOINT_CONSTRAINT(11)`：要求 `joint_names.size() == joints.size()`，且 `values.size() == joint_names.size() * 2`
 
 ---
 
-## 7. 调用示例
+## 8. `/arm_query`
 
-### 7.1 查询当前关节
+类型：
+
+```text
+piper_msgs2/QueryArm
+```
+
+常用命令：
 
 ```bash
 rosservice call /arm_query "command_type: 12
 values: []"
-```
 
-### 7.2 查询当前位姿
-
-```bash
 rosservice call /arm_query "command_type: 13
 values: []"
 ```
 
-### 7.3 设置姿态约束
+返回语义：
 
-```bash
-rosservice call /arm_config "command_type: 9
-point: {x: 0.0, y: 0.0, z: 0.0}
-quaternion: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
-joint_names: []
-joints: []
-values: []"
+- 优先返回分发层提供的当前状态
+- 若分发层没有填充当前状态，接口层回退读取控制器当前状态
+
+---
+
+## 9. `/eef_cmd`
+
+类型：
+
+```text
+piper_msgs2/CommandEef
 ```
 
-### 7.4 设置末端位置约束
-
-```bash
-rosservice call /arm_config "command_type: 10
-point: {x: 0.30, y: 0.00, z: 0.35}
-quaternion: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
-joint_names: []
-joints: []
-values: [0.03, 0.03, 0.03]"
-```
-
-### 7.5 发送末端执行器命令
-
-打开夹爪：
+示例：
 
 ```bash
 rosservice call /eef_cmd "command_type: 0
 values: []"
-```
 
-关闭夹爪：
-
-```bash
 rosservice call /eef_cmd "command_type: 1
 values: []"
-```
 
-停止夹爪：
-
-```bash
 rosservice call /eef_cmd "command_type: 2
 values: []"
 ```
 
-### 7.6 `move_arm`：末端坐标系相对移动
+说明：
+
+- 末端未初始化时，返回“控制器未初始化”
+- 末端类型不支持对应接口时，返回 `INVALID_INTERFACE`
+
+---
+
+## 10. `/pick_action`
+
+类型：
+
+```text
+piper_msgs2/PickTaskAction
+```
+
+该接口由任务层提供，用于任务组配置、任务写入、任务执行和取消
+
+### 10.1 主要请求类型
+
+```text
+UPDATE_TASK_GROUP_CONFIG
+UPSERT_TASK
+EXECUTE_TASK_GROUP
+```
+
+### 10.2 GUI 任务流
+
+```text
+绘制 ROI
+  -> 计算目标像素
+  -> depth_registered / LRM 获取目标深度
+  -> 相机系目标点
+  -> TF 转到 flange / tcp
+  -> 通过 PickTaskAction 写入任务
+  -> 执行任务组
+```
+
+### 10.3 PICK 阶段
+
+```cpp
+#define PICK_STAGE_TABLE \
+    X(IDLE, "空闲") \
+    X(START, "开始") \
+    X(MOVE_TO_PRE_PICK, "移动到预采摘位") \
+    X(APPROACH_PICK, "直线接近采摘位") \
+    X(PICKING, "采摘中") \
+    X(RETREAT_FROM_PICK, "直线退出采摘位") \
+    X(MOVE_TO_PLACE, "移动到放置位") \
+    X(PLACING, "放置中") \
+    X(FINISH, "完成") \
+    X(GO_HOME, "回到初始位") \
+    X(CANCELED, "已取消") \
+    X(FAILED, "失败")
+```
+
+### 10.4 `use_pre_pick`
+
+`use_pre_pick=true` 时：
+
+- 先规划到预采摘位
+- 再笛卡尔直线接近最终采摘位
+- 夹取后笛卡尔直线退出
+- 这是启用阶段性 ACM 的推荐模式
+
+`use_pre_pick=false` 时：
+
+- `MOVE_TO_PRE_PICK` 阶段实际会直接规划到最终采摘位
+- 不进入 `APPROACH_PICK` 与 `RETREAT_FROM_PICK`
+- 不建议启用阶段性 ACM
+
+---
+
+## 11. 采摘阶段 ACM
+
+当前最小模型：
+
+```text
+在 APPROACH_PICK、PICKING、RETREAT_FROM_PICK 阶段允许 link6 碰撞
+离开这三个阶段后禁止 link6 碰撞
+```
+
+策略说明：
+
+- 当前 ACM 是“允许/禁止”模型
+- 只在 `use_pre_pick=true` 时启用
+- `MOVE_TO_PRE_PICK` 正常避障
+- `APPROACH_PICK` 前调用 `allow()`
+- `RETREAT_FROM_PICK` 后调用 `disallow()`
+- `CANCELED`、`FAILED`、`FINISH` 均应兜底调用 `disallow()`
+
+限制：
+
+- 当前只处理 `link6`
+- 当前不是对象级 ACM
+- 后续建议升级为 `pick_target_allow_region + gripper/link_tcp ACM`
+
+---
+
+## 12. `/piper/perception/set_octomap_enabled`
+
+类型：
+
+```text
+piper_msgs2/CommandOctomap
+```
+
+语义：
+
+```text
+enabled: bool
+clear_octomap: bool
+---
+success: bool
+message: string
+```
+
+行为：
+
+- `enabled=true`：允许发布 MoveIt 点云输入
+- `enabled=false`：停止发布 MoveIt 点云输入
+- `clear_octomap=true`：异步请求 MoveIt `/clear_octomap`
+- 清图为异步行为，服务返回不代表 Octomap 已经完成清空
+
+示例：
+
+```bash
+rosservice call /piper/perception/set_octomap_enabled "{enabled: false, clear_octomap: true}"
+rosservice call /piper/perception/set_octomap_enabled "{enabled: true, clear_octomap: false}"
+```
+
+推荐使用策略：
+
+```text
+导航移动阶段：
+  enabled=false
+  必要时 clear_octomap=true
+
+到达采摘点：
+  clear_octomap=true
+  等待当前局部点云进入
+  enabled=true
+
+采摘执行阶段：
+  enabled=true
+
+离开采摘点：
+  enabled=false
+  可选异步 clear
+```
+
+注意：
+
+- 频繁调用 `/clear_octomap` 不是最佳方案
+- 更推荐通过开关控制何时向 MoveIt 输入点云
+- 后续应增加专用 `/piper/perception/cloud/moveit_input`
+
+---
+
+## 13. 相机与深度语义
+
+### 13.1 `depth_registered`
+
+`depth_registered` 是对齐到彩色图的深度图，推荐作为点云输入
+
+```text
+/piper/camera/orbbec/depth_registered/image_raw
+/piper/camera/orbbec/depth_registered/camera_info
+```
+
+编码：
+
+```text
+32FC1
+单位：m
+```
+
+### 13.2 LRM
+
+LRM 发布：
+
+```text
+/piper/camera/orbbec/lrm_distance
+```
+
+类型：
+
+```text
+std_msgs/Float32
+```
+
+说明：
+
+- LRM 是单点距离
+- 不等价于整张深度图
+- 当前主要用于 GUI 目标深度 fallback
+- 不应直接用来填满整张点云
+
+---
+
+## 14. piper_perception 点云处理
+
+当前流程：
+
+```text
+color + depth_registered + camera_info
+  -> ApproximateTime 同步
+  -> 反投影生成 raw cloud
+  -> TF 转换到 base_link
+  -> PassThrough 裁剪 x/y/z
+  -> VoxelGrid 降采样
+  -> SOR 离群点滤波
+  -> 发布 filtered
+```
+
+主要参数示例：
+
+```yaml
+topics:
+  color_image: /piper/camera/orbbec/color/image_raw
+  depth_image: /piper/camera/orbbec/depth_registered/image_raw
+  depth_info: /piper/camera/orbbec/depth_registered/camera_info
+
+target_frame: base_link
+pixel_stride: 4
+frame_skip: 1
+
+min_depth: 0.15
+max_depth: 1.50
+
+min_x: 0.0
+max_x: 0.8
+min_y: -0.5
+max_y: 0.5
+min_z: 0.0
+max_z: 1.2
+
+voxel_leaf: 0.015
+sor_mean_k: 20
+sor_stddev: 1.0
+```
+
+当前限制：
+
+- 深度无效像素直接跳过，不会生成清理射线
+- 因此相机看不到的历史 Octomap 点不会自动消失
+- 后续应新增保守 invalid-depth clearing 或对象级 Collision Object 管线
+
+---
+
+## 15. 调用示例
+
+### 15.1 末端坐标系相对移动
 
 ```python
 import rospy
@@ -407,7 +617,7 @@ client.wait_for_result()
 print(client.get_result())
 ```
 
-### 7.7 `simple_move_arm`：MOVE_LINE
+### 15.2 简化直线运动
 
 ```python
 import rospy
@@ -433,50 +643,47 @@ client.wait_for_result()
 print(client.get_result())
 ```
 
-### 7.8 `piper_gui`：图形化下发采摘任务
+### 15.3 启动 GUI
 
 ```bash
 source piper_tomato/devel/setup.bash
 rosrun piper_gui piper_gui.py
 ```
 
-推荐启动顺序：
+### 15.4 控制 Octomap
 
-1. 启动 `roslaunch piper_interface piper_start.launch`（确保 `/pick_action` 可用）。
-2. 启动 GUI。
-3. 在图像上左键绘制 ROI，双击闭合区域。
-4. 点击“写入 / 更新当前任务”或“执行当前任务组”。
-
-当前 GUI 关键行为：
-
-- 将 ROI 计算得到的目标点写为 `Point(link_tcp)`。
-- 任务组默认名为 `gui_pick`，可在界面修改。
-- 支持“仅更新任务组配置”“执行当前任务组”“取消当前执行”。
+```bash
+rosservice call /piper/perception/set_octomap_enabled "{enabled: false, clear_octomap: true}"
+rosservice call /piper/perception/set_octomap_enabled "{enabled: true, clear_octomap: false}"
+```
 
 ---
 
-## 8. 错误码与排障
+## 16. 错误码与排查
 
-常见 `error_code`：
+常见错误码：
 
-- `SUCCESS`：执行成功
-- `INVALID_PARAMETER`：参数数量或类型错误
-- `INVALID_TARGET_TYPE`：目标类型与字段不匹配
-- `INVALID_INTERFACE`：末端执行器不支持对应接口
-- `TF_TRANSFORM_FAILED`：坐标变换失败
-- `PLANNING_FAILED` / `EXECUTION_FAILED`：MoveIt 规划或执行失败
-- `DESCARTES_PLANNING_FAILED` / `EMPTY_WAYPOINTS`：笛卡尔路径失败
-- `ASYNC_TASK_RUNNING` / `CANCELLED`：异步任务冲突或已取消
+| 错误码 | 说明 |
+|---|---|
+| `SUCCESS` | 成功 |
+| `INVALID_PARAMETER` | 参数错误 |
+| `INVALID_TARGET_TYPE` | 目标类型错误 |
+| `INVALID_INTERFACE` | 接口不支持 |
+| `TF_TRANSFORM_FAILED` | TF 变换失败 |
+| `PLANNING_FAILED` | MoveIt 规划失败 |
+| `EXECUTION_FAILED` | 执行失败 |
+| `DESCARTES_PLANNING_FAILED` | 笛卡尔路径失败 |
+| `EMPTY_WAYPOINTS` | 路径点为空 |
+| `ASYNC_TASK_RUNNING` | 异步任务正在执行 |
+| `CANCELLED` | 任务已取消 |
 
-接口层返回策略：
+排查顺序：
 
-- `MoveArmAction` / `SimpleMoveArmAction`：如果分发层没有填充当前状态，会回退读取控制器当前值后再填入结果。
-- `QueryArm`：同样会回退读取控制器当前状态。
-- `CommandEef`：只返回成功状态，不携带当前位姿或关节信息。
-
-建议排查流程：
-
-1. 先调用 `/arm_query` 确认当前状态可读。
-2. 再检查命令对应参数数量是否满足约束。
-3. 若是坐标相关失败，检查 TF 树、EEF 类型和 TCP 偏移配置。
-4. 若是规划失败，先收紧目标范围并降低速度参数再尝试。
+1. `/arm_query` 是否能查询当前状态
+2. TF 是否完整
+3. 目标是否超出工作空间
+4. MoveIt 是否已加载 robot model 和 planning scene
+5. 相机点云是否发布
+6. Octomap 输入是否启用
+7. ACM 是否只在预期阶段启用
+8. 取消任务后是否已恢复碰撞策略
